@@ -12,7 +12,14 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
-@SpringBootTest(properties = {"chat.memory.redis-enabled=false", "llm.mock-enabled=true"})
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT,
+        properties = {
+            "chat.memory.redis-enabled=false",
+            "llm.mock-enabled=true",
+            "server.port=18081",
+            "smartbi.base-url=http://localhost:18081"
+        })
 @AutoConfigureMockMvc
 class ChatQueryControllerTest {
 
@@ -44,10 +51,10 @@ class ChatQueryControllerTest {
                 .andExpect(jsonPath("$.result.columns.length()").value(2))
                 .andExpect(jsonPath("$.result.rows.length()").value(1))
                 .andExpect(jsonPath("$.executionEngine")
-                        .value("LangGraph4j → Mock LLM → Mock SmartBI"))
+                        .value("LangGraph4j → Mock LLM → SmartBI Client → Java Calculation Engine"))
                 .andExpect(jsonPath("$.workflowSteps.length()").value(6))
                 .andExpect(jsonPath("$.workflowSteps[0].node").value("interpretMessage"))
-                .andExpect(jsonPath("$.workflowSteps[4].node").value("executeMockSmartBiQuery"))
+                .andExpect(jsonPath("$.workflowSteps[4].node").value("executeSmartBiQuery"))
                 .andExpect(jsonPath("$.llmMessage.role").value("assistant"))
                 .andExpect(jsonPath("$.llmMessage.content").isNotEmpty())
                 .andExpect(jsonPath("$.llmMessage.requestMessages.length()").value(2))
@@ -326,6 +333,6 @@ class ChatQueryControllerTest {
                 .andExpect(jsonPath("$.dependencies[0].code").value("redis"))
                 .andExpect(jsonPath("$.dependencies[0].status").value("DOWN"))
                 .andExpect(jsonPath("$.dependencies[1].status").value("MOCK"))
-                .andExpect(jsonPath("$.dependencies[2].status").value("MOCK"));
+                .andExpect(jsonPath("$.dependencies[2].status").value("UP"));
     }
 }

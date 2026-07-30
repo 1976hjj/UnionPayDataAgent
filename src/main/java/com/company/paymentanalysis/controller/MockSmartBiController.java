@@ -19,8 +19,17 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/mock/smartbi")
 public class MockSmartBiController {
 
+    private final MockChatSmartBiDataService chatDataService;
+
+    public MockSmartBiController(MockChatSmartBiDataService chatDataService) {
+        this.chatDataService = chatDataService;
+    }
+
     @PostMapping("/query")
     public QueryResponse query(@RequestBody QueryRequest request) {
+        if (chatDataService.supports(request)) {
+            return chatDataService.query(request);
+        }
         String dimensionCode = DIMENSION_FIELDS.entrySet().stream()
                 .filter(entry -> request.rows().contains(entry.getValue()))
                 .map(Map.Entry::getKey)

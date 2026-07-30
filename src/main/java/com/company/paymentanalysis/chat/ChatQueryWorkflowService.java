@@ -21,15 +21,16 @@ import com.company.paymentanalysis.controller.ChatQueryController.ChatResponse;
 import com.company.paymentanalysis.controller.ChatQueryController.QueryContext;
 import com.company.paymentanalysis.controller.ChatQueryController.QueryFilter;
 import com.company.paymentanalysis.controller.ChatQueryController.QueryResult;
-import com.company.paymentanalysis.controller.ChatQueryController.ResultColumn;
 import com.company.paymentanalysis.controller.ChatQueryController.WorkflowStep;
+import com.company.paymentanalysis.execution.AnalysisExecutionResult;
+import com.company.paymentanalysis.execution.ExecutionStatus;
+import com.company.paymentanalysis.handler.IntentHandlerRouter;
 import com.company.paymentanalysis.smartbi.SmartBiModels.Filter;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.company.paymentanalysis.smartbi.SmartBiQueryBuilder;
 import com.company.paymentanalysis.smartbi.SmartBiSqlPreview;
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +57,8 @@ public class ChatQueryWorkflowService {
     private static final String STATUS = "status";
     private static final String PLAN = "plan";
     private static final String RESULT = "result";
+    private static final String ANALYSIS_EXECUTION = "analysisExecution";
+    private static final String ANALYSIS_REPLY = "analysisReply";
     private static final String STEPS = "steps";
     private static final String RESPONSE = "response";
 
@@ -63,10 +66,6 @@ public class ChatQueryWorkflowService {
             "transactionAmount", "交易金额",
             "transactionCount", "交易笔数",
             "successRate", "支付成功率");
-    private static final Map<String, String> METRIC_FIELDS = Map.of(
-            "transactionAmount", "trans_amt",
-            "transactionCount", "trans_cnt",
-            "successRate", "success_rate");
     private static final Map<String, String> DIMENSION_NAMES = Map.of(
             "tradeYear", "年",
             "tradeMonth", "月",
@@ -75,28 +74,14 @@ public class ChatQueryWorkflowService {
             "region", "地区",
             "merchantType", "商户类型",
             "paymentMethod", "支付方式");
-    private static final Map<String, String> DIMENSION_FIELDS = Map.of(
-            "tradeYear", "sett_dt_Year",
-            "tradeMonth", "sett_dt_Month2",
-            "tradeDate", "sett_dt_Day",
-            "channel", "accept_channel",
-            "region", "region_name",
-            "merchantType", "merchant_type",
-            "paymentMethod", "payment_method");
-    private static final Map<String, List<String>> DIMENSION_MEMBERS = Map.of(
-            "tradeYear", List.of("2023年", "2024年", "2025年", "2026年"),
-            "tradeMonth", List.of("2026年4月", "2026年5月", "2026年6月", "2026年7月"),
-            "tradeDate", List.of("2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30"),
-            "channel", List.of("线上渠道", "线下渠道", "移动端", "其他渠道"),
-            "region", List.of("华东", "华南", "华北", "西南"),
-            "merchantType", List.of("零售商户", "餐饮商户", "交通出行", "生活服务"),
-            "paymentMethod", List.of("银行卡", "云闪付", "二维码", "其他方式"));
 
     private final ChatQueryInterpreter interpreter;
     private final IntentRecognitionService recognitionService;
     private final QueryPlanBuilder queryPlanBuilder;
     private final QueryPlanValidator queryPlanValidator;
     private final SmartBiQueryBuilder smartBiQueryBuilder;
+    private final IntentHandlerRouter intentHandlerRouter;
+    private final ChatAnalysisResultAdapter resultAdapter;
     private final CompiledGraph<ChatState> graph;
 
     public ChatQueryWorkflowService(
@@ -104,12 +89,16 @@ public class ChatQueryWorkflowService {
             IntentRecognitionService recognitionService,
             QueryPlanBuilder queryPlanBuilder,
             QueryPlanValidator queryPlanValidator,
-            SmartBiQueryBuilder smartBiQueryBuilder) throws GraphStateException {
+            SmartBiQueryBuilder smartBiQueryBuilder,
+            IntentHandlerRouter intentHandlerRouter,
+            ChatAnalysisResultAdapter resultAdapter) throws GraphStateException {
         this.interpreter = interpreter;
         this.recognitionService = recognitionService;
         this.queryPlanBuilder = queryPlanBuilder;
         this.queryPlanValidator = queryPlanValidator;
         this.smartBiQueryBuilder = smartBiQueryBuilder;
+        this.intentHandlerRouter = intentHandlerRouter;
+        this.resultAdapter = resultAdapter;
         this.graph = new StateGraph<>(
                 ChatState.SCHEMA,
                 (AgentStateFactory<ChatState>) ChatState::new)
@@ -117,14 +106,14 @@ public class ChatQueryWorkflowService {
                 .addNode("mergeConversationContext", node_async(this::mergeConversationContext))
                 .addNode("validateQueryScope", node_async(this::validateQueryScope))
                 .addNode("buildSmartBiQueryPlan", node_async(this::buildSmartBiQueryPlan))
-                .addNode("executeMockSmartBiQuery", node_async(this::executeMockSmartBiQuery))
+                .addNode("executeSmartBiQuery", node_async(this::executeSmartBiQuery))
                 .addNode("generateChatResponse", node_async(this::generateChatResponse))
                 .addEdge(START, "interpretMessage")
                 .addEdge("interpretMessage", "mergeConversationContext")
                 .addEdge("mergeConversationContext", "validateQueryScope")
                 .addEdge("validateQueryScope", "buildSmartBiQueryPlan")
-                .addEdge("buildSmartBiQueryPlan", "executeMockSmartBiQuery")
-                .addEdge("executeMockSmartBiQuery", "generateChatResponse")
+                .addEdge("buildSmartBiQueryPlan", "executeSmartBiQuery")
+                .addEdge("executeSmartBiQuery", "generateChatResponse")
                 .addEdge("generateChatResponse", END)
                 .compile();
     }
@@ -229,24 +218,34 @@ public class ChatQueryWorkflowService {
                                 + "；本步骤已形成可替换真实接口的结构化 JSON")));
     }
 
-    private Map<String, Object> executeMockSmartBiQuery(ChatState state) {
+    private Map<String, Object> executeSmartBiQuery(ChatState state) {
         if (!"completed".equals(required(state, STATUS))) {
             return Map.of(STEPS, appendStep(state, skipped(
-                    "executeMockSmartBiQuery", "执行 Mock SmartBI", "未执行数据查询")));
+                    "executeSmartBiQuery", "执行 SmartBI 查询", "未执行数据查询")));
         }
         QueryContext context = required(state, CONTEXT);
         QueryPlan queryPlan = required(state, QUERY_PLAN);
-        QueryResult result = queryPlan.intent() == IntentType.COMPARE_QUERY
-                ? mockComparisonResult(queryPlan)
-                : mockResult(context);
+        AnalysisExecutionResult execution = intentHandlerRouter.route(
+                queryPlan,
+                AnalysisContext.from(context, LocalDate.now()));
+        ChatAnalysisResultAdapter.AdaptedAnalysisResult adapted =
+                resultAdapter.adapt(execution, queryPlan);
+        String workflowStatus = execution.status() == ExecutionStatus.SUCCESS
+                        || execution.status() == ExecutionStatus.NO_DATA
+                        || execution.status() == ExecutionStatus.PARTIAL_SUCCESS
+                ? "COMPLETED"
+                : "FAILED";
         return Map.of(
-                RESULT, result,
+                RESULT, adapted.result(),
+                ANALYSIS_EXECUTION, execution,
+                ANALYSIS_REPLY, adapted.reply(),
                 STEPS, appendStep(state, new WorkflowStep(
-                        "executeMockSmartBiQuery",
-                        "执行 Mock SmartBI",
-                        "COMPLETED",
-                        "模拟接口一次返回 " + result.rows().size() + " 行、"
-                                + result.columns().size() + " 列数据")));
+                        "executeSmartBiQuery",
+                        "执行 SmartBI 查询并进行 Java 计算",
+                        workflowStatus,
+                        "状态：" + execution.status()
+                                + "；查询次数：" + execution.queryRecords().size()
+                                + "；结果行数：" + adapted.result().rows().size())));
     }
 
     private Map<String, Object> generateChatResponse(ChatState state) {
@@ -256,8 +255,9 @@ public class ChatQueryWorkflowService {
         ChatQueryPlan plan = "completed".equals(status) ? required(state, PLAN) : null;
         ChatRequest request = required(state, REQUEST);
         QueryPlan validatedQueryPlan = required(state, QUERY_PLAN);
-        String reply = reply(
-                status, required(state, INTERPRETATION), validatedQueryPlan, context, result);
+        String reply = "completed".equals(status)
+                ? state.<String>value(ANALYSIS_REPLY).orElse("")
+                : reply(status, required(state, INTERPRETATION), validatedQueryPlan, context, result);
         List<WorkflowStep> completedSteps = appendStep(state, new WorkflowStep(
                 "generateChatResponse",
                 "生成前端结果",
@@ -269,7 +269,8 @@ public class ChatQueryWorkflowService {
                 suggestions(status, context),
                 context,
                 result,
-                "LangGraph4j → " + recognitionService.engineLabel() + " → Mock SmartBI",
+                "LangGraph4j → " + recognitionService.engineLabel()
+                        + " → SmartBI Client → Java Calculation Engine",
                 completedSteps,
                 plan,
                 request.sessionId(),
@@ -323,57 +324,6 @@ public class ChatQueryWorkflowService {
             }
         }
         return List.copyOf(values);
-    }
-
-    private QueryResult mockResult(QueryContext context) {
-        List<ResultColumn> columns = new ArrayList<>();
-        if (context.dimensionIds().isEmpty()) {
-            columns.add(new ResultColumn("period", "时间范围", false));
-        } else {
-            context.dimensionIds().forEach(id ->
-                    columns.add(new ResultColumn(id, DIMENSION_NAMES.get(id), false)));
-        }
-        context.metricIds().forEach(id ->
-                columns.add(new ResultColumn(id, METRIC_NAMES.get(id), true)));
-
-        int rowCount = context.dimensionIds().isEmpty() ? 1 : 4;
-        List<Map<String, String>> rows = new ArrayList<>();
-        for (int index = 0; index < rowCount; index++) {
-            Map<String, String> row = new LinkedHashMap<>();
-            if (context.dimensionIds().isEmpty()) {
-                row.put("period", context.periodLabel());
-            }
-            for (String dimensionId : context.dimensionIds()) {
-                row.put(dimensionId, DIMENSION_MEMBERS.get(dimensionId).get(index));
-            }
-            for (String metricId : context.metricIds()) {
-                row.put(metricId, metricValue(metricId, index, rowCount));
-            }
-            rows.add(row);
-        }
-        String grouping = context.dimensionIds().isEmpty()
-                ? "汇总"
-                : "按" + names(context.dimensionIds(), DIMENSION_NAMES) + "分组";
-        return new QueryResult(
-                context.periodLabel() + "，" + grouping + "，"
-                        + names(context.metricIds(), METRIC_NAMES),
-                List.copyOf(columns),
-                List.copyOf(rows));
-    }
-
-    private String metricValue(String metricId, int index, int rowCount) {
-        return switch (metricId) {
-            case "transactionAmount" -> rowCount == 1
-                    ? "¥126,840,000"
-                    : List.of("¥52,640,000", "¥31,280,000", "¥24,500,000", "¥18,420,000").get(index);
-            case "transactionCount" -> rowCount == 1
-                    ? "1,286,420"
-                    : List.of("526,400", "318,200", "247,900", "193,920").get(index);
-            case "successRate" -> rowCount == 1
-                    ? "97.36%"
-                    : List.of("98.12%", "97.68%", "96.84%", "95.91%").get(index);
-            default -> "";
-        };
     }
 
     private String reply(
@@ -439,45 +389,6 @@ public class ChatQueryWorkflowService {
                 .toList();
     }
 
-    private QueryResult mockComparisonResult(QueryPlan plan) {
-        String metricName = metricDisplay(plan.metricCode());
-        List<ResultColumn> columns = List.of(
-                new ResultColumn("comparisonSubject", "对比对象", false),
-                new ResultColumn(plan.metricCode(), metricName, true));
-        List<Map<String, String>> rows = new ArrayList<>();
-        for (int index = 0; index < plan.comparisonSubjects().size(); index++) {
-            Map<String, String> row = new LinkedHashMap<>();
-            row.put("comparisonSubject", plan.comparisonSubjects().get(index).label());
-            row.put(plan.metricCode(), comparisonMetricValue(plan.metricCode(), index));
-            rows.add(row);
-        }
-        return new QueryResult(
-                plan.comparisonSubjects().get(0).label() + " 与 "
-                        + plan.comparisonSubjects().get(1).label() + " 的 " + metricName
-                        + "对比，绝对差额 " + comparisonDifference(plan.metricCode()),
-                columns,
-                List.copyOf(rows));
-    }
-
-    private String comparisonMetricValue(String metricCode, int index) {
-        return switch (metricCode) {
-            case "rmbAmount", "transactionAmount" ->
-                    index == 0 ? "¥52,640,000" : "¥31,280,000";
-            case "transactionCount" -> index == 0 ? "526,400" : "318,200";
-            case "successRate" -> index == 0 ? "98.12%" : "97.68%";
-            default -> "";
-        };
-    }
-
-    private String comparisonDifference(String metricCode) {
-        return switch (metricCode) {
-            case "rmbAmount", "transactionAmount" -> "¥21,360,000";
-            case "transactionCount" -> "208,200";
-            case "successRate" -> "0.44 个百分点";
-            default -> "";
-        };
-    }
-
     private String metricDisplay(String metricCode) {
         return switch (metricCode) {
             case "rmbAmount" -> "人民币总金额";
@@ -541,6 +452,8 @@ public class ChatQueryWorkflowService {
                 Map.entry(STATUS, Channels.base(() -> "")),
                 Map.entry(PLAN, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(RESULT, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(ANALYSIS_EXECUTION, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(ANALYSIS_REPLY, Channels.base(() -> "")),
                 Map.entry(STEPS, Channels.base((Supplier<List<WorkflowStep>>) List::of)),
                 Map.entry(RESPONSE, Channels.base((Supplier<Object>) Map::of)));
 

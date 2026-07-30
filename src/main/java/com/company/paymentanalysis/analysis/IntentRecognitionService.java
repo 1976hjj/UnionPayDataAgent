@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.LocalDate;
 import java.util.List;
 import org.springframework.stereotype.Service;
 
@@ -151,6 +152,30 @@ public class IntentRecognitionService {
 
     private String systemPrompt(AnalysisContext context) {
         return """
+                你是支付数据分析意图识别器。只返回一个严格 JSON 对象，不要 Markdown，不要解释。
+                JSON 必须完整包含 intent、confidence、metricText、dimensionTexts、filters、
+                comparisonSubjects、requestedCalculations、topN、needsDataQuery、
+                needsKnowledgeBase、missingSlots、clarificationQuestion。
+                intent 只能使用约定的 IntentType 枚举值。
+                filters 格式为 [{"field":"...","operator":"...","values":["..."]}]。
+                comparisonSubjects 格式为
+                [{"label":"...","filters":[{"field":"...","operator":"...","values":["..."]}]}]。
+                COMPARE_QUERY 必须保留恰好两个对象，禁止合并或覆盖。
+                “A比B少多少”返回 A_LESS_THAN_B、ABSOLUTE_DIFFERENCE；
+                “A比B多多少”返回 A_MORE_THAN_B、ABSOLUTE_DIFFERENCE；
+                用户要求百分比或增长率时再增加 CHANGE_RATE。
+                TREND_QUERY 必须返回时间范围和时间维度，requestedCalculations 使用 DAY、MONTH 或 YEAR。
+                RANK_QUERY 必须返回指标、至少一个分组维度、topN，并使用 ASC 或 DESC。
+                所有绝对日期使用 yyyy-MM-dd，月份范围使用 BETWEEN 覆盖完整月份。
+                当前日期是 %s。结合 AnalysisContext 恢复省略条件，但不要虚构条件。
+                缺少必要槽位时返回 CLARIFICATION、needsDataQuery=false，并填写追问。
+                只识别意图和槽位，不计算差额、比例、趋势或排名。
+                """.formatted(context.currentDate());
+    }
+
+    @SuppressWarnings("unused")
+    private String legacySystemPrompt(AnalysisContext context) {
+        return """
                 你是支付数据分析意图识别器。只返回一个 JSON 对象，不要 Markdown，不要解释。
                 JSON 必须完整包含：
                 intent, confidence, metricText, dimensionTexts, filters, comparisonSubjects,
@@ -176,6 +201,17 @@ public class IntentRecognitionService {
     }
 
     private String mockResult(String question, AnalysisContext context) throws JsonProcessingException {
+        if (question.contains("\u8d70\u52bf")
+                || question.contains("\u8d8b\u52bf")
+                || question.contains("\u53d8\u5316")) {
+            return mockTrendResult(context);
+        }
+        if (question.contains("\u6700\u9ad8")
+                || question.contains("\u6700\u4f4e")
+                || question.contains("\u524d")
+                || question.contains("\u540e")) {
+            return mockRankResult(question, context);
+        }
         String metric = question.contains("人民币") ? "人民币总金额"
                 : question.contains("金额") ? "transactionAmount"
                 : question.contains("笔数") ? "transactionCount"
@@ -239,13 +275,62 @@ public class IntentRecognitionService {
                 dimensions,
                 filters,
                 subjects,
-                compareMonths || compareCountries ? List.of("difference") : List.of(),
+                compareMonths
+                        ? List.of("A_LESS_THAN_B", "ABSOLUTE_DIFFERENCE")
+                        : compareCountries
+                                ? List.of("A_MORE_THAN_B", "ABSOLUTE_DIFFERENCE")
+                                : List.of(),
                 null,
                 intent != IntentType.OUT_OF_SCOPE,
                 false,
                 List.of(),
                 "");
         return objectMapper.writeValueAsString(result);
+    }
+
+    private String mockTrendResult(AnalysisContext context)
+            throws JsonProcessingException {
+        LocalDate end = context.currentDate();
+        LocalDate start = end.minusMonths(5).withDayOfMonth(1);
+        return objectMapper.writeValueAsString(new IntentRecognitionResult(
+                IntentType.TREND_QUERY,
+                1,
+                "transactionAmount",
+                List.of("tradeMonth"),
+                List.of(new FilterCondition(
+                        "tradeDate", "BETWEEN", List.of(start.toString(), end.toString()))),
+                List.of(),
+                List.of("MONTH"),
+                null,
+                true,
+                false,
+                List.of(),
+                ""));
+    }
+
+    private String mockRankResult(String question, AnalysisContext context)
+            throws JsonProcessingException {
+        boolean ascending = question.contains("\u6700\u4f4e")
+                || question.contains("\u6700\u5c11")
+                || question.contains("\u540e");
+        int topN = question.contains("3") ? 3 : question.contains("5") ? 5 : 1;
+        LocalDate start = context.currentDate().withDayOfMonth(1);
+        return objectMapper.writeValueAsString(new IntentRecognitionResult(
+                IntentType.RANK_QUERY,
+                1,
+                question.contains("\u7b14\u6570") ? "transactionCount" : "transactionAmount",
+                List.of("acquiringRegion"),
+                List.of(new FilterCondition(
+                        "tradeDate",
+                        "BETWEEN",
+                        List.of(start.toString(), context.currentDate().toString()))),
+                List.of(),
+                List.of(ascending ? "ASC" : "DESC"),
+                topN,
+                true,
+                false,
+                List.of(),
+                ""));
     }
 
     public record RecognitionResponse(

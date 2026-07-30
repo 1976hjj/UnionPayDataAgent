@@ -13,6 +13,8 @@ public class QueryPlanValidator {
             IntentType.SINGLE_QUERY,
             IntentType.GROUP_QUERY,
             IntentType.COMPARE_QUERY,
+            IntentType.TREND_QUERY,
+            IntentType.RANK_QUERY,
             IntentType.CLARIFICATION,
             IntentType.OUT_OF_SCOPE);
 
@@ -46,6 +48,14 @@ public class QueryPlanValidator {
         }
         if (plan.intent() == IntentType.GROUP_QUERY && plan.dimensionCodes().isEmpty()) {
             missing.add("dimension");
+        }
+        if (plan.intent() == IntentType.RANK_QUERY && plan.dimensionCodes().isEmpty()) {
+            missing.add("dimension");
+        }
+        if (plan.intent() == IntentType.RANK_QUERY
+                && plan.topN() != null
+                && (plan.topN() <= 0 || plan.topN() > 100)) {
+            missing.add("topN");
         }
         if (plan.intent() == IntentType.COMPARE_QUERY) {
             if (plan.comparisonSubjects().size() != 2) {
