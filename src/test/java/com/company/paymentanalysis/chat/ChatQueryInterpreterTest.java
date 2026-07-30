@@ -11,6 +11,9 @@ import com.company.paymentanalysis.controller.ChatQueryController.QueryContext;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -39,7 +42,10 @@ class ChatQueryInterpreterTest {
                         """,
                         List.of()));
 
-        ChatQueryInterpreter interpreter = new ChatQueryInterpreter(llmClient, new ObjectMapper());
+        ChatQueryInterpreter interpreter = new ChatQueryInterpreter(
+                llmClient,
+                new ObjectMapper(),
+                Clock.fixed(Instant.parse("2026-07-30T00:00:00Z"), ZoneOffset.UTC));
         QueryContext current = new QueryContext(
                 "2026-07-01",
                 "2026-07-30",

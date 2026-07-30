@@ -29,6 +29,7 @@ import com.company.paymentanalysis.smartbi.SmartBiModels.Filter;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.company.paymentanalysis.smartbi.SmartBiQueryBuilder;
 import com.company.paymentanalysis.smartbi.SmartBiSqlPreview;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -82,6 +83,7 @@ public class ChatQueryWorkflowService {
     private final SmartBiQueryBuilder smartBiQueryBuilder;
     private final IntentHandlerRouter intentHandlerRouter;
     private final ChatAnalysisResultAdapter resultAdapter;
+    private final Clock clock;
     private final CompiledGraph<ChatState> graph;
 
     public ChatQueryWorkflowService(
@@ -91,7 +93,8 @@ public class ChatQueryWorkflowService {
             QueryPlanValidator queryPlanValidator,
             SmartBiQueryBuilder smartBiQueryBuilder,
             IntentHandlerRouter intentHandlerRouter,
-            ChatAnalysisResultAdapter resultAdapter) throws GraphStateException {
+            ChatAnalysisResultAdapter resultAdapter,
+            Clock clock) throws GraphStateException {
         this.interpreter = interpreter;
         this.recognitionService = recognitionService;
         this.queryPlanBuilder = queryPlanBuilder;
@@ -99,6 +102,7 @@ public class ChatQueryWorkflowService {
         this.smartBiQueryBuilder = smartBiQueryBuilder;
         this.intentHandlerRouter = intentHandlerRouter;
         this.resultAdapter = resultAdapter;
+        this.clock = clock;
         this.graph = new StateGraph<>(
                 ChatState.SCHEMA,
                 (AgentStateFactory<ChatState>) ChatState::new)
@@ -132,7 +136,7 @@ public class ChatQueryWorkflowService {
         ChatRequest request = required(state, REQUEST);
         QueryContext current = required(state, CONTEXT);
         RecognitionResponse recognitionResponse = recognitionService.recognize(
-                request.message(), AnalysisContext.from(current, LocalDate.now()));
+                request.message(), AnalysisContext.from(current, LocalDate.now(clock)));
         IntentRecognitionResult recognition = recognitionResponse.result();
         Interpretation parsed = interpreter.interpretForContextMerge(request.message(), current);
         WorkflowStep step = new WorkflowStep(
@@ -167,7 +171,7 @@ public class ChatQueryWorkflowService {
         QueryContext context = required(state, CONTEXT);
         IntentRecognitionResult recognition = required(state, RECOGNITION);
         QueryPlan queryPlan = queryPlanValidator.validate(queryPlanBuilder.build(
-                recognition, AnalysisContext.from(context, LocalDate.now())));
+                recognition, AnalysisContext.from(context, LocalDate.now(clock))));
         String status;
         String detail;
         if (queryPlan.intent() == IntentType.OUT_OF_SCOPE || "OUT_OF_SCOPE".equals(parsed.intent())) {
@@ -227,7 +231,7 @@ public class ChatQueryWorkflowService {
         QueryPlan queryPlan = required(state, QUERY_PLAN);
         AnalysisExecutionResult execution = intentHandlerRouter.route(
                 queryPlan,
-                AnalysisContext.from(context, LocalDate.now()));
+                AnalysisContext.from(context, LocalDate.now(clock)));
         ChatAnalysisResultAdapter.AdaptedAnalysisResult adapted =
                 resultAdapter.adapt(execution, queryPlan);
         String workflowStatus = execution.status() == ExecutionStatus.SUCCESS

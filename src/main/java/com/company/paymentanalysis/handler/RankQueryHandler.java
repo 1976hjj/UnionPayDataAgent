@@ -4,10 +4,10 @@ import com.company.paymentanalysis.analysis.AnalysisContext;
 import com.company.paymentanalysis.analysis.IntentType;
 import com.company.paymentanalysis.analysis.QueryPlan;
 import com.company.paymentanalysis.calculation.AnalysisCalculationEngine;
-import com.company.paymentanalysis.calculation.NullValuePolicy;
 import com.company.paymentanalysis.calculation.RankingRequest;
 import com.company.paymentanalysis.calculation.RankingResult;
 import com.company.paymentanalysis.calculation.SortDirection;
+import com.company.paymentanalysis.config.AnalysisProperties;
 import com.company.paymentanalysis.execution.AnalysisExecutionResult;
 import com.company.paymentanalysis.execution.ExecutionStatus;
 import com.company.paymentanalysis.execution.QueryExecutionService;
@@ -22,12 +22,15 @@ public class RankQueryHandler implements IntentHandler {
 
     private final QueryExecutionService executionService;
     private final AnalysisCalculationEngine calculationEngine;
+    private final AnalysisProperties properties;
 
     public RankQueryHandler(
             QueryExecutionService executionService,
-            AnalysisCalculationEngine calculationEngine) {
+            AnalysisCalculationEngine calculationEngine,
+            AnalysisProperties properties) {
         this.executionService = executionService;
         this.calculationEngine = calculationEngine;
+        this.properties = properties;
     }
 
     @Override
@@ -60,8 +63,8 @@ public class RankQueryHandler implements IntentHandler {
                 new RankingRequest(
                         plan.metricCode(),
                         direction(plan),
-                        plan.topN() == null ? 10 : plan.topN(),
-                        NullValuePolicy.EXCLUDE));
+                        limit(plan),
+                        properties.ranking().nullValuePolicy()));
         return new AnalysisExecutionResult(
                 UUID.randomUUID().toString(),
                 UUID.randomUUID().toString(),
@@ -86,6 +89,16 @@ public class RankQueryHandler implements IntentHandler {
         if (plan.dimensionCodes().isEmpty()) {
             throw new IllegalArgumentException("排名查询必须包含分组维度");
         }
+        if (plan.topN() != null && plan.topN() > properties.ranking().maxTopN()) {
+            throw new IllegalArgumentException(
+                    "排名 TopN 不能超过 " + properties.ranking().maxTopN());
+        }
+    }
+
+    private int limit(QueryPlan plan) {
+        return plan.topN() == null
+                ? properties.ranking().defaultTopN()
+                : plan.topN();
     }
 
     private SortDirection direction(QueryPlan plan) {

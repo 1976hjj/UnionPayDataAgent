@@ -8,6 +8,7 @@ import com.company.paymentanalysis.calculation.CalculationType;
 import com.company.paymentanalysis.calculation.ComparisonExpression;
 import com.company.paymentanalysis.calculation.ComparisonRequest;
 import com.company.paymentanalysis.calculation.ComparisonResult;
+import com.company.paymentanalysis.config.AnalysisProperties;
 import com.company.paymentanalysis.execution.AnalysisExecutionResult;
 import com.company.paymentanalysis.execution.ExecutionStatus;
 import com.company.paymentanalysis.strategy.comparison.ComparisonQueryStrategy;
@@ -22,12 +23,15 @@ public class CompareQueryHandler implements IntentHandler {
 
     private final List<ComparisonQueryStrategy> strategies;
     private final AnalysisCalculationEngine calculationEngine;
+    private final AnalysisProperties properties;
 
     public CompareQueryHandler(
             List<ComparisonQueryStrategy> strategies,
-            AnalysisCalculationEngine calculationEngine) {
+            AnalysisCalculationEngine calculationEngine,
+            AnalysisProperties properties) {
         this.strategies = List.copyOf(strategies);
         this.calculationEngine = calculationEngine;
+        this.properties = properties;
     }
 
     @Override
@@ -54,7 +58,8 @@ public class CompareQueryHandler implements IntentHandler {
                             plan.comparisonSubjects().get(1).label(),
                             expression(plan.requestedCalculations()),
                             calculations(plan.requestedCalculations()),
-                            4));
+                            properties.calculation().rateScale(),
+                            properties.calculation().roundingMode()));
             status = ExecutionStatus.SUCCESS;
         }
         return new AnalysisExecutionResult(

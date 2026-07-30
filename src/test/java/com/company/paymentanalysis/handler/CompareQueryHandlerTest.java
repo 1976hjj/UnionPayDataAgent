@@ -11,6 +11,7 @@ import com.company.paymentanalysis.analysis.IntentType;
 import com.company.paymentanalysis.analysis.QueryPlan;
 import com.company.paymentanalysis.calculation.ComparisonResult;
 import com.company.paymentanalysis.calculation.DefaultAnalysisCalculationEngine;
+import com.company.paymentanalysis.config.AnalysisProperties;
 import com.company.paymentanalysis.execution.AnalysisExecutionResult;
 import com.company.paymentanalysis.execution.ExecutionStatus;
 import com.company.paymentanalysis.execution.QueryExecutionService;
@@ -34,7 +35,8 @@ class CompareQueryHandlerTest {
                 List.of(
                         new GroupedComparisonQueryStrategy(service),
                         new SeparateComparisonQueryStrategy(service)),
-                new DefaultAnalysisCalculationEngine());
+                new DefaultAnalysisCalculationEngine(),
+                properties());
 
         AnalysisExecutionResult execution = handler.execute(monthPlan(), null);
         ComparisonResult result = (ComparisonResult) execution.calculationResult();
@@ -53,7 +55,8 @@ class CompareQueryHandlerTest {
                 row("tradeMonth", "2026-06", "800", 0))));
         CompareQueryHandler handler = new CompareQueryHandler(
                 List.of(new GroupedComparisonQueryStrategy(service)),
-                new DefaultAnalysisCalculationEngine());
+                new DefaultAnalysisCalculationEngine(),
+                properties());
 
         AnalysisExecutionResult result = handler.execute(monthPlan(), null);
 
@@ -70,7 +73,8 @@ class CompareQueryHandlerTest {
                 .thenReturn(execution(List.of(total("1000"))));
         CompareQueryHandler handler = new CompareQueryHandler(
                 List.of(new SeparateComparisonQueryStrategy(service)),
-                new DefaultAnalysisCalculationEngine());
+                new DefaultAnalysisCalculationEngine(),
+                properties());
         QueryPlan plan = new QueryPlan(
                 IntentType.COMPARE_QUERY,
                 1,
@@ -115,6 +119,10 @@ class CompareQueryHandlerTest {
                 false,
                 List.of(),
                 "");
+    }
+
+    private AnalysisProperties properties() {
+        return new AnalysisProperties(null, null, null, null);
     }
 
     private AnalysisExecutionResult execution(List<NormalizedDataRow> rows) {

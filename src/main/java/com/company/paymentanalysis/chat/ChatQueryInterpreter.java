@@ -9,12 +9,17 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.Serializable;
+import java.time.Clock;
+import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -38,10 +43,15 @@ public class ChatQueryInterpreter {
 
     private final OpenAiCompatibleLlmClient llmClient;
     private final ObjectMapper objectMapper;
+    private final Clock clock;
 
-    public ChatQueryInterpreter(OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper) {
+    public ChatQueryInterpreter(
+            OpenAiCompatibleLlmClient llmClient,
+            ObjectMapper objectMapper,
+            Clock clock) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
+        this.clock = clock;
     }
 
     public InterpretationResult interpret(ChatRequest request, QueryContext current) {
@@ -73,18 +83,15 @@ public class ChatQueryInterpreter {
                                     channel、region、merchantType、paymentMethod。
                                     用户要求“按年/每年”时使用 tradeYear，“按月/每月/每个月”时使用 tradeMonth，
                                     “按日/每天/日期维度”时使用 tradeDate。
-                                    当前日期固定为 2026-07-30；“本月”为 2026-07-01 至 2026-07-30，
-                                    “上月”为 2026-06-01 至 2026-06-30。
-                                    “近三个月”固定为 2026-05-01 至 2026-07-30。
-                                    用户要求“近三个月”时必须返回：
-                                    "periodAction":"SET","startDate":"2026-05-01",
-                                    "endDate":"2026-07-30","periodLabel":"近三个月"。
+                                    当前日期由用户消息末尾提供。相对时间必须按该日期解析。
                                     不要把用户原文、提示词或任何密钥放进 explanation。
                                     """),
                             new ChatMessage(
                                     "user",
                                     "当前上下文："
                                             + objectMapper.writeValueAsString(current)
+                                            + "\n当前日期："
+                                            + LocalDate.now(clock)
                                             + "\n用户本轮输入："
                                             + request.message())),
                     mockJson);
@@ -160,21 +167,37 @@ public class ChatQueryInterpreter {
         String startDate = "";
         String endDate = "";
         String periodLabel = "";
-        if (message.contains("最近7天") || message.contains("近7天")) {
+        LocalDate today = LocalDate.now(clock);
+        if (message.contains("近三个月") || message.contains("最近三个月")) {
             periodAction = "SET";
-            startDate = "2026-07-24";
-            endDate = "2026-07-30";
+            startDate = today.minusMonths(2).withDayOfMonth(1).toString();
+            endDate = today.toString();
+            periodLabel = "近三个月";
+        } else if (message.contains("最近7天") || message.contains("近7天")) {
+            periodAction = "SET";
+            startDate = today.minusDays(6).toString();
+            endDate = today.toString();
             periodLabel = "最近7天";
-        } else if (message.contains("上月") || message.contains("6月") || message.contains("六月")) {
+        } else if (message.contains("上月")) {
             periodAction = "SET";
-            startDate = "2026-06-01";
-            endDate = "2026-06-30";
-            periodLabel = "2026年6月";
-        } else if (message.contains("本月") || message.contains("7月") || message.contains("七月")) {
+            LocalDate previousMonth = today.minusMonths(1);
+            startDate = previousMonth.withDayOfMonth(1).toString();
+            endDate = previousMonth.withDayOfMonth(previousMonth.lengthOfMonth()).toString();
+            periodLabel = previousMonth.getYear() + "年" + previousMonth.getMonthValue() + "月";
+        } else if (message.contains("本月")) {
             periodAction = "SET";
-            startDate = "2026-07-01";
-            endDate = "2026-07-30";
-            periodLabel = "2026年7月";
+            startDate = today.withDayOfMonth(1).toString();
+            endDate = today.toString();
+            periodLabel = today.getYear() + "年" + today.getMonthValue() + "月";
+        } else {
+            List<Integer> mentionedMonths = mentionedMonths(message);
+            if (mentionedMonths.size() == 1) {
+                YearMonth month = YearMonth.of(today.getYear(), mentionedMonths.get(0));
+                periodAction = "SET";
+                startDate = month.atDay(1).toString();
+                endDate = month.atEndOfMonth().toString();
+                periodLabel = month.getYear() + "年" + month.getMonthValue() + "月";
+            }
         }
 
         List<String> metrics = detectMetrics(message);
@@ -268,6 +291,15 @@ public class ChatQueryInterpreter {
                         "本月", "上月", "最近", "月", "天", "汇总", "全部", "追加", "加上", "分组")
                 .stream()
                 .anyMatch(normalized::contains);
+    }
+
+    private List<Integer> mentionedMonths(String message) {
+        Matcher matcher = Pattern.compile("(?<!\\d)(1[0-2]|[1-9])月").matcher(message);
+        LinkedHashSet<Integer> months = new LinkedHashSet<>();
+        while (matcher.find()) {
+            months.add(Integer.parseInt(matcher.group(1)));
+        }
+        return List.copyOf(months);
     }
 
     private boolean containsRemovalWord(String message) {

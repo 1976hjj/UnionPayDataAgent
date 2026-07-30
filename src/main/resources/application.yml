@@ -41,3 +41,19 @@ llm:
   temperature: ${LLM_TEMPERATURE:0.1}
   max-attempts: ${LLM_MAX_ATTEMPTS:4}
   retry-delay-ms: ${LLM_RETRY_DELAY_MS:1200}
+
+analysis:
+  calculation:
+    rate-scale: ${ANALYSIS_RATE_SCALE:4}
+    rounding-mode: ${ANALYSIS_ROUNDING_MODE:HALF_UP}
+  ranking:
+    default-top-n: ${ANALYSIS_RANKING_DEFAULT_TOP_N:10}
+    max-top-n: ${ANALYSIS_RANKING_MAX_TOP_N:100}
+    execution-mode: ${ANALYSIS_RANKING_EXECUTION_MODE:HYBRID}
+    null-value-policy: ${ANALYSIS_RANKING_NULL_VALUE_POLICY:EXCLUDE}
+  trend:
+    fill-missing-periods: ${ANALYSIS_TREND_FILL_MISSING_PERIODS:false}
+    duplicate-period-policy: ${ANALYSIS_TREND_DUPLICATE_PERIOD_POLICY:ERROR}
+  comparison:
+    prefer-grouped-query: ${ANALYSIS_COMPARISON_PREFER_GROUPED:true}
+    fallback-to-separate-query: ${ANALYSIS_COMPARISON_FALLBACK_SEPARATE:true}

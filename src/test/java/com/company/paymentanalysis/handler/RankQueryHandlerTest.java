@@ -11,6 +11,7 @@ import com.company.paymentanalysis.analysis.QueryPlan;
 import com.company.paymentanalysis.calculation.DefaultAnalysisCalculationEngine;
 import com.company.paymentanalysis.calculation.RankingResult;
 import com.company.paymentanalysis.calculation.SortDirection;
+import com.company.paymentanalysis.config.AnalysisProperties;
 import com.company.paymentanalysis.execution.AnalysisExecutionResult;
 import com.company.paymentanalysis.execution.ExecutionStatus;
 import com.company.paymentanalysis.execution.QueryExecutionService;
@@ -30,7 +31,10 @@ class RankQueryHandlerTest {
                 row(1, "华南", "30"),
                 row(2, "华北", "20"))));
         RankQueryHandler handler =
-                new RankQueryHandler(service, new DefaultAnalysisCalculationEngine());
+                new RankQueryHandler(
+                        service,
+                        new DefaultAnalysisCalculationEngine(),
+                        properties());
 
         AnalysisExecutionResult result = handler.execute(plan(List.of("DESC"), 2), null);
         RankingResult ranking = (RankingResult) result.calculationResult();
@@ -49,7 +53,10 @@ class RankQueryHandlerTest {
                 row(1, "法国", "100"),
                 row(2, "德国", "200"))));
         RankQueryHandler handler =
-                new RankQueryHandler(service, new DefaultAnalysisCalculationEngine());
+                new RankQueryHandler(
+                        service,
+                        new DefaultAnalysisCalculationEngine(),
+                        properties());
 
         RankingResult ranking = (RankingResult)
                 handler.execute(plan(List.of("LOWEST", "ASC"), 1), null)
@@ -82,6 +89,10 @@ class RankQueryHandlerTest {
                 false,
                 List.of(),
                 "");
+    }
+
+    private AnalysisProperties properties() {
+        return new AnalysisProperties(null, null, null, null);
     }
 
     private AnalysisExecutionResult execution(List<NormalizedDataRow> rows) {
