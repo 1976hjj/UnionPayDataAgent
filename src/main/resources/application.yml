@@ -1,0 +1,43 @@
+spring:
+  application:
+    name: payment-analysis
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:800ms}
+      timeout: ${REDIS_TIMEOUT:1200ms}
+
+server:
+  port: 8080
+  shutdown: graceful
+
+chat:
+  memory:
+    redis-enabled: ${CHAT_MEMORY_REDIS_ENABLED:true}
+    key-prefix: ${CHAT_MEMORY_KEY_PREFIX:payment-analysis:chat:}
+    ttl-days: ${CHAT_MEMORY_TTL_DAYS:30}
+    max-conversations: ${CHAT_MEMORY_MAX_CONVERSATIONS:50}
+
+smartbi:
+  base-url: ${SMARTBI_BASE_URL:http://localhost:${server.port}}
+  query-path: ${SMARTBI_QUERY_PATH:/api/mock/smartbi/query}
+  dataset-id: ${SMARTBI_DATASET_ID:Iff8080810196b306b3067b2a0196b3067b2a0000}
+  session-cookie: ${SMARTBI_SESSION_COOKIE:}
+  authorization: ${SMARTBI_AUTHORIZATION:}
+
+llm:
+  mock-enabled: ${LLM_MOCK_ENABLED:false}
+  base-url: ${LLM_BASE_URL:https://open.bigmodel.cn}
+  api-key: ${LLM_API_KEY:}
+  model: ${LLM_MODEL:glm-4-flash-250414}
+  chat-path: ${LLM_CHAT_PATH:/api/paas/v4/chat/completions}
+  json-mode: ${LLM_JSON_MODE:true}
+  thinking-supported: ${LLM_THINKING_SUPPORTED:false}
+  thinking-enabled: ${LLM_THINKING_ENABLED:false}
+  max-tokens: ${LLM_MAX_TOKENS:2048}
+  temperature: ${LLM_TEMPERATURE:0.1}
+  max-attempts: ${LLM_MAX_ATTEMPTS:4}
+  retry-delay-ms: ${LLM_RETRY_DELAY_MS:1200}

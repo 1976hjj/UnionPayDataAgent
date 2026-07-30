@@ -1,0 +1,52 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: payment-analysis-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - payment-analysis-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  payment-analysis:
+    build:
+      context: .
+    image: payment-analysis:${APP_VERSION:-dev}
+    container_name: payment-analysis
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      JAVA_OPTS: >-
+        -XX:MaxRAMPercentage=75.0
+        -Dfile.encoding=UTF-8
+      SMARTBI_BASE_URL: ${SMARTBI_BASE_URL:-http://localhost:8080}
+      SMARTBI_QUERY_PATH: ${SMARTBI_QUERY_PATH:-/api/mock/smartbi/query}
+      SMARTBI_DATASET_ID: ${SMARTBI_DATASET_ID:-Iff8080810196b306b3067b2a0196b3067b2a0000}
+      SMARTBI_SESSION_COOKIE: ${SMARTBI_SESSION_COOKIE:-}
+      SMARTBI_AUTHORIZATION: ${SMARTBI_AUTHORIZATION:-}
+      LLM_MOCK_ENABLED: ${LLM_MOCK_ENABLED:-false}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://open.bigmodel.cn}
+      LLM_CHAT_PATH: ${LLM_CHAT_PATH:-/api/paas/v4/chat/completions}
+      LLM_MODEL: ${LLM_MODEL:-glm-4-flash-250414}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CHAT_MEMORY_REDIS_ENABLED: "true"
+      CHAT_MEMORY_TTL_DAYS: ${CHAT_MEMORY_TTL_DAYS:-30}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  payment-analysis-redis-data:
