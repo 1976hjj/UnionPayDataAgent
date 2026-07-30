@@ -208,7 +208,7 @@ class ChatQueryControllerTest {
     }
 
     @Test
-    void defaultsToCurrentMonthWhenTimeIsOmitted() throws Exception {
+    void asksForTimeWhenTimeIsOmitted() throws Exception {
         mockMvc.perform(post("/api/chat/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -220,10 +220,10 @@ class ChatQueryControllerTest {
                                 }
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("completed"))
-                .andExpect(jsonPath("$.context.periodLabel").value("本月（默认）"))
+                .andExpect(jsonPath("$.status").value("clarifying"))
+                .andExpect(jsonPath("$.reply").value(org.hamcrest.Matchers.containsString("时间")))
                 .andExpect(jsonPath("$.context.dimensionIds.length()").value(0))
-                .andExpect(jsonPath("$.result.rows.length()").value(1))
+                .andExpect(jsonPath("$.result").doesNotExist())
                 .andExpect(jsonPath("$.workflowSteps[5].status").value("COMPLETED"));
     }
 
@@ -250,6 +250,28 @@ class ChatQueryControllerTest {
                 .andExpect(jsonPath("$.queryPlan.rows[0]").value("月 (sett_dt_Month2)"))
                 .andExpect(jsonPath("$.queryPlan.sqlPreview")
                         .value(org.hamcrest.Matchers.containsString("GROUP BY sett_dt_Month2")));
+    }
+
+    @Test
+    void comparesTwoMonthsWithoutCollapsingThemIntoOnePeriod() throws Exception {
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId": "test-user-compare-months",
+                                  "sessionId": "demo-compare-months",
+                                  "message": "6月比7月少了多少金额",
+                                  "context": null
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("completed"))
+                .andExpect(jsonPath("$.result.rows.length()").value(2))
+                .andExpect(jsonPath("$.result.rows[0].comparisonSubject").value("6月"))
+                .andExpect(jsonPath("$.result.rows[1].comparisonSubject").value("7月"))
+                .andExpect(jsonPath("$.queryPlan.filters.length()").value(2))
+                .andExpect(jsonPath("$.queryPlan.sqlPreview")
+                        .value(org.hamcrest.Matchers.containsString(" OR trade_date BETWEEN")));
     }
 
     @Test

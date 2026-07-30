@@ -99,6 +99,14 @@ public class ChatQueryInterpreter {
         return llmClient.modelLabel();
     }
 
+    /**
+     * Compatibility bridge for the existing ADD/REMOVE/CLEAR conversation merge rules.
+     * Intent recognition and SmartBI planning are handled by the new analysis pipeline.
+     */
+    public Interpretation interpretForContextMerge(String message, QueryContext current) {
+        return deterministicInterpretation(message, current);
+    }
+
     private Interpretation validateAndNormalize(Interpretation value, Interpretation fallback) {
         if (value == null) {
             return fallback;

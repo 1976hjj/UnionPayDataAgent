@@ -4,8 +4,15 @@ import static org.bsc.langgraph4j.StateGraph.END;
 import static org.bsc.langgraph4j.StateGraph.START;
 import static org.bsc.langgraph4j.action.AsyncNodeAction.node_async;
 
+import com.company.paymentanalysis.analysis.AnalysisContext;
+import com.company.paymentanalysis.analysis.IntentRecognitionResult;
+import com.company.paymentanalysis.analysis.IntentRecognitionService;
+import com.company.paymentanalysis.analysis.IntentRecognitionService.RecognitionResponse;
+import com.company.paymentanalysis.analysis.IntentType;
+import com.company.paymentanalysis.analysis.QueryPlan;
+import com.company.paymentanalysis.analysis.QueryPlanBuilder;
+import com.company.paymentanalysis.analysis.QueryPlanValidator;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.Interpretation;
-import com.company.paymentanalysis.chat.ChatQueryInterpreter.InterpretationResult;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.ActionOperation;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.ActionPlan;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatQueryPlan;
@@ -16,7 +23,11 @@ import com.company.paymentanalysis.controller.ChatQueryController.QueryFilter;
 import com.company.paymentanalysis.controller.ChatQueryController.QueryResult;
 import com.company.paymentanalysis.controller.ChatQueryController.ResultColumn;
 import com.company.paymentanalysis.controller.ChatQueryController.WorkflowStep;
+import com.company.paymentanalysis.smartbi.SmartBiModels.Filter;
+import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
+import com.company.paymentanalysis.smartbi.SmartBiQueryBuilder;
 import com.company.paymentanalysis.smartbi.SmartBiSqlPreview;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -38,6 +49,9 @@ public class ChatQueryWorkflowService {
     private static final String REQUEST = "request";
     private static final String CONTEXT = "context";
     private static final String INTERPRETATION = "interpretation";
+    private static final String RECOGNITION = "recognition";
+    private static final String QUERY_PLAN = "queryPlan";
+    private static final String SMARTBI_REQUEST = "smartBiRequest";
     private static final String LLM_MESSAGE = "llmMessage";
     private static final String STATUS = "status";
     private static final String PLAN = "plan";
@@ -79,10 +93,23 @@ public class ChatQueryWorkflowService {
             "paymentMethod", List.of("银行卡", "云闪付", "二维码", "其他方式"));
 
     private final ChatQueryInterpreter interpreter;
+    private final IntentRecognitionService recognitionService;
+    private final QueryPlanBuilder queryPlanBuilder;
+    private final QueryPlanValidator queryPlanValidator;
+    private final SmartBiQueryBuilder smartBiQueryBuilder;
     private final CompiledGraph<ChatState> graph;
 
-    public ChatQueryWorkflowService(ChatQueryInterpreter interpreter) throws GraphStateException {
+    public ChatQueryWorkflowService(
+            ChatQueryInterpreter interpreter,
+            IntentRecognitionService recognitionService,
+            QueryPlanBuilder queryPlanBuilder,
+            QueryPlanValidator queryPlanValidator,
+            SmartBiQueryBuilder smartBiQueryBuilder) throws GraphStateException {
         this.interpreter = interpreter;
+        this.recognitionService = recognitionService;
+        this.queryPlanBuilder = queryPlanBuilder;
+        this.queryPlanValidator = queryPlanValidator;
+        this.smartBiQueryBuilder = smartBiQueryBuilder;
         this.graph = new StateGraph<>(
                 ChatState.SCHEMA,
                 (AgentStateFactory<ChatState>) ChatState::new)
@@ -115,17 +142,20 @@ public class ChatQueryWorkflowService {
     private Map<String, Object> interpretMessage(ChatState state) {
         ChatRequest request = required(state, REQUEST);
         QueryContext current = required(state, CONTEXT);
-        InterpretationResult interpretationResult = interpreter.interpret(request, current);
-        Interpretation parsed = interpretationResult.interpretation();
+        RecognitionResponse recognitionResponse = recognitionService.recognize(
+                request.message(), AnalysisContext.from(current, LocalDate.now()));
+        IntentRecognitionResult recognition = recognitionResponse.result();
+        Interpretation parsed = interpreter.interpretForContextMerge(request.message(), current);
         WorkflowStep step = new WorkflowStep(
                 "interpretMessage",
                 "大模型解析查询意图",
                 "COMPLETED",
-                interpreter.engineLabel() + " 已识别意图：" + intentName(parsed.intent())
-                        + "；仅保留允许的度量、维度和日期");
+                recognitionService.engineLabel() + " 已识别意图：" + recognition.intent()
+                        + "；置信度：" + recognition.confidence());
         return Map.of(
                 INTERPRETATION, parsed,
-                LLM_MESSAGE, interpretationResult.llmMessage(),
+                RECOGNITION, recognition,
+                LLM_MESSAGE, recognitionResponse.llmMessage(),
                 STEPS, appendStep(state, step));
     }
 
@@ -146,23 +176,27 @@ public class ChatQueryWorkflowService {
     private Map<String, Object> validateQueryScope(ChatState state) {
         Interpretation parsed = required(state, INTERPRETATION);
         QueryContext context = required(state, CONTEXT);
+        IntentRecognitionResult recognition = required(state, RECOGNITION);
+        QueryPlan queryPlan = queryPlanValidator.validate(queryPlanBuilder.build(
+                recognition, AnalysisContext.from(context, LocalDate.now())));
         String status;
         String detail;
-        if ("OUT_OF_SCOPE".equals(parsed.intent())) {
+        if (queryPlan.intent() == IntentType.OUT_OF_SCOPE || "OUT_OF_SCOPE".equals(parsed.intent())) {
             status = "rejected";
             detail = "请求超出支付查数范围，后续查询节点将跳过";
-        } else if ("GREETING".equals(parsed.intent()) || "RESET".equals(parsed.intent())) {
+        } else if ("GREETING".equals(parsed.intent()) || "RESET".equals(parsed.intent())
+                || queryPlan.isClarification()) {
             status = "clarifying";
-            detail = "当前无需取数，等待用户补充查询条件";
-        } else if (context.metricIds().isEmpty()) {
-            status = "clarifying";
-            detail = "缺少度量，请选择交易金额、交易笔数或支付成功率";
+            detail = queryPlan.clarificationQuestion().isBlank()
+                    ? "当前无需取数，等待用户补充查询条件"
+                    : queryPlan.clarificationQuestion();
         } else {
             status = "completed";
-            detail = "校验通过：时间、度量和维度均在白名单内";
+            detail = "QueryPlan 校验通过：指标、时间、维度和对比对象完整";
         }
         return Map.of(
                 STATUS, status,
+                QUERY_PLAN, queryPlan,
                 STEPS, appendStep(state, new WorkflowStep(
                         "validateQueryScope", "校验查询范围", "COMPLETED", detail)));
     }
@@ -172,27 +206,21 @@ public class ChatQueryWorkflowService {
             return Map.of(STEPS, appendStep(state, skipped(
                     "buildSmartBiQueryPlan", "生成 SmartBI 查询计划", "查询条件尚未满足，未生成 JSON")));
         }
-        QueryContext context = required(state, CONTEXT);
-        List<String> rows = context.dimensionIds().stream()
-                .map(id -> DIMENSION_NAMES.get(id) + " (" + DIMENSION_FIELDS.get(id) + ")")
+        QueryPlan queryPlan = required(state, QUERY_PLAN);
+        QueryRequest smartBiRequest = smartBiQueryBuilder.build(queryPlan);
+        List<String> rows = displayRows(smartBiRequest);
+        List<String> columns = List.of(metricDisplay(queryPlan.metricCode())
+                + " (" + smartBiQueryBuilder.metricField(queryPlan.metricCode()) + ")");
+        List<QueryFilter> displayFilters = smartBiRequest.filters().stream()
+                .map(this::displayFilter)
                 .toList();
-        List<String> columns = context.metricIds().stream()
-                .map(id -> METRIC_NAMES.get(id) + " (" + METRIC_FIELDS.get(id) + ")")
-                .toList();
-        List<String> predicates =
-                List.of("trade_date BETWEEN '" + context.startDate() + "' AND '" + context.endDate() + "'");
         ChatQueryPlan plan = new ChatQueryPlan(
-                "Mock SmartBI", "payment_query_dataset", rows, columns,
-                List.of(new QueryFilter(
-                        "交易日期 (trade_date)", "BETWEEN", List.of(context.startDate(), context.endDate()))),
-                SmartBiSqlPreview.build(
-                        "payment_query_dataset",
-                        context.dimensionIds().stream().map(DIMENSION_FIELDS::get).toList(),
-                        context.metricIds().stream().map(METRIC_FIELDS::get).toList(),
-                        predicates));
+                "Mock SmartBI", smartBiRequest.dataSetId(), rows, columns,
+                displayFilters, SmartBiSqlPreview.from(smartBiRequest));
         String rowDetail = rows.isEmpty() ? "汇总查询" : "分组：" + String.join("、", rows);
         return Map.of(
                 PLAN, plan,
+                SMARTBI_REQUEST, smartBiRequest,
                 STEPS, appendStep(state, new WorkflowStep(
                         "buildSmartBiQueryPlan",
                         "生成 SmartBI 查询计划",
@@ -207,7 +235,10 @@ public class ChatQueryWorkflowService {
                     "executeMockSmartBiQuery", "执行 Mock SmartBI", "未执行数据查询")));
         }
         QueryContext context = required(state, CONTEXT);
-        QueryResult result = mockResult(context);
+        QueryPlan queryPlan = required(state, QUERY_PLAN);
+        QueryResult result = queryPlan.intent() == IntentType.COMPARE_QUERY
+                ? mockComparisonResult(queryPlan)
+                : mockResult(context);
         return Map.of(
                 RESULT, result,
                 STEPS, appendStep(state, new WorkflowStep(
@@ -224,7 +255,9 @@ public class ChatQueryWorkflowService {
         QueryResult result = "completed".equals(status) ? required(state, RESULT) : null;
         ChatQueryPlan plan = "completed".equals(status) ? required(state, PLAN) : null;
         ChatRequest request = required(state, REQUEST);
-        String reply = reply(status, required(state, INTERPRETATION), context, result);
+        QueryPlan validatedQueryPlan = required(state, QUERY_PLAN);
+        String reply = reply(
+                status, required(state, INTERPRETATION), validatedQueryPlan, context, result);
         List<WorkflowStep> completedSteps = appendStep(state, new WorkflowStep(
                 "generateChatResponse",
                 "生成前端结果",
@@ -236,7 +269,7 @@ public class ChatQueryWorkflowService {
                 suggestions(status, context),
                 context,
                 result,
-                "LangGraph4j → " + interpreter.engineLabel() + " → Mock SmartBI",
+                "LangGraph4j → " + recognitionService.engineLabel() + " → Mock SmartBI",
                 completedSteps,
                 plan,
                 request.sessionId(),
@@ -265,11 +298,6 @@ public class ChatQueryWorkflowService {
 
         List<String> metrics = applyActions(current.metricIds(), parsed.metricAction());
         List<String> dimensions = applyActions(current.dimensionIds(), parsed.dimensionAction());
-        if ("QUERY".equals(parsed.intent()) && (startDate.isBlank() || endDate.isBlank())) {
-            startDate = "2026-07-01";
-            endDate = "2026-07-30";
-            periodLabel = "本月（默认）";
-        }
         return new QueryContext(startDate, endDate, periodLabel, metrics, dimensions);
     }
 
@@ -351,6 +379,7 @@ public class ChatQueryWorkflowService {
     private String reply(
             String status,
             Interpretation parsed,
+            QueryPlan queryPlan,
             QueryContext context,
             QueryResult result) {
         if ("rejected".equals(status)) {
@@ -363,7 +392,9 @@ public class ChatQueryWorkflowService {
             return "你好，我只负责支付数据查数。你可以说“查本月交易金额，按受理渠道分组”。";
         }
         if ("clarifying".equals(status)) {
-            return "时间和分组方式已记住，还需要至少一个度量：交易金额、交易笔数或支付成功率。";
+            return queryPlan.clarificationQuestion().isBlank()
+                    ? "查询条件还不完整，请补充指标、时间、分组维度或两个对比对象。"
+                    : queryPlan.clarificationQuestion();
         }
         return "已根据多轮对话完成查询：" + result.summary() + "。下方可以查看结果和 LangGraph4j 执行过程。";
     }
@@ -393,13 +424,81 @@ public class ChatQueryWorkflowService {
         return ids.stream().map(catalog::get).toList().stream().reduce((a, b) -> a + "、" + b).orElse("");
     }
 
-    private String intentName(String intent) {
-        return switch (intent) {
-            case "QUERY" -> "支付数据查询";
-            case "GREETING" -> "问候";
-            case "RESET" -> "重置查询";
-            default -> "超出查数范围";
+    private List<String> displayRows(QueryRequest request) {
+        Map<String, String> fieldNames = Map.ofEntries(
+                Map.entry("sett_dt_Year", "年"),
+                Map.entry("sett_dt_Month2", "月"),
+                Map.entry("sett_dt_Day", "日"),
+                Map.entry("accept_channel", "受理渠道"),
+                Map.entry("region_name", "地区"),
+                Map.entry("acq_mkt_ch", "收单地区"),
+                Map.entry("merchant_type", "商户类型"),
+                Map.entry("payment_method", "支付方式"));
+        return request.rows().stream()
+                .map(field -> fieldNames.getOrDefault(field, field) + " (" + field + ")")
+                .toList();
+    }
+
+    private QueryResult mockComparisonResult(QueryPlan plan) {
+        String metricName = metricDisplay(plan.metricCode());
+        List<ResultColumn> columns = List.of(
+                new ResultColumn("comparisonSubject", "对比对象", false),
+                new ResultColumn(plan.metricCode(), metricName, true));
+        List<Map<String, String>> rows = new ArrayList<>();
+        for (int index = 0; index < plan.comparisonSubjects().size(); index++) {
+            Map<String, String> row = new LinkedHashMap<>();
+            row.put("comparisonSubject", plan.comparisonSubjects().get(index).label());
+            row.put(plan.metricCode(), comparisonMetricValue(plan.metricCode(), index));
+            rows.add(row);
+        }
+        return new QueryResult(
+                plan.comparisonSubjects().get(0).label() + " 与 "
+                        + plan.comparisonSubjects().get(1).label() + " 的 " + metricName
+                        + "对比，绝对差额 " + comparisonDifference(plan.metricCode()),
+                columns,
+                List.copyOf(rows));
+    }
+
+    private String comparisonMetricValue(String metricCode, int index) {
+        return switch (metricCode) {
+            case "rmbAmount", "transactionAmount" ->
+                    index == 0 ? "¥52,640,000" : "¥31,280,000";
+            case "transactionCount" -> index == 0 ? "526,400" : "318,200";
+            case "successRate" -> index == 0 ? "98.12%" : "97.68%";
+            default -> "";
         };
+    }
+
+    private String comparisonDifference(String metricCode) {
+        return switch (metricCode) {
+            case "rmbAmount", "transactionAmount" -> "¥21,360,000";
+            case "transactionCount" -> "208,200";
+            case "successRate" -> "0.44 个百分点";
+            default -> "";
+        };
+    }
+
+    private String metricDisplay(String metricCode) {
+        return switch (metricCode) {
+            case "rmbAmount" -> "人民币总金额";
+            case "transactionAmount" -> "交易金额";
+            case "transactionCount" -> "交易笔数";
+            case "successRate" -> "支付成功率";
+            default -> metricCode;
+        };
+    }
+
+    private QueryFilter displayFilter(Filter filter) {
+        String name = switch (filter.name()) {
+            case "trade_date" -> "交易日期 (trade_date)";
+            case "sett_dt_Month2" -> "月 (sett_dt_Month2)";
+            case "sett_dt_Year" -> "年 (sett_dt_Year)";
+            case "acq_mkt_ch" -> "收单地区 (acq_mkt_ch)";
+            case "region_name" -> "地区 (region_name)";
+            case "accept_channel" -> "受理渠道 (accept_channel)";
+            default -> filter.name();
+        };
+        return new QueryFilter(name, filter.operation(), filter.values());
     }
 
     private WorkflowStep skipped(String node, String name, String detail) {
@@ -431,15 +530,19 @@ public class ChatQueryWorkflowService {
     }
 
     static final class ChatState extends AgentState {
-        static final Map<String, Channel<?>> SCHEMA = Map.of(
-                REQUEST, Channels.base((Supplier<Object>) Map::of),
-                CONTEXT, Channels.base((Supplier<Object>) Map::of),
-                INTERPRETATION, Channels.base((Supplier<Object>) Map::of),
-                STATUS, Channels.base(() -> ""),
-                PLAN, Channels.base((Supplier<Object>) Map::of),
-                RESULT, Channels.base((Supplier<Object>) Map::of),
-                STEPS, Channels.base((Supplier<List<WorkflowStep>>) List::of),
-                RESPONSE, Channels.base((Supplier<Object>) Map::of));
+        static final Map<String, Channel<?>> SCHEMA = Map.ofEntries(
+                Map.entry(REQUEST, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(CONTEXT, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(INTERPRETATION, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(RECOGNITION, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(QUERY_PLAN, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(SMARTBI_REQUEST, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(LLM_MESSAGE, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(STATUS, Channels.base(() -> "")),
+                Map.entry(PLAN, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(RESULT, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(STEPS, Channels.base((Supplier<List<WorkflowStep>>) List::of)),
+                Map.entry(RESPONSE, Channels.base((Supplier<Object>) Map::of)));
 
         ChatState(Map<String, Object> initData) {
             super(initData);

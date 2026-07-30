@@ -2,6 +2,7 @@ package com.company.paymentanalysis.smartbi;
 
 import com.company.paymentanalysis.smartbi.SmartBiModels.Filter;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
+import com.company.paymentanalysis.smartbi.SmartBiModels.RelationNode;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -11,9 +12,14 @@ public final class SmartBiSqlPreview {
     }
 
     public static String from(QueryRequest request) {
-        List<String> predicates = request.filters() == null
-                ? List.of()
-                : request.filters().stream().map(SmartBiSqlPreview::filterSql).toList();
+        List<String> predicates;
+        if (request.relationNode() != null) {
+            predicates = List.of(relationSql(request.relationNode()));
+        } else {
+            predicates = request.filters() == null
+                    ? List.of()
+                    : request.filters().stream().map(SmartBiSqlPreview::filterSql).toList();
+        }
         return build(request.dataSetId(), request.rows(), request.columns(), predicates);
     }
 
@@ -37,14 +43,32 @@ public final class SmartBiSqlPreview {
         List<String> values = filter.values() == null ? List.of() : filter.values();
         return switch (filter.operation()) {
             case "BETWEEN" -> values.size() >= 2
-                    ? filter.id() + " BETWEEN " + quote(values.get(0)) + " AND " + quote(values.get(1))
-                    : filter.id() + " BETWEEN NULL AND NULL";
-            case "IN" -> filter.id() + " IN ("
+                    ? filter.name() + " BETWEEN " + quote(values.get(0)) + " AND " + quote(values.get(1))
+                    : filter.name() + " BETWEEN NULL AND NULL";
+            case "IN" -> filter.name() + " IN ("
                     + String.join(", ", values.stream().map(SmartBiSqlPreview::quote).toList()) + ")";
-            case "EQ", "=" -> filter.id() + " = " + (values.isEmpty() ? "NULL" : quote(values.get(0)));
-            default -> filter.id() + " " + filter.operation() + " "
+            case "EQ", "EQUALS", "=" -> filter.name() + " = "
+                    + (values.isEmpty() ? "NULL" : quote(values.get(0)));
+            default -> filter.name() + " " + filter.operation() + " "
                     + (values.isEmpty() ? "NULL" : quote(values.get(0)));
         };
+    }
+
+    private static String relationSql(RelationNode node) {
+        if (node == null) {
+            return "1 = 1";
+        }
+        if (node.filter() != null) {
+            return filterSql(node.filter());
+        }
+        List<RelationNode> children = node.childNodes() == null ? List.of() : node.childNodes();
+        if (children.isEmpty()) {
+            return "1 = 1";
+        }
+        String relation = node.relation() == null ? "AND" : node.relation().toUpperCase();
+        return "(" + String.join(
+                " " + relation + " ",
+                children.stream().map(SmartBiSqlPreview::relationSql).toList()) + ")";
     }
 
     private static String quote(String value) {
