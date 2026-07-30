@@ -6,6 +6,8 @@ import static org.bsc.langgraph4j.action.AsyncNodeAction.node_async;
 
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.Interpretation;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.InterpretationResult;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.ActionOperation;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.ActionPlan;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatQueryPlan;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatRequest;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatResponse;
@@ -52,16 +54,25 @@ public class ChatQueryWorkflowService {
             "transactionCount", "trans_cnt",
             "successRate", "success_rate");
     private static final Map<String, String> DIMENSION_NAMES = Map.of(
+            "tradeYear", "年",
+            "tradeMonth", "月",
+            "tradeDate", "日",
             "channel", "受理渠道",
             "region", "地区",
             "merchantType", "商户类型",
             "paymentMethod", "支付方式");
     private static final Map<String, String> DIMENSION_FIELDS = Map.of(
+            "tradeYear", "sett_dt_Year",
+            "tradeMonth", "sett_dt_Month2",
+            "tradeDate", "sett_dt_Day",
             "channel", "accept_channel",
             "region", "region_name",
             "merchantType", "merchant_type",
             "paymentMethod", "payment_method");
     private static final Map<String, List<String>> DIMENSION_MEMBERS = Map.of(
+            "tradeYear", List.of("2023年", "2024年", "2025年", "2026年"),
+            "tradeMonth", List.of("2026年4月", "2026年5月", "2026年6月", "2026年7月"),
+            "tradeDate", List.of("2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30"),
             "channel", List.of("线上渠道", "线下渠道", "移动端", "其他渠道"),
             "region", List.of("华东", "华南", "华北", "西南"),
             "merchantType", List.of("零售商户", "餐饮商户", "交通出行", "生活服务"),
@@ -252,9 +263,8 @@ public class ChatQueryWorkflowService {
             periodLabel = "";
         }
 
-        List<String> metrics = mergeList(current.metricIds(), parsed.metricIds(), parsed.metricAction());
-        List<String> dimensions = mergeList(
-                current.dimensionIds(), parsed.dimensionIds(), parsed.dimensionAction());
+        List<String> metrics = applyActions(current.metricIds(), parsed.metricAction());
+        List<String> dimensions = applyActions(current.dimensionIds(), parsed.dimensionAction());
         if ("QUERY".equals(parsed.intent()) && (startDate.isBlank() || endDate.isBlank())) {
             startDate = "2026-07-01";
             endDate = "2026-07-30";
@@ -263,17 +273,28 @@ public class ChatQueryWorkflowService {
         return new QueryContext(startDate, endDate, periodLabel, metrics, dimensions);
     }
 
-    private List<String> mergeList(List<String> current, List<String> incoming, String action) {
-        return switch (action) {
-            case "CLEAR" -> List.of();
-            case "REPLACE", "SET" -> List.copyOf(incoming);
-            case "ADD" -> {
-                LinkedHashSet<String> values = new LinkedHashSet<>(current);
-                values.addAll(incoming);
-                yield List.copyOf(values);
+    private List<String> applyActions(List<String> current, ActionPlan plan) {
+        if (plan == null || plan.operations() == null || plan.operations().isEmpty()) {
+            return List.copyOf(current);
+        }
+        if (plan.operations().stream().anyMatch(operation -> "KEEP".equals(operation.action()))) {
+            return List.copyOf(current);
+        }
+        if (plan.operations().stream().anyMatch(operation -> "CLEAR".equals(operation.action()))) {
+            return List.of();
+        }
+        LinkedHashSet<String> values = new LinkedHashSet<>(current);
+        for (ActionOperation operation : plan.operations()) {
+            if ("REMOVE".equals(operation.action()) && operation.ids() != null) {
+                values.removeAll(operation.ids());
             }
-            default -> List.copyOf(current);
-        };
+        }
+        for (ActionOperation operation : plan.operations()) {
+            if ("ADD".equals(operation.action()) && operation.ids() != null) {
+                values.addAll(operation.ids());
+            }
+        }
+        return List.copyOf(values);
     }
 
     private QueryResult mockResult(QueryContext context) {

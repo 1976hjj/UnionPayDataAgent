@@ -86,6 +86,128 @@ class ChatQueryControllerTest {
     }
 
     @Test
+    void removesOnlyTheRequestedDimensionAndKeepsOtherContext() throws Exception {
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId": "test-user-remove-dimension",
+                                  "sessionId": "demo-remove-dimension",
+                                  "message": "地区维度取消",
+                                  "context": {
+                                    "startDate": "2026-07-01",
+                                    "endDate": "2026-07-30",
+                                    "periodLabel": "本月（默认）",
+                                    "metricIds": ["transactionAmount"],
+                                    "dimensionIds": ["region", "channel"]
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("completed"))
+                .andExpect(jsonPath("$.context.dimensionIds.length()").value(1))
+                .andExpect(jsonPath("$.context.dimensionIds[0]").value("channel"))
+                .andExpect(jsonPath("$.queryPlan.rows.length()").value(1))
+                .andExpect(jsonPath("$.queryPlan.rows[0]").value("受理渠道 (accept_channel)"));
+    }
+
+    @Test
+    void removesAndAddsDimensionsInTheSameTurn() throws Exception {
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId": "test-user-edit-dimensions",
+                                  "sessionId": "demo-edit-dimensions",
+                                  "message": "取消地区维度，增加受理渠道",
+                                  "context": {
+                                    "startDate": "2026-07-01",
+                                    "endDate": "2026-07-30",
+                                    "periodLabel": "本月（默认）",
+                                    "metricIds": ["transactionAmount"],
+                                    "dimensionIds": ["region", "merchantType"]
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.context.dimensionIds.length()").value(2))
+                .andExpect(jsonPath("$.context.dimensionIds[0]").value("merchantType"))
+                .andExpect(jsonPath("$.context.dimensionIds[1]").value("channel"));
+    }
+
+    @Test
+    void substitutesOneDimensionWithoutDroppingUnrelatedDimensions() throws Exception {
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId": "test-user-substitute-dimension",
+                                  "sessionId": "demo-substitute-dimension",
+                                  "message": "用受理渠道取代地区维度",
+                                  "context": {
+                                    "startDate": "2026-07-01",
+                                    "endDate": "2026-07-30",
+                                    "periodLabel": "本月（默认）",
+                                    "metricIds": ["transactionAmount"],
+                                    "dimensionIds": ["region", "merchantType"]
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.context.dimensionIds.length()").value(2))
+                .andExpect(jsonPath("$.context.dimensionIds[0]").value("merchantType"))
+                .andExpect(jsonPath("$.context.dimensionIds[1]").value("channel"));
+    }
+
+    @Test
+    void removesAndAddsMetricsInTheSameTurn() throws Exception {
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId": "test-user-edit-metrics",
+                                  "sessionId": "demo-edit-metrics",
+                                  "message": "取消交易金额，增加交易笔数",
+                                  "context": {
+                                    "startDate": "2026-07-01",
+                                    "endDate": "2026-07-30",
+                                    "periodLabel": "本月（默认）",
+                                    "metricIds": ["transactionAmount", "successRate"],
+                                    "dimensionIds": ["merchantType"]
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.context.metricIds.length()").value(2))
+                .andExpect(jsonPath("$.context.metricIds[0]").value("successRate"))
+                .andExpect(jsonPath("$.context.metricIds[1]").value("transactionCount"));
+    }
+
+    @Test
+    void clearsOnlyDimensionsWithoutResettingOtherConditions() throws Exception {
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId": "test-user-clear-dimensions",
+                                  "sessionId": "demo-clear-dimensions",
+                                  "message": "清空全部维度",
+                                  "context": {
+                                    "startDate": "2026-07-01",
+                                    "endDate": "2026-07-30",
+                                    "periodLabel": "本月（默认）",
+                                    "metricIds": ["transactionAmount"],
+                                    "dimensionIds": ["region", "merchantType"]
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("completed"))
+                .andExpect(jsonPath("$.context.metricIds[0]").value("transactionAmount"))
+                .andExpect(jsonPath("$.context.dimensionIds.length()").value(0));
+    }
+
+    @Test
     void defaultsToCurrentMonthWhenTimeIsOmitted() throws Exception {
         mockMvc.perform(post("/api/chat/query")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -103,6 +225,31 @@ class ChatQueryControllerTest {
                 .andExpect(jsonPath("$.context.dimensionIds.length()").value(0))
                 .andExpect(jsonPath("$.result.rows.length()").value(1))
                 .andExpect(jsonPath("$.workflowSteps[5].status").value("COMPLETED"));
+    }
+
+    @Test
+    void groupsRecentMonthsByTheModelMonthDimension() throws Exception {
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId": "test-user-month-dimension",
+                                  "sessionId": "demo-month-dimension",
+                                  "message": "交易笔数，近三个月每个月看",
+                                  "context": {
+                                    "startDate": "2026-05-01",
+                                    "endDate": "2026-07-30",
+                                    "periodLabel": "近三个月",
+                                    "metricIds": [],
+                                    "dimensionIds": []
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.context.dimensionIds[0]").value("tradeMonth"))
+                .andExpect(jsonPath("$.queryPlan.rows[0]").value("月 (sett_dt_Month2)"))
+                .andExpect(jsonPath("$.queryPlan.sqlPreview")
+                        .value(org.hamcrest.Matchers.containsString("GROUP BY sett_dt_Month2")));
     }
 
     @Test

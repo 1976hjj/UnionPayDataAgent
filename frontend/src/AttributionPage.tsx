@@ -26,6 +26,7 @@ type LlmResultMessage = {
   role: string
   content: string
   requestMessages: { role: string; content: string }[]
+  rawResponse?: string | null
 }
 type AttributionResult = {
   metricName: string
@@ -418,9 +419,15 @@ export default function AttributionPage() {
                   </article>
                 ))}
                 <article>
-                  <strong>返回 · {result.llmMessage.role}</strong>
+                  <strong>解析内容 · {result.llmMessage.role}</strong>
                   <pre><code>{result.llmMessage.content}</code></pre>
                 </article>
+                {result.llmMessage.rawResponse && (
+                  <article>
+                    <strong>LLM 完整原始响应（未截断）</strong>
+                    <pre><code>{result.llmMessage.rawResponse}</code></pre>
+                  </article>
+                )}
               </section>
             </details>
           )}

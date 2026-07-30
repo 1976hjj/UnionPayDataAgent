@@ -23,8 +23,11 @@ class MetadataControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.version").value("mock-v1"))
                 .andExpect(jsonPath("$.metrics.length()").value(3))
-                .andExpect(jsonPath("$.dimensions.length()").value(4))
+                .andExpect(jsonPath("$.dimensions.length()").value(7))
                 .andExpect(jsonPath("$.metrics[0].name").value("交易金额"))
-                .andExpect(jsonPath("$.dimensions[1].name").value("地区"));
+                .andExpect(jsonPath("$.dimensions[0].name").value("年"))
+                .andExpect(jsonPath("$.dimensions[1].name").value("月"))
+                .andExpect(jsonPath("$.dimensions[2].name").value("日"))
+                .andExpect(jsonPath("$.dimensions[4].name").value("地区"));
     }
 }

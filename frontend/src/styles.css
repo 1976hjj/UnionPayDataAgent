@@ -1326,50 +1326,89 @@ td { color: #3b5069; }
   padding: 10px 8px;
 }
 
-.history-list > button {
-  display: block;
+.history-list > div {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
   width: 100%;
   margin-bottom: 5px;
-  padding: 10px;
   overflow: hidden;
   border: 1px solid transparent;
   border-radius: 7px;
-  text-align: left;
   background: transparent;
 }
 
-.history-list > button:hover:not(:disabled) {
+.history-list > div:hover {
   background: #f1f6fb;
 }
 
-.history-list > button.active {
+.history-list > div.active {
   border-color: #cfe0f1;
   background: #eaf3fc;
 }
 
-.history-list > button strong,
-.history-list > button span {
+.history-open-button {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 4px 10px 10px;
+  border: 0;
+  appearance: none;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.history-open-button strong,
+.history-open-button span {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.history-list > button strong {
+.history-open-button strong {
   color: #405d78;
   font-size: 10px;
   font-weight: 600;
 }
 
-.history-list > button span {
+.history-open-button span {
   margin-top: 5px;
   color: #97a5b4;
   font-size: 8px;
 }
 
-.history-list > button:disabled {
+.history-open-button:disabled,
+.history-delete-button:disabled {
   cursor: wait;
   opacity: .65;
+}
+
+.history-delete-button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  appearance: none;
+  color: #9aabba;
+  background: transparent;
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1;
+  opacity: .55;
+  cursor: pointer;
+}
+
+.history-delete-button:hover:not(:disabled) {
+  color: #c74343;
+  background: #fff0f0;
+  opacity: 1;
 }
 
 .history-empty {
@@ -1800,10 +1839,10 @@ td { color: #3b5069; }
 }
 
 .llm-message-preview pre {
-  max-height: 280px;
+  max-height: none;
   margin: 12px 0 0;
   padding: 14px;
-  overflow: auto;
+  overflow: visible;
   border-radius: 8px;
   background: #17243a;
   color: #dce8fa;
@@ -2088,4 +2127,312 @@ td { color: #3b5069; }
   .content { padding-inline: 22px; }
   .option-grid { grid-template-columns: repeat(2, 1fr); }
   .chat-layout { grid-template-columns: 170px minmax(0, 1fr) 220px; }
+}
+
+/* Comfortable desktop density: keep the information layout while making
+   labels, controls, tables and chat content easier to read. */
+@media (min-width: 1101px) {
+  .app-shell {
+    grid-template-columns: 252px 1fr;
+  }
+
+  .brand,
+  header {
+    height: 78px;
+  }
+
+  .brand {
+    padding-inline: 23px;
+  }
+
+  nav {
+    gap: 9px;
+    padding: 25px 14px;
+  }
+
+  nav a {
+    min-height: 58px;
+    padding: 13px 14px;
+    font-size: 16px;
+  }
+
+  nav a small,
+  .sidebar-footer,
+  header > div > span,
+  .page-heading p,
+  .page-heading > div > span,
+  .mock-badge,
+  .notice,
+  .card-title p,
+  .result-heading p,
+  .field-label,
+  .date-range span,
+  .text-button {
+    font-size: 13px;
+  }
+
+  .brand strong {
+    font-size: 17px;
+  }
+
+  .brand small {
+    font-size: 11px;
+  }
+
+  header {
+    padding-inline: 34px;
+  }
+
+  header strong {
+    font-size: 19px;
+  }
+
+  .dependency-health {
+    gap: 14px;
+    padding: 8px 13px;
+    border-radius: 18px;
+  }
+
+  .dependency-item {
+    gap: 7px;
+    font-size: 12px;
+  }
+
+  .dependency-item i {
+    width: 9px;
+    height: 9px;
+  }
+
+  .avatar {
+    width: 38px;
+    height: 38px;
+    font-size: 15px;
+  }
+
+  .user {
+    font-size: 14px;
+  }
+
+  .user small {
+    font-size: 12px;
+  }
+
+  .content {
+    max-width: 1420px;
+    padding: 31px 34px 58px;
+  }
+
+  .page-heading {
+    margin-bottom: 24px;
+  }
+
+  .page-heading h1 {
+    font-size: 29px;
+  }
+
+  .workspace-card,
+  .result-card {
+    border-radius: 12px;
+  }
+
+  .workspace-card,
+  .result-card {
+    padding-inline: 29px;
+  }
+
+  .card-title,
+  .result-heading {
+    min-height: 78px;
+  }
+
+  .card-title h2,
+  .result-heading h2 {
+    font-size: 17px;
+  }
+
+  input[type="date"],
+  select,
+  .multi-select summary,
+  .readonly-field,
+  .fixed-level,
+  .level2-selector summary,
+  .query-count-field {
+    height: 43px;
+    font-size: 14px;
+  }
+
+  .option-card {
+    min-height: 72px;
+    padding: 14px;
+  }
+
+  .option-card strong,
+  .config-row > label,
+  .fixed-level strong,
+  .query-count-field strong {
+    font-size: 14px;
+  }
+
+  .option-card small,
+  .field-label-row > span,
+  .multi-select-option,
+  .level2-menu label,
+  .attribution-summary,
+  table {
+    font-size: 12px;
+  }
+
+  .primary-button {
+    min-width: 140px;
+    height: 43px;
+    font-size: 14px;
+  }
+
+  th,
+  td {
+    padding: 14px 16px;
+  }
+
+  .query-chat-page {
+    height: calc(100vh - 166px);
+  }
+
+  .chat-layout {
+    grid-template-columns: 220px minmax(0, 1fr) 292px;
+  }
+
+  .history-heading,
+  .chat-panel {
+    --chat-toolbar-height: 70px;
+  }
+
+  .history-heading {
+    min-height: var(--chat-toolbar-height);
+    padding-inline: 16px;
+  }
+
+  .chat-panel {
+    grid-template-rows: var(--chat-toolbar-height) minmax(0, 1fr) auto;
+  }
+
+  .history-heading strong,
+  .chat-toolbar strong,
+  .context-heading strong {
+    font-size: 14px;
+  }
+
+  .history-heading small,
+  .history-empty,
+  .history-open-button span,
+  .chat-toolbar small,
+  .context-heading small,
+  .context-item small,
+  .capability-card,
+  .scope-note {
+    font-size: 11px;
+  }
+
+  .history-list > div {
+    margin-bottom: 7px;
+  }
+
+  .history-open-button {
+    padding-block: 12px;
+  }
+
+  .history-open-button strong,
+  .context-item strong,
+  .capability-card strong,
+  .scope-note b {
+    font-size: 12px;
+  }
+
+  .chat-toolbar {
+    padding-inline: 23px;
+  }
+
+  .chat-toolbar button {
+    padding: 8px 13px;
+    font-size: 13px;
+  }
+
+  .message-list {
+    padding: 25px 28px 15px;
+  }
+
+  .message-bubble {
+    padding: 13px 16px;
+    font-size: 14px;
+    line-height: 1.8;
+  }
+
+  .suggestion-list button {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
+  .chat-result-title strong,
+  .chat-result table,
+  .chat-workflow-trace > summary span {
+    font-size: 12px;
+  }
+
+  .chat-result-title span,
+  .chat-result-title > small,
+  .result-footnote,
+  .chat-workflow-trace > summary small,
+  .chat-workflow-list p,
+  .chat-query-plan strong,
+  .sql-preview pre {
+    font-size: 10px;
+  }
+
+  .chat-workflow-list strong,
+  .sql-preview > summary,
+  .sql-preview-list section > strong {
+    font-size: 11px;
+  }
+
+  .chat-composer {
+    padding: 15px 20px 14px;
+  }
+
+  .chat-composer textarea {
+    height: 68px;
+    padding: 12px 14px;
+    font-size: 13px;
+  }
+
+  .chat-composer > div {
+    font-size: 11px;
+  }
+
+  .send-button {
+    min-width: 74px;
+    height: 35px;
+    font-size: 12px;
+  }
+
+  .context-panel {
+    padding: 22px 20px;
+  }
+
+  .context-item {
+    min-height: 58px;
+    padding: 12px;
+  }
+
+  .chart-heading strong,
+  .comparison-table,
+  .parallel-result-heading strong {
+    font-size: 11px;
+  }
+
+  .chart-heading > div > span,
+  .chart-legend span,
+  .chart-member,
+  .period-bar-line b,
+  .contribution-row > b {
+    font-size: 10px;
+  }
 }

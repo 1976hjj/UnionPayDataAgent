@@ -79,6 +79,19 @@ public class ChatConversationMemoryService {
                         value.context(), value.messages()));
     }
 
+    public boolean deleteConversation(String userId, String conversationId) {
+        ensureRedisAttemptAllowed();
+        try {
+            String conversationKey = conversationKey(userId, conversationId);
+            Boolean deleted = redisTemplate.delete(conversationKey);
+            redisTemplate.opsForZSet().remove(indexKey(userId), conversationId);
+            markRedisAvailable();
+            return Boolean.TRUE.equals(deleted);
+        } catch (RuntimeException exception) {
+            throw unavailable(exception);
+        }
+    }
+
     public MemoryStatus status() {
         checkRedisWhenDue();
         return new MemoryStatus(

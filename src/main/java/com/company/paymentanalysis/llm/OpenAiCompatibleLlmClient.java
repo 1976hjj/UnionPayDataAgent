@@ -67,7 +67,11 @@ public class OpenAiCompatibleLlmClient {
         lastSuccessAt = Instant.now();
         String role = message.path("role").asText("assistant");
         return new LlmResultMessage(
-                properties.model(), role, content.asText(), List.copyOf(messages));
+                response.path("model").asText(properties.model()),
+                role,
+                content.asText(),
+                List.copyOf(messages),
+                response.toPrettyString());
     }
 
     private JsonNode executeWithRetry(RestClient.RequestBodySpec request, ChatCompletionRequest body) {
@@ -128,8 +132,16 @@ public class OpenAiCompatibleLlmClient {
     }
 
     public record LlmResultMessage(
-            String model, String role, String content, List<ChatMessage> requestMessages)
+            String model,
+            String role,
+            String content,
+            List<ChatMessage> requestMessages,
+            String rawResponse)
             implements Serializable {
+        public LlmResultMessage(
+                String model, String role, String content, List<ChatMessage> requestMessages) {
+            this(model, role, content, requestMessages, null);
+        }
     }
 
     public record LlmHealth(String status, String name, String detail, String checkedAt) {

@@ -29,10 +29,8 @@ java -jar target/payment-analysis.jar
 ```
 
 Windows 下建议使用项目启动脚本，按 `Ctrl+C` 后会确保 Java 子进程退出并释放 JAR：
-
-```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\run.ps1
-```
 
 脚本会强制启用真实 LLM，并从 Windows 当前用户环境变量读取 `LLM_API_KEY`。若本机
 6379 端口没有 Redis，脚本会自动启动已安装的便携版 Redis，并在退出应用时一并停止。

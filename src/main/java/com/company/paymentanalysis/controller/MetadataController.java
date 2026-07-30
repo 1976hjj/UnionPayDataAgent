@@ -18,6 +18,9 @@ public class MetadataController {
                         new Metric("transactionCount", "交易笔数", "笔", "integer"),
                         new Metric("successRate", "支付成功率", "%", "percent")),
                 List.of(
+                        new Dimension("tradeYear", "年"),
+                        new Dimension("tradeMonth", "月"),
+                        new Dimension("tradeDate", "日"),
                         new Dimension("channel", "受理渠道"),
                         new Dimension("region", "地区"),
                         new Dimension("merchantType", "商户类型"),

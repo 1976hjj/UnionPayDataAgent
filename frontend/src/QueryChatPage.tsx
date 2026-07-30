@@ -64,6 +64,7 @@ type LlmResultMessage = {
   role: string
   content: string
   requestMessages: { role: string; content: string }[]
+  rawResponse?: string | null
 }
 
 type ChatResponse = {
@@ -126,6 +127,9 @@ const FALLBACK_METADATA: Metadata = {
     { id: 'successRate', name: '支付成功率', unit: '%' },
   ],
   dimensions: [
+    { id: 'tradeYear', name: '年' },
+    { id: 'tradeMonth', name: '月' },
+    { id: 'tradeDate', name: '日' },
     { id: 'channel', name: '受理渠道' },
     { id: 'region', name: '地区' },
     { id: 'merchantType', name: '商户类型' },
@@ -217,9 +221,15 @@ function WorkflowTrace({
                 </article>
               ))}
               <article>
-                <strong>返回 · {llmMessage.role}</strong>
+                <strong>解析内容 · {llmMessage.role}</strong>
                 <pre><code>{llmMessage.content}</code></pre>
               </article>
+              {llmMessage.rawResponse && (
+                <article>
+                  <strong>LLM 完整原始响应（未截断）</strong>
+                  <pre><code>{llmMessage.rawResponse}</code></pre>
+                </article>
+              )}
             </section>
           </details>
         )}
@@ -244,7 +254,7 @@ function WorkflowTrace({
             )}
           </>
         )}
-        <p className="workflow-safe-note">已隐藏系统提示词、鉴权信息和完整请求报文。</p>
+        <p className="workflow-safe-note">完整展示 messages 与 LLM 原始响应；仅隐藏 Authorization/API Key。</p>
       </div>
     </details>
   )
@@ -278,6 +288,7 @@ export default function QueryChatPage() {
   const [conversationId, setConversationId] = useState(createConversationId)
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null)
   const messageListRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -380,6 +391,30 @@ export default function QueryChatPage() {
     localStorage.setItem(ACTIVE_CONVERSATION_KEY, nextConversationId)
   }
 
+  async function deleteConversation(conversation: ConversationSummary) {
+    if (!window.confirm(`确定删除历史查询“${conversation.title}”吗？删除后无法恢复。`)) return
+    setDeletingConversationId(conversation.conversationId)
+    setValidation('')
+    try {
+      const response = await fetch(
+        `/api/chat/conversations/${encodeURIComponent(conversation.conversationId)}?userId=${encodeURIComponent(CURRENT_USER_ID)}`,
+        { method: 'DELETE' },
+      )
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null) as { detail?: string } | null
+        throw new Error(detail?.detail || '删除历史查询失败')
+      }
+      setConversations((current) => current.filter(
+        (item) => item.conversationId !== conversation.conversationId,
+      ))
+      if (conversation.conversationId === conversationId) startNewConversation()
+    } catch (error) {
+      setValidation(error instanceof Error ? error.message : '删除历史查询失败')
+    } finally {
+      setDeletingConversationId(null)
+    }
+  }
+
   async function sendMessage(content: string) {
     const message = content.trim()
     if (!message) {
@@ -470,16 +505,30 @@ export default function QueryChatPage() {
               <p className="history-empty">还没有历史查询<br />发送第一条消息后会保存在这里</p>
             )}
             {conversations.map((conversation) => (
-              <button
+              <div
                 className={conversation.conversationId === conversationId ? 'active' : ''}
-                disabled={pending}
                 key={conversation.conversationId}
-                onClick={() => void restoreConversation(conversation.conversationId)}
-                type="button"
               >
-                <strong>{conversation.title}</strong>
-                <span>{formatConversationTime(conversation.updatedAt)} · {conversation.messageCount / 2} 轮</span>
-              </button>
+                <button
+                  className="history-open-button"
+                  disabled={pending || deletingConversationId !== null}
+                  onClick={() => void restoreConversation(conversation.conversationId)}
+                  type="button"
+                >
+                  <strong>{conversation.title}</strong>
+                  <span>{formatConversationTime(conversation.updatedAt)} · {conversation.messageCount / 2} 轮</span>
+                </button>
+                <button
+                  aria-label={`删除历史查询：${conversation.title}`}
+                  className="history-delete-button"
+                  disabled={pending || deletingConversationId !== null}
+                  onClick={() => void deleteConversation(conversation)}
+                  title="删除记录"
+                  type="button"
+                >
+                  {deletingConversationId === conversation.conversationId ? '…' : '×'}
+                </button>
+              </div>
             ))}
           </div>
         </aside>

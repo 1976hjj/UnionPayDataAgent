@@ -52,6 +52,10 @@ class ChatConversationMemoryServiceTest {
         when(sortedSets.reverseRange(anyString(), anyLong(), anyLong())).thenReturn(conversationIds);
         when(sortedSets.size(anyString())).thenReturn(1L);
         when(redis.expire(anyString(), any(Duration.class))).thenReturn(true);
+        when(redis.delete(anyString())).thenAnswer(invocation ->
+                redisValues.remove(invocation.getArgument(0, String.class)) != null);
+        when(sortedSets.remove(anyString(), anyString())).thenAnswer(invocation ->
+                conversationIds.remove(invocation.getArgument(1, String.class)) ? 1L : 0L);
 
         ChatConversationMemoryService service = new ChatConversationMemoryService(
                 redis, new ObjectMapper(), new ChatMemoryProperties(true, "test:chat:", 30, 50));
@@ -77,5 +81,10 @@ class ChatConversationMemoryServiceTest {
                     assertThat(detail.messages()).hasSize(2);
                     assertThat(detail.messages().get(1).workflowSteps()).hasSize(1);
                 });
+
+        assertThat(service.deleteConversation("user-1", "conversation-1")).isTrue();
+        assertThat(service.restoreContext("user-1", "conversation-1")).isEmpty();
+        assertThat(service.list("user-1")).isEmpty();
+        assertThat(service.deleteConversation("user-1", "conversation-1")).isFalse();
     }
 }

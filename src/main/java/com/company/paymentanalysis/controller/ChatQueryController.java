@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -80,6 +82,23 @@ public class ChatQueryController {
         } catch (ChatMemoryUnavailableException exception) {
             throw new ResponseStatusException(
                     HttpStatus.SERVICE_UNAVAILABLE, "Redis 不可用，无法恢复历史会话");
+        }
+    }
+
+    @DeleteMapping("/conversations/{conversationId}")
+    public ResponseEntity<Void> deleteConversation(
+            @PathVariable String conversationId,
+            @RequestParam(defaultValue = "demo-user") String userId) {
+        String safeUserId = identifier(userId, "demo-user");
+        String safeConversationId = identifier(conversationId, "");
+        try {
+            if (!memoryService.deleteConversation(safeUserId, safeConversationId)) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "对话不存在");
+            }
+            return ResponseEntity.noContent().build();
+        } catch (ChatMemoryUnavailableException exception) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Redis 不可用，无法删除历史会话");
         }
     }
 
