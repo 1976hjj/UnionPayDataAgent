@@ -71,6 +71,8 @@ public class ChatQueryWorkflowService {
             "tradeYear", "年",
             "tradeMonth", "月",
             "tradeDate", "日",
+            "issuingRegion", "发卡地区",
+            "acquiringInstitution", "收单机构",
             "channel", "受理渠道",
             "region", "地区",
             "merchantType", "商户类型",

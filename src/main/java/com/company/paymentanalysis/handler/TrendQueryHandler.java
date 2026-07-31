@@ -75,7 +75,9 @@ public class TrendQueryHandler implements IntentHandler {
                 execution.queryRecords(),
                 execution.rawData(),
                 summary,
-                merge(execution.warnings(), summary.warnings()),
+                merge(
+                        merge(execution.warnings(), summary.warnings()),
+                        List.of("趋势时间粒度：" + granularity + "；缺失时间点不自动补0")),
                 "");
     }
 

@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
+import com.company.paymentanalysis.config.AnalysisProperties;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.company.paymentanalysis.smartbi.SmartBiProperties;
@@ -23,7 +24,8 @@ class IntentQueryPipelineTest {
 
     private final AnalysisCatalog catalog = new AnalysisCatalog();
     private final QueryPlanBuilder planBuilder = new QueryPlanBuilder(catalog);
-    private final QueryPlanValidator validator = new QueryPlanValidator();
+    private final QueryPlanValidator validator =
+            new QueryPlanValidator(new AnalysisProperties(null, null, null, null));
     private final SmartBiQueryBuilder smartBiBuilder = new SmartBiQueryBuilder(new SmartBiProperties(
             "http://localhost", "/query", "payment_query_dataset", "", ""));
 
@@ -174,7 +176,10 @@ class IntentQueryPipelineTest {
         when(llmClient.completeWithMessage(anyList(), anyString()))
                 .thenReturn(new LlmResultMessage("test-model", "assistant", llmJson, List.of(), llmJson));
         IntentRecognitionService recognitionService =
-                new IntentRecognitionService(llmClient, new ObjectMapper());
+                new IntentRecognitionService(
+                        llmClient,
+                        new ObjectMapper(),
+                        new TimeRangeResolver());
         IntentRecognitionResult recognition = recognitionService.recognize(question, context).result();
         return validator.validate(planBuilder.build(recognition, context));
     }

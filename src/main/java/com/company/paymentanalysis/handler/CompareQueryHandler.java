@@ -13,6 +13,8 @@ import com.company.paymentanalysis.execution.AnalysisExecutionResult;
 import com.company.paymentanalysis.execution.ExecutionStatus;
 import com.company.paymentanalysis.strategy.comparison.ComparisonQueryStrategy;
 import com.company.paymentanalysis.strategy.comparison.ComparisonRawResult;
+import com.company.paymentanalysis.strategy.comparison.GroupedComparisonQueryStrategy;
+import com.company.paymentanalysis.strategy.comparison.SeparateComparisonQueryStrategy;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -42,11 +44,10 @@ public class CompareQueryHandler implements IntentHandler {
     @Override
     public AnalysisExecutionResult execute(QueryPlan plan, AnalysisContext context) {
         validate(plan);
-        ComparisonQueryStrategy strategy = strategies.stream()
-                .filter(candidate -> candidate.supports(plan))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("没有可用的对比查询策略"));
+        ComparisonQueryStrategy strategy = selectStrategy(plan);
         ComparisonRawResult raw = strategy.execute(plan);
+        List<String> auditWarnings = new java.util.ArrayList<>(raw.warnings());
+        auditWarnings.add("对比查询策略：" + strategy.getClass().getSimpleName());
         ComparisonResult calculated = null;
         ExecutionStatus status = raw.status();
         if (raw.subjectAValue() != null && raw.subjectBValue() != null) {
@@ -70,8 +71,32 @@ public class CompareQueryHandler implements IntentHandler {
                 raw.queryRecords(),
                 raw.rawData(),
                 calculated,
-                raw.warnings(),
+                List.copyOf(auditWarnings),
                 "");
+    }
+
+    private ComparisonQueryStrategy selectStrategy(QueryPlan plan) {
+        if (properties.comparison().preferGroupedQuery()) {
+            ComparisonQueryStrategy grouped = strategies.stream()
+                    .filter(GroupedComparisonQueryStrategy.class::isInstance)
+                    .filter(candidate -> candidate.supports(plan))
+                    .findFirst()
+                    .orElse(null);
+            if (grouped != null) {
+                return grouped;
+            }
+            if (!properties.comparison().fallbackToSeparateQuery()) {
+                throw new IllegalStateException("分组对比策略不适用，且已禁用独立查询回退");
+            }
+        }
+        return strategies.stream()
+                .filter(SeparateComparisonQueryStrategy.class::isInstance)
+                .filter(candidate -> candidate.supports(plan))
+                .findFirst()
+                .orElseGet(() -> strategies.stream()
+                        .filter(candidate -> candidate.supports(plan))
+                        .findFirst()
+                        .orElseThrow(() -> new IllegalStateException("没有可用的对比查询策略")));
     }
 
     private void validate(QueryPlan plan) {

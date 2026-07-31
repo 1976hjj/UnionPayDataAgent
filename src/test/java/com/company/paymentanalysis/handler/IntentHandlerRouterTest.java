@@ -7,6 +7,7 @@ import com.company.paymentanalysis.analysis.AnalysisContext;
 import com.company.paymentanalysis.analysis.IntentType;
 import com.company.paymentanalysis.analysis.QueryPlan;
 import com.company.paymentanalysis.execution.AnalysisExecutionResult;
+import com.company.paymentanalysis.execution.AnalysisExecutionAuditLogger;
 import com.company.paymentanalysis.execution.ExecutionStatus;
 import java.time.LocalDate;
 import java.util.List;
@@ -30,7 +31,8 @@ class IntentHandlerRouterTest {
                 return expected;
             }
         };
-        IntentHandlerRouter router = new IntentHandlerRouter(List.of(handler));
+        IntentHandlerRouter router =
+                new IntentHandlerRouter(List.of(handler), auditLogger());
         QueryPlan plan = plan(IntentType.SINGLE_QUERY);
         AnalysisContext context =
                 new AnalysisContext(LocalDate.of(2026, 7, 31), "", List.of(), List.of());
@@ -49,7 +51,9 @@ class IntentHandlerRouterTest {
         IntentHandler first = new StubHandler(IntentType.COMPARE_QUERY);
         IntentHandler second = new StubHandler(IntentType.COMPARE_QUERY);
 
-        assertThatThrownBy(() -> new IntentHandlerRouter(List.of(first, second)))
+        assertThatThrownBy(() -> new IntentHandlerRouter(
+                        List.of(first, second),
+                        auditLogger()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("COMPARE_QUERY")
                 .hasMessageContaining("重复 Handler");
@@ -57,7 +61,7 @@ class IntentHandlerRouterTest {
 
     @Test
     void returnsExplicitExceptionForUnimplementedIntent() {
-        IntentHandlerRouter router = new IntentHandlerRouter(List.of());
+        IntentHandlerRouter router = new IntentHandlerRouter(List.of(), auditLogger());
 
         assertThatThrownBy(() -> router.route(plan(IntentType.TREND_QUERY), null))
                 .isInstanceOf(UnsupportedIntentException.class)
@@ -68,7 +72,7 @@ class IntentHandlerRouterTest {
 
     @Test
     void rejectsMissingPlanOrIntentInsteadOfGuessingHandler() {
-        IntentHandlerRouter router = new IntentHandlerRouter(List.of());
+        IntentHandlerRouter router = new IntentHandlerRouter(List.of(), auditLogger());
 
         assertThatThrownBy(() -> router.route(null, null))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -105,6 +109,10 @@ class IntentHandlerRouterTest {
                 null,
                 List.of(),
                 "");
+    }
+
+    private AnalysisExecutionAuditLogger auditLogger() {
+        return org.mockito.Mockito.mock(AnalysisExecutionAuditLogger.class);
     }
 
     private static class StubHandler implements IntentHandler {

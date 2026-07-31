@@ -19,6 +19,8 @@ public class MockChatSmartBiDataService {
             Set.of("acpt_trans_rmb_amt_m", "trans_amt", "trans_cnt", "success_rate");
     private static final Map<String, List<String>> MEMBERS = Map.ofEntries(
             Map.entry("acq_mkt_ch", List.of("英国", "法国", "德国", "中国")),
+            Map.entry("iss_mkt_ch", List.of("境内发卡", "亚太地区", "欧洲地区", "北美地区")),
+            Map.entry("acq_ins_ch", List.of("收单机构A", "收单机构B", "收单机构C", "收单机构D")),
             Map.entry("region_name", List.of("华东", "华南", "华北", "西南")),
             Map.entry("accept_channel", List.of("线上渠道", "线下渠道", "移动端", "其他渠道")),
             Map.entry("sett_dt_Year", List.of("2025", "2026")),

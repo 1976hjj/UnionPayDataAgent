@@ -25,6 +25,8 @@ public class SmartBiQueryBuilder {
 
     private static final Map<String, String> DIMENSION_FIELDS = Map.ofEntries(
             Map.entry("acquiringRegion", "acq_mkt_ch"),
+            Map.entry("issuingRegion", "iss_mkt_ch"),
+            Map.entry("acquiringInstitution", "acq_ins_ch"),
             Map.entry("region", "region_name"),
             Map.entry("channel", "accept_channel"),
             Map.entry("tradeYear", "sett_dt_Year"),
@@ -38,6 +40,8 @@ public class SmartBiQueryBuilder {
             Map.entry("tradeMonth", "sett_dt_Month2"),
             Map.entry("tradeYear", "sett_dt_Year"),
             Map.entry("acquiringRegion", "acq_mkt_ch"),
+            Map.entry("issuingRegion", "iss_mkt_ch"),
+            Map.entry("acquiringInstitution", "acq_ins_ch"),
             Map.entry("region", "region_name"),
             Map.entry("channel", "accept_channel"),
             Map.entry("merchantType", "merchant_type"),

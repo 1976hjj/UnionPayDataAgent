@@ -16,11 +16,14 @@ public class IntentRecognitionService {
 
     private final OpenAiCompatibleLlmClient llmClient;
     private final ObjectMapper objectMapper;
+    private final TimeRangeResolver timeRangeResolver;
 
     public IntentRecognitionService(
             OpenAiCompatibleLlmClient llmClient,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            TimeRangeResolver timeRangeResolver) {
         this.llmClient = llmClient;
+        this.timeRangeResolver = timeRangeResolver;
         this.objectMapper = objectMapper.copy()
                 .findAndRegisterModules()
                 .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
@@ -33,22 +36,76 @@ public class IntentRecognitionService {
         AnalysisContext safeContext = context == null
                 ? new AnalysisContext(null, "", List.of(), List.of())
                 : context;
-        try {
-            LlmResultMessage message = llmClient.completeWithMessage(
-                    List.of(
-                            new ChatMessage("system", systemPrompt(safeContext)),
-                            new ChatMessage(
-                                    "user",
-                                    "AnalysisContext:\n"
-                                            + objectMapper.writeValueAsString(safeContext)
-                                            + "\n用户问题："
-                                            + question)),
-                    mockResult(question, safeContext));
-            IntentRecognitionResult result = parseAndValidate(message.content());
-            return new RecognitionResponse(result, message);
-        } catch (JsonProcessingException exception) {
-            throw new IllegalArgumentException("意图识别结果不是合法的严格 JSON", exception);
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                LlmResultMessage message = llmClient.completeWithMessage(
+                        List.of(
+                                new ChatMessage("system", systemPrompt(safeContext)),
+                                new ChatMessage(
+                                        "user",
+                                        "AnalysisContext:\n"
+                                                + objectMapper.writeValueAsString(safeContext)
+                                                + "\n用户问题："
+                                                + question
+                                                + (attempt == 1
+                                                        ? ""
+                                                        : "\n上一次返回未通过结构校验。请逐字段核对，"
+                                                                + "intent 只能是查询意图，"
+                                                                + "A_LESS_THAN_B 等只能放在 "
+                                                                + "requestedCalculations。"))),
+                        mockResult(question, safeContext));
+                IntentRecognitionResult result = enrichTimeRange(
+                        parseAndValidate(message.content()),
+                        question,
+                        safeContext.currentDate());
+                return new RecognitionResponse(result, message);
+            } catch (JsonProcessingException | IllegalArgumentException exception) {
+                lastFailure = new IllegalArgumentException(
+                        "第 " + attempt + " 次意图识别结果未通过严格 JSON 校验",
+                        exception);
+            }
         }
+        throw new IllegalArgumentException("意图识别结果不是合法的严格 JSON", lastFailure);
+    }
+
+    private IntentRecognitionResult enrichTimeRange(
+            IntentRecognitionResult result,
+            String question,
+            LocalDate currentDate) {
+        if (!result.needsDataQuery()
+                || result.intent() == IntentType.COMPARE_QUERY
+                || hasTime(result)) {
+            return result;
+        }
+        return timeRangeResolver.resolve(question, currentDate)
+                .map(filter -> new IntentRecognitionResult(
+                        result.intent(),
+                        result.confidence(),
+                        result.metricText(),
+                        result.dimensionTexts(),
+                        List.of(filter),
+                        result.comparisonSubjects(),
+                        result.requestedCalculations(),
+                        result.topN(),
+                        result.needsDataQuery(),
+                        result.needsKnowledgeBase(),
+                        result.missingSlots(),
+                        result.clarificationQuestion()))
+                .orElse(result);
+    }
+
+    private boolean hasTime(IntentRecognitionResult result) {
+        return result.filters().stream().anyMatch(this::isTime)
+                || result.comparisonSubjects().stream()
+                        .flatMap(subject -> subject.filters().stream())
+                        .anyMatch(this::isTime);
+    }
+
+    private boolean isTime(FilterCondition filter) {
+        return filter.field().equals("tradeDate")
+                || filter.field().equals("tradeMonth")
+                || filter.field().equals("tradeYear");
     }
 
     public String engineLabel() {
@@ -156,7 +213,11 @@ public class IntentRecognitionService {
                 JSON 必须完整包含 intent、confidence、metricText、dimensionTexts、filters、
                 comparisonSubjects、requestedCalculations、topN、needsDataQuery、
                 needsKnowledgeBase、missingSlots、clarificationQuestion。
-                intent 只能使用约定的 IntentType 枚举值。
+                intent 只能是 SINGLE_QUERY、GROUP_QUERY、COMPARE_QUERY、TREND_QUERY、
+                RANK_QUERY、METRIC_EXPLAIN、QUERY_WITH_EXPLANATION、DIAGNOSIS_QUERY、
+                CLARIFICATION、OUT_OF_SCOPE。
+                A_LESS_THAN_B、A_MORE_THAN_B、ABSOLUTE_DIFFERENCE、CHANGE_RATE、
+                DAY、MONTH、YEAR、ASC、DESC 都不是 intent，只能放在 requestedCalculations。
                 filters 格式为 [{"field":"...","operator":"...","values":["..."]}]。
                 comparisonSubjects 格式为
                 [{"label":"...","filters":[{"field":"...","operator":"...","values":["..."]}]}]。
@@ -164,6 +225,17 @@ public class IntentRecognitionService {
                 “A比B少多少”返回 A_LESS_THAN_B、ABSOLUTE_DIFFERENCE；
                 “A比B多多少”返回 A_MORE_THAN_B、ABSOLUTE_DIFFERENCE；
                 用户要求百分比或增长率时再增加 CHANGE_RATE。
+                “6月比7月少了多少金额”的结构示例：
+                {"intent":"COMPARE_QUERY","confidence":1.0,"metricText":"交易金额",
+                "dimensionTexts":[],"filters":[],
+                "comparisonSubjects":[
+                {"label":"6月","filters":[{"field":"tradeDate","operator":"BETWEEN",
+                "values":["2026-06-01","2026-06-30"]}]},
+                {"label":"7月","filters":[{"field":"tradeDate","operator":"BETWEEN",
+                "values":["2026-07-01","2026-07-31"]}]}],
+                "requestedCalculations":["A_LESS_THAN_B","ABSOLUTE_DIFFERENCE"],
+                "topN":null,"needsDataQuery":true,"needsKnowledgeBase":false,
+                "missingSlots":[],"clarificationQuestion":""}
                 TREND_QUERY 必须返回时间范围和时间维度，requestedCalculations 使用 DAY、MONTH 或 YEAR。
                 RANK_QUERY 必须返回指标、至少一个分组维度、topN，并使用 ASC 或 DESC。
                 所有绝对日期使用 yyyy-MM-dd，月份范围使用 BETWEEN 覆盖完整月份。
@@ -203,8 +275,10 @@ public class IntentRecognitionService {
     private String mockResult(String question, AnalysisContext context) throws JsonProcessingException {
         if (question.contains("\u8d70\u52bf")
                 || question.contains("\u8d8b\u52bf")
-                || question.contains("\u53d8\u5316")) {
-            return mockTrendResult(context);
+                || question.contains("\u53d8\u5316")
+                || question.contains("\u6bcf\u4e2a\u6708")
+                || question.contains("\u6309\u6708")) {
+            return mockTrendResult(question, context);
         }
         if (question.contains("\u6700\u9ad8")
                 || question.contains("\u6700\u4f4e")
@@ -249,6 +323,15 @@ public class IntentRecognitionService {
         }
         boolean compareMonths = question.contains("6月") && question.contains("7月");
         boolean compareCountries = question.contains("英国") && question.contains("法国");
+        boolean compareRelativeMonths = question.contains("本月") && question.contains("上月");
+        LocalDate currentMonthStart = context.currentDate().withDayOfMonth(1);
+        LocalDate previousMonth = currentMonthStart.minusMonths(1);
+        if (compareCountries && filters.isEmpty()) {
+            filters.add(new FilterCondition(
+                    "tradeDate",
+                    "BETWEEN",
+                    List.of(currentMonthStart.toString(), context.currentDate().toString())));
+        }
         List<ComparisonSubject> subjects = compareMonths
                 ? List.of(
                         new ComparisonSubject("6月", List.of(new FilterCondition(
@@ -261,8 +344,24 @@ public class IntentRecognitionService {
                                         "acquiringRegion", "EQUALS", List.of("英国")))),
                                 new ComparisonSubject("法国", List.of(new FilterCondition(
                                         "acquiringRegion", "EQUALS", List.of("法国")))))
+                        : compareRelativeMonths
+                                ? List.of(
+                                        new ComparisonSubject("本月", List.of(new FilterCondition(
+                                                "tradeDate",
+                                                "BETWEEN",
+                                                List.of(
+                                                        currentMonthStart.toString(),
+                                                        context.currentDate().toString())))),
+                                        new ComparisonSubject("上月", List.of(new FilterCondition(
+                                                "tradeDate",
+                                                "BETWEEN",
+                                                List.of(
+                                                        previousMonth.toString(),
+                                                        previousMonth.withDayOfMonth(
+                                                                previousMonth.lengthOfMonth())
+                                                                .toString())))))
                         : List.of();
-        IntentType intent = compareMonths || compareCountries
+        IntentType intent = compareMonths || compareCountries || compareRelativeMonths
                 ? IntentType.COMPARE_QUERY
                 : dimensions.isEmpty() ? IntentType.SINGLE_QUERY : IntentType.GROUP_QUERY;
         if (List.of("帮我写一首诗", "hello", "你好").contains(question.trim())) {
@@ -279,6 +378,11 @@ public class IntentRecognitionService {
                         ? List.of("A_LESS_THAN_B", "ABSOLUTE_DIFFERENCE")
                         : compareCountries
                                 ? List.of("A_MORE_THAN_B", "ABSOLUTE_DIFFERENCE")
+                                : compareRelativeMonths
+                                        ? List.of(
+                                                "A_MORE_THAN_B",
+                                                "ABSOLUTE_DIFFERENCE",
+                                                "CHANGE_RATE")
                                 : List.of(),
                 null,
                 intent != IntentType.OUT_OF_SCOPE,
@@ -288,10 +392,12 @@ public class IntentRecognitionService {
         return objectMapper.writeValueAsString(result);
     }
 
-    private String mockTrendResult(AnalysisContext context)
+    private String mockTrendResult(String question, AnalysisContext context)
             throws JsonProcessingException {
         LocalDate end = context.currentDate();
-        LocalDate start = end.minusMonths(5).withDayOfMonth(1);
+        LocalDate start = question.contains("\u4eca\u5e74")
+                ? end.withDayOfYear(1)
+                : end.minusMonths(5).withDayOfMonth(1);
         return objectMapper.writeValueAsString(new IntentRecognitionResult(
                 IntentType.TREND_QUERY,
                 1,
@@ -313,17 +419,27 @@ public class IntentRecognitionService {
         boolean ascending = question.contains("\u6700\u4f4e")
                 || question.contains("\u6700\u5c11")
                 || question.contains("\u540e");
-        int topN = question.contains("3") ? 3 : question.contains("5") ? 5 : 1;
-        LocalDate start = context.currentDate().withDayOfMonth(1);
+        int topN = topN(question);
+        LocalDate start = question.contains("6月")
+                ? LocalDate.of(context.currentDate().getYear(), 6, 1)
+                : context.currentDate().withDayOfMonth(1);
+        LocalDate end = question.contains("6月")
+                ? start.withDayOfMonth(start.lengthOfMonth())
+                : context.currentDate();
+        String dimension = question.contains("\u6536\u5355\u673a\u6784")
+                ? "acquiringInstitution"
+                : question.contains("\u53d1\u5361\u5730\u533a")
+                        ? "issuingRegion"
+                        : "acquiringRegion";
         return objectMapper.writeValueAsString(new IntentRecognitionResult(
                 IntentType.RANK_QUERY,
                 1,
                 question.contains("\u7b14\u6570") ? "transactionCount" : "transactionAmount",
-                List.of("acquiringRegion"),
+                List.of(dimension),
                 List.of(new FilterCondition(
                         "tradeDate",
                         "BETWEEN",
-                        List.of(start.toString(), context.currentDate().toString()))),
+                        List.of(start.toString(), end.toString()))),
                 List.of(),
                 List.of(ascending ? "ASC" : "DESC"),
                 topN,
@@ -331,6 +447,25 @@ public class IntentRecognitionService {
                 false,
                 List.of(),
                 ""));
+    }
+
+    private int topN(String question) {
+        java.util.regex.Matcher matcher =
+                java.util.regex.Pattern.compile("(?:前|后|最高的?|最低的?)\\s*(\\d{1,3})")
+                        .matcher(question);
+        if (matcher.find()) {
+            return Integer.parseInt(matcher.group(1));
+        }
+        if (question.contains("前十") || question.contains("后十")) {
+            return 10;
+        }
+        if (question.contains("前五") || question.contains("后五")) {
+            return 5;
+        }
+        if (question.contains("前三") || question.contains("后三")) {
+            return 3;
+        }
+        return 1;
     }
 
     public record RecognitionResponse(

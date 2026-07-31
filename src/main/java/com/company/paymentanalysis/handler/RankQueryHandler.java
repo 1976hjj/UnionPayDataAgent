@@ -75,7 +75,11 @@ public class RankQueryHandler implements IntentHandler {
                 execution.queryRecords(),
                 execution.rawData(),
                 ranking,
-                merge(execution.warnings(), ranking.warnings()),
+                merge(
+                        merge(execution.warnings(), ranking.warnings()),
+                        List.of("排名执行策略："
+                                + properties.ranking().executionMode()
+                                + "；最终排序由Java校验")),
                 "");
     }
 

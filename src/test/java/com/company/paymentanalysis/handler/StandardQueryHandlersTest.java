@@ -60,7 +60,10 @@ class StandardQueryHandlersTest {
     @Test
     void routerSelectsEachHandlerWithoutConditionBranches() {
         IntentHandlerRouter router =
-                new IntentHandlerRouter(List.of(singleHandler, groupHandler));
+                new IntentHandlerRouter(
+                        List.of(singleHandler, groupHandler),
+                        org.mockito.Mockito.mock(
+                                com.company.paymentanalysis.execution.AnalysisExecutionAuditLogger.class));
         QueryPlan singlePlan = plan(IntentType.SINGLE_QUERY);
         QueryPlan groupPlan = plan(IntentType.GROUP_QUERY);
         when(executionService.execute(singlePlan))

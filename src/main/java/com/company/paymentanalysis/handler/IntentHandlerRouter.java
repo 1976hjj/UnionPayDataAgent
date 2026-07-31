@@ -4,6 +4,7 @@ import com.company.paymentanalysis.analysis.AnalysisContext;
 import com.company.paymentanalysis.analysis.IntentType;
 import com.company.paymentanalysis.analysis.QueryPlan;
 import com.company.paymentanalysis.execution.AnalysisExecutionResult;
+import com.company.paymentanalysis.execution.AnalysisExecutionAuditLogger;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
@@ -14,8 +15,12 @@ import org.springframework.stereotype.Component;
 public class IntentHandlerRouter {
 
     private final Map<IntentType, IntentHandler> handlerMap;
+    private final AnalysisExecutionAuditLogger auditLogger;
 
-    public IntentHandlerRouter(List<IntentHandler> handlers) {
+    public IntentHandlerRouter(
+            List<IntentHandler> handlers,
+            AnalysisExecutionAuditLogger auditLogger) {
+        this.auditLogger = auditLogger;
         EnumMap<IntentType, IntentHandler> registrations = new EnumMap<>(IntentType.class);
         for (IntentHandler handler : handlers == null ? List.<IntentHandler>of() : handlers) {
             if (handler == null) {
@@ -52,10 +57,30 @@ public class IntentHandlerRouter {
         if (handler == null) {
             throw new UnsupportedIntentException(queryPlan.intent());
         }
-        return handler.execute(queryPlan, context);
+        long startedAt = System.nanoTime();
+        try {
+            AnalysisExecutionResult result = handler.execute(queryPlan, context);
+            auditLogger.completed(
+                    queryPlan,
+                    result,
+                    handler.getClass().getSimpleName(),
+                    elapsedMillis(startedAt));
+            return result;
+        } catch (RuntimeException exception) {
+            auditLogger.failed(
+                    queryPlan,
+                    handler.getClass().getSimpleName(),
+                    exception,
+                    elapsedMillis(startedAt));
+            throw exception;
+        }
     }
 
     public boolean supports(IntentType intent) {
         return intent != null && handlerMap.containsKey(intent);
+    }
+
+    private long elapsedMillis(long startedAt) {
+        return Math.max(0, (System.nanoTime() - startedAt) / 1_000_000);
     }
 }

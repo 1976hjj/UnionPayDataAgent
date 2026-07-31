@@ -4,12 +4,13 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import com.company.paymentanalysis.config.AnalysisProperties;
 import org.springframework.stereotype.Component;
 
 @Component
 public class QueryPlanValidator {
 
-    private static final Set<IntentType> STAGE_ONE_INTENTS = Set.of(
+    private static final Set<IntentType> SUPPORTED_QUERY_INTENTS = Set.of(
             IntentType.SINGLE_QUERY,
             IntentType.GROUP_QUERY,
             IntentType.COMPARE_QUERY,
@@ -17,6 +18,12 @@ public class QueryPlanValidator {
             IntentType.RANK_QUERY,
             IntentType.CLARIFICATION,
             IntentType.OUT_OF_SCOPE);
+
+    private final AnalysisProperties properties;
+
+    public QueryPlanValidator(AnalysisProperties properties) {
+        this.properties = properties;
+    }
 
     public QueryPlan validate(QueryPlan plan) {
         if (plan == null || plan.intent() == null) {
@@ -35,7 +42,7 @@ public class QueryPlanValidator {
         if (plan.intent() == IntentType.OUT_OF_SCOPE) {
             return plan;
         }
-        if (!STAGE_ONE_INTENTS.contains(plan.intent())) {
+        if (!SUPPORTED_QUERY_INTENTS.contains(plan.intent())) {
             return clarification(
                     plan,
                     List.of("unsupportedIntent"),
@@ -54,7 +61,8 @@ public class QueryPlanValidator {
         }
         if (plan.intent() == IntentType.RANK_QUERY
                 && plan.topN() != null
-                && (plan.topN() <= 0 || plan.topN() > 100)) {
+                && (plan.topN() <= 0
+                        || plan.topN() > properties.ranking().maxTopN())) {
             missing.add("topN");
         }
         if (plan.intent() == IntentType.COMPARE_QUERY) {
