@@ -1,22 +1,41 @@
 package com.company.paymentanalysis.controller;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.company.paymentanalysis.chat.ChatQueryInterpreter;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.ActionOperation;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.ActionPlan;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.FilterAction;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.FilterOperation;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryActionResult;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.SortAction;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.SortItem;
+import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
+import com.company.paymentanalysis.smartbi.SmartBiClient;
+import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT,
         properties = {
             "chat.memory.redis-enabled=false",
-            "llm.mock-enabled=true",
             "server.port=18081",
             "smartbi.base-url=http://localhost:18081"
         })
@@ -26,313 +45,237 @@ class ChatQueryControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @MockitoBean
+    private ChatQueryInterpreter interpreter;
+
+    @MockitoSpyBean
+    private SmartBiClient smartBiClient;
+
+    @BeforeEach
+    void configureInterpreter() {
+        when(interpreter.engineLabel()).thenReturn("Test LLM");
+    }
+
     @Test
-    void completesAQueryAcrossMultipleTurns() throws Exception {
+    void previewsAllParametersBeforeConfirmationAndQueriesOnlyAfterExplicitConfirmation() throws Exception {
+        when(interpreter.interpret(any(), any())).thenReturn(result(new QueryAction(
+                "QUERY", "SET", "2026-02-01", "2026-07-31", "近半年",
+                operations(new ActionOperation("ADD", List.of("transactionAmount"))),
+                operations(new ActionOperation("ADD", List.of("region", "tradeMonth"))),
+                keepFilters(), keepSort())));
+
         mockMvc.perform(post("/api/chat/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "userId": "test-user-multi",
-                                  "sessionId": "demo-multi",
-                                  "message": "查7月交易金额",
-                                  "context": {
-                                    "startDate": "",
-                                    "endDate": "",
-                                    "periodLabel": "",
-                                    "metricIds": [],
-                                    "dimensionIds": []
-                                  }
+                                  "userId":"test-user",
+                                  "sessionId":"query-contract",
+                                  "message":"查近半年交易金额，按地区和月份",
+                                  "context":null
                                 }
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("completed"))
-                .andExpect(jsonPath("$.context.periodLabel").value("2026年7月"))
-                .andExpect(jsonPath("$.context.metricIds[0]").value("transactionAmount"))
-                .andExpect(jsonPath("$.result.columns.length()").value(2))
-                .andExpect(jsonPath("$.result.rows.length()").value(1))
-                .andExpect(jsonPath("$.executionEngine")
-                        .value("LangGraph4j → Mock LLM → SmartBI Client → Java Calculation Engine"))
+                .andExpect(jsonPath("$.status").value("confirming"))
+                .andExpect(jsonPath("$.queryAction.intent").value("QUERY"))
+                .andExpect(jsonPath("$.queryAction.periodAction").value("SET"))
+                .andExpect(jsonPath("$.queryAction.metricAction.operations[0].action").value("ADD"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.dataSetId").isNotEmpty())
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("region_name"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[1]").value("sett_dt_Month2"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.columns[0]").value("trans_amt"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].name").value("trade_date"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].operation").value("BETWEEN"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].values[0]").value("2026-02-01"))
+                .andExpect(jsonPath("$.workflowSteps[0].node").value("interpretQueryAction"))
                 .andExpect(jsonPath("$.workflowSteps.length()").value(6))
-                .andExpect(jsonPath("$.workflowSteps[0].node").value("interpretMessage"))
-                .andExpect(jsonPath("$.workflowSteps[4].node").value("executeSmartBiQuery"))
-                .andExpect(jsonPath("$.llmMessage.role").value("assistant"))
-                .andExpect(jsonPath("$.llmMessage.content").isNotEmpty())
+                .andExpect(jsonPath("$.workflowSteps[4].status").value("SKIPPED"))
+                .andExpect(jsonPath("$.workflowSteps[4].detail")
+                        .value(org.hamcrest.Matchers.containsString("等待用户确认")))
+                .andExpect(jsonPath("$.executionEngine").value("LangGraph4j → Test LLM → SmartBI Client"))
                 .andExpect(jsonPath("$.llmMessage.requestMessages.length()").value(2))
-                .andExpect(jsonPath("$.llmMessage.requestMessages[0].role").value("system"))
-                .andExpect(jsonPath("$.llmMessage.requestMessages[1].role").value("user"))
-                .andExpect(jsonPath("$.queryPlan.columns[0]").value("交易金额 (trans_amt)"))
-                .andExpect(jsonPath("$.queryPlan.filters[0].operation").value("BETWEEN"))
-                .andExpect(jsonPath("$.queryPlan.sqlPreview")
-                        .value(org.hamcrest.Matchers.containsString("SUM(trans_amt)")))
-                .andExpect(jsonPath("$.queryPlan.sqlPreview")
-                        .value(org.hamcrest.Matchers.containsString("trade_date BETWEEN")));
+                .andExpect(jsonPath("$.reply").value(org.hamcrest.Matchers.containsString("请确认本次查询参数")))
+                .andExpect(jsonPath("$.result").doesNotExist());
+        verify(smartBiClient, never()).query(any());
 
         mockMvc.perform(post("/api/chat/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "userId": "test-user-multi",
-                                  "sessionId": "demo-multi",
-                                  "message": "按受理渠道",
-                                  "context": {
-                                    "startDate": "2026-07-01",
-                                    "endDate": "2026-07-30",
-                                    "periodLabel": "2026年7月",
-                                    "metricIds": ["transactionAmount"],
-                                    "dimensionIds": []
+                                  "userId":"test-user",
+                                  "sessionId":"query-contract",
+                                  "message":"确认执行",
+                                  "confirmed":true,
+                                  "context":{
+                                    "startDate":"2026-02-01",
+                                    "endDate":"2026-07-31",
+                                    "periodLabel":"近半年",
+                                    "metricIds":["transactionAmount"],
+                                    "dimensionIds":["region","tradeMonth"]
                                   }
                                 }
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("completed"))
-                .andExpect(jsonPath("$.result.columns.length()").value(2))
-                .andExpect(jsonPath("$.result.rows.length()").value(4))
+                .andExpect(jsonPath("$.queryAction.periodAction").value("KEEP"))
+                .andExpect(jsonPath("$.llmMessage.requestMessages.length()").value(0))
+                .andExpect(jsonPath("$.workflowSteps[4].status").value("COMPLETED"))
+                .andExpect(jsonPath("$.result.rows").isNotEmpty());
+        verify(smartBiClient, times(1)).query(any());
+    }
+
+    @Test
+    void mergesQueryActionWithTheExistingConversationContext() throws Exception {
+        when(interpreter.interpret(any(), any())).thenReturn(result(new QueryAction(
+                "QUERY", "KEEP", "", "", "",
+                operations(new ActionOperation("ADD", List.of("transactionCount"))),
+                operations(new ActionOperation("REMOVE", List.of("region")),
+                        new ActionOperation("ADD", List.of("channel"))),
+                keepFilters(), keepSort())));
+
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId":"test-user",
+                                  "sessionId":"query-merge",
+                                  "message":"再加交易笔数，并把地区换成受理渠道",
+                                  "context":{
+                                    "startDate":"2026-02-01",
+                                    "endDate":"2026-07-31",
+                                    "periodLabel":"近半年",
+                                    "metricIds":["transactionAmount"],
+                                    "dimensionIds":["region"]
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("confirming"))
                 .andExpect(jsonPath("$.context.metricIds[0]").value("transactionAmount"))
+                .andExpect(jsonPath("$.context.metricIds[1]").value("transactionCount"))
                 .andExpect(jsonPath("$.context.dimensionIds[0]").value("channel"))
-                .andExpect(jsonPath("$.queryPlan.rows[0]").value("受理渠道 (accept_channel)"));
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.columns.length()").value(2))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("accept_channel"))
+                .andExpect(jsonPath("$.result").doesNotExist());
     }
 
     @Test
-    void removesOnlyTheRequestedDimensionAndKeepsOtherContext() throws Exception {
+    void executesModelProvidedGroupFilterAndSortWithoutNaturalLanguageRules() throws Exception {
+        QueryAction action = new QueryAction(
+                "QUERY", "SET", "2026-07-01", "2026-07-31", "2026年7月",
+                operations(new ActionOperation("ADD", List.of("transactionAmount"))),
+                operations(new ActionOperation("ADD", List.of("region"))),
+                new FilterAction(List.of(
+                        new FilterOperation("SET", "region", "IN", List.of("华南", "华东")))),
+                new SortAction("SET", List.of(new SortItem("transactionAmount", "ASC"))));
+        when(interpreter.interpret(any(), any())).thenReturn(result(action));
+
         mockMvc.perform(post("/api/chat/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "userId": "test-user-remove-dimension",
-                                  "sessionId": "demo-remove-dimension",
-                                  "message": "地区维度取消",
-                                  "context": {
-                                    "startDate": "2026-07-01",
-                                    "endDate": "2026-07-30",
-                                    "periodLabel": "本月（默认）",
-                                    "metricIds": ["transactionAmount"],
-                                    "dimensionIds": ["region", "channel"]
-                                  }
+                                  "userId":"test-user",
+                                  "sessionId":"group-filter-sort",
+                                  "message":"the backend must use only the mocked QueryAction",
+                                  "context":null
                                 }
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("completed"))
-                .andExpect(jsonPath("$.context.dimensionIds.length()").value(1))
-                .andExpect(jsonPath("$.context.dimensionIds[0]").value("channel"))
-                .andExpect(jsonPath("$.queryPlan.rows.length()").value(1))
-                .andExpect(jsonPath("$.queryPlan.rows[0]").value("受理渠道 (accept_channel)"));
-    }
-
-    @Test
-    void removesAndAddsDimensionsInTheSameTurn() throws Exception {
-        mockMvc.perform(post("/api/chat/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "userId": "test-user-edit-dimensions",
-                                  "sessionId": "demo-edit-dimensions",
-                                  "message": "取消地区维度，增加受理渠道",
-                                  "context": {
-                                    "startDate": "2026-07-01",
-                                    "endDate": "2026-07-30",
-                                    "periodLabel": "本月（默认）",
-                                    "metricIds": ["transactionAmount"],
-                                    "dimensionIds": ["region", "merchantType"]
-                                  }
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.context.dimensionIds.length()").value(2))
-                .andExpect(jsonPath("$.context.dimensionIds[0]").value("merchantType"))
-                .andExpect(jsonPath("$.context.dimensionIds[1]").value("channel"));
-    }
-
-    @Test
-    void substitutesOneDimensionWithoutDroppingUnrelatedDimensions() throws Exception {
-        mockMvc.perform(post("/api/chat/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "userId": "test-user-substitute-dimension",
-                                  "sessionId": "demo-substitute-dimension",
-                                  "message": "用受理渠道取代地区维度",
-                                  "context": {
-                                    "startDate": "2026-07-01",
-                                    "endDate": "2026-07-30",
-                                    "periodLabel": "本月（默认）",
-                                    "metricIds": ["transactionAmount"],
-                                    "dimensionIds": ["region", "merchantType"]
-                                  }
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.context.dimensionIds.length()").value(2))
-                .andExpect(jsonPath("$.context.dimensionIds[0]").value("merchantType"))
-                .andExpect(jsonPath("$.context.dimensionIds[1]").value("channel"));
-    }
-
-    @Test
-    void removesAndAddsMetricsInTheSameTurn() throws Exception {
-        mockMvc.perform(post("/api/chat/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "userId": "test-user-edit-metrics",
-                                  "sessionId": "demo-edit-metrics",
-                                  "message": "取消交易金额，增加交易笔数",
-                                  "context": {
-                                    "startDate": "2026-07-01",
-                                    "endDate": "2026-07-30",
-                                    "periodLabel": "本月（默认）",
-                                    "metricIds": ["transactionAmount", "successRate"],
-                                    "dimensionIds": ["merchantType"]
-                                  }
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.context.metricIds.length()").value(2))
-                .andExpect(jsonPath("$.context.metricIds[0]").value("successRate"))
-                .andExpect(jsonPath("$.context.metricIds[1]").value("transactionCount"));
-    }
-
-    @Test
-    void clearsOnlyDimensionsWithoutResettingOtherConditions() throws Exception {
-        mockMvc.perform(post("/api/chat/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "userId": "test-user-clear-dimensions",
-                                  "sessionId": "demo-clear-dimensions",
-                                  "message": "清空全部维度",
-                                  "context": {
-                                    "startDate": "2026-07-01",
-                                    "endDate": "2026-07-30",
-                                    "periodLabel": "本月（默认）",
-                                    "metricIds": ["transactionAmount"],
-                                    "dimensionIds": ["region", "merchantType"]
-                                  }
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("completed"))
-                .andExpect(jsonPath("$.context.metricIds[0]").value("transactionAmount"))
-                .andExpect(jsonPath("$.context.dimensionIds.length()").value(0));
-    }
-
-    @Test
-    void asksForTimeWhenTimeIsOmitted() throws Exception {
-        mockMvc.perform(post("/api/chat/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "userId": "test-user-default",
-                                  "sessionId": "demo-default",
-                                  "message": "查交易笔数",
-                                  "context": null
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("clarifying"))
-                .andExpect(jsonPath("$.reply").value(org.hamcrest.Matchers.containsString("时间")))
-                .andExpect(jsonPath("$.context.dimensionIds.length()").value(0))
-                .andExpect(jsonPath("$.result").doesNotExist())
-                .andExpect(jsonPath("$.workflowSteps[5].status").value("COMPLETED"));
-    }
-
-    @Test
-    void groupsRecentMonthsByTheModelMonthDimension() throws Exception {
-        mockMvc.perform(post("/api/chat/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "userId": "test-user-month-dimension",
-                                  "sessionId": "demo-month-dimension",
-                                  "message": "交易笔数，近三个月每个月看",
-                                  "context": {
-                                    "startDate": "2026-05-01",
-                                    "endDate": "2026-07-30",
-                                    "periodLabel": "近三个月",
-                                    "metricIds": [],
-                                    "dimensionIds": []
-                                  }
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.context.dimensionIds[0]").value("tradeMonth"))
-                .andExpect(jsonPath("$.queryPlan.rows[0]").value("月 (sett_dt_Month2)"))
+                .andExpect(jsonPath("$.status").value("confirming"))
+                .andExpect(jsonPath("$.queryAction.dimensionAction.operations[0].ids[0]").value("region"))
+                .andExpect(jsonPath("$.queryAction.filterAction.operations[0].values[0]").value("华南"))
+                .andExpect(jsonPath("$.queryAction.sortAction.items[0].direction").value("ASC"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("region_name"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[1].name").value("region_name"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[1].operation").value("IN"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[1].values.length()").value(2))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.relationNode.childNodes.length()").value(2))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.sorts[0].field").value("trans_amt"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.sorts[0].direction").value("ASC"))
                 .andExpect(jsonPath("$.queryPlan.sqlPreview")
-                        .value(org.hamcrest.Matchers.containsString("GROUP BY sett_dt_Month2")));
-    }
+                        .value(org.hamcrest.Matchers.containsString("GROUP BY region_name")))
+                .andExpect(jsonPath("$.queryPlan.sqlPreview")
+                        .value(org.hamcrest.Matchers.containsString("ORDER BY trans_amt ASC")))
+                .andExpect(jsonPath("$.result").doesNotExist());
 
-    @Test
-    void comparesTwoMonthsWithoutCollapsingThemIntoOnePeriod() throws Exception {
         mockMvc.perform(post("/api/chat/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "userId": "test-user-compare-months",
-                                  "sessionId": "demo-compare-months",
-                                  "message": "6月比7月少了多少金额",
-                                  "context": null
+                                  "userId":"test-user",
+                                  "sessionId":"group-filter-sort",
+                                  "message":"确认执行",
+                                  "confirmed":true,
+                                  "context":{
+                                    "startDate":"2026-07-01",
+                                    "endDate":"2026-07-31",
+                                    "periodLabel":"2026年7月",
+                                    "metricIds":["transactionAmount"],
+                                    "dimensionIds":["region"],
+                                    "dimensionFilters":[{
+                                      "dimensionId":"region",
+                                      "operator":"IN",
+                                      "values":["华南","华东"]
+                                    }],
+                                    "sorts":[{
+                                      "fieldId":"transactionAmount",
+                                      "direction":"ASC"
+                                    }]
+                                  }
                                 }
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("completed"))
                 .andExpect(jsonPath("$.result.rows.length()").value(2))
-                .andExpect(jsonPath("$.result.rows[0].comparisonSubject").value("6月"))
-                .andExpect(jsonPath("$.result.rows[1].comparisonSubject").value("7月"))
-                .andExpect(jsonPath("$.queryPlan.filters.length()").value(2))
-                .andExpect(jsonPath("$.queryPlan.sqlPreview")
-                        .value(org.hamcrest.Matchers.containsString(" OR trade_date BETWEEN")));
+                .andExpect(jsonPath("$.result.rows[0].region").value("华东"));
     }
 
     @Test
-    void rejectsNonQueryConversation() throws Exception {
+    void asksForMissingStateWithoutGeneratingSmartBiJson() throws Exception {
+        when(interpreter.interpret(any(), any())).thenReturn(result(QueryAction.keep()));
+
         mockMvc.perform(post("/api/chat/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "userId": "test-user-rejected",
-                                  "sessionId": "demo-rejected",
-                                  "message": "帮我写一首诗",
-                                  "context": null
+                                  "userId":"test-user",
+                                  "sessionId":"query-incomplete",
+                                  "message":"继续",
+                                  "context":null
                                 }
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("rejected"))
-                .andExpect(jsonPath("$.result").doesNotExist())
+                .andExpect(jsonPath("$.status").value("clarifying"))
+                .andExpect(jsonPath("$.queryAction.intent").value("QUERY"))
                 .andExpect(jsonPath("$.queryPlan").doesNotExist())
-                .andExpect(jsonPath("$.workflowSteps.length()").value(6))
                 .andExpect(jsonPath("$.workflowSteps[3].status").value("SKIPPED"))
                 .andExpect(jsonPath("$.workflowSteps[4].status").value("SKIPPED"));
     }
 
     @Test
-    void keepsQueryAvailableButDoesNotPretendToPersistWhenRedisIsDisabled() throws Exception {
-        mockMvc.perform(post("/api/chat/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "userId": "history-user",
-                                  "sessionId": "history-conversation",
-                                  "message": "查最近7天支付成功率",
-                                  "context": null
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.conversationId").value("history-conversation"));
-
-        mockMvc.perform(get("/api/chat/conversations")
-                        .param("userId", "history-user"))
-                .andExpect(status().isServiceUnavailable());
-
+    void reportsRedisAsUnavailableWithoutInProcessFallback() throws Exception {
         mockMvc.perform(get("/api/chat/memory/status"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.backend").value("Redis"))
                 .andExpect(jsonPath("$.redisConfigured").value(false))
                 .andExpect(jsonPath("$.available").value(false));
+    }
 
-        mockMvc.perform(get("/api/system/dependencies"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.overallStatus").value("DEGRADED"))
-                .andExpect(jsonPath("$.dependencies[0].code").value("redis"))
-                .andExpect(jsonPath("$.dependencies[0].status").value("DOWN"))
-                .andExpect(jsonPath("$.dependencies[1].status").value("MOCK"))
-                .andExpect(jsonPath("$.dependencies[2].status").value("UP"));
+    private QueryActionResult result(QueryAction action) {
+        return new QueryActionResult(action, new LlmResultMessage(
+                "glm-4-flash-250414", "assistant", "{}", List.of(
+                        new com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.ChatMessage("system", "schema"),
+                        new com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.ChatMessage("user", "query"))));
+    }
+
+    private ActionPlan operations(ActionOperation... operations) {
+        return new ActionPlan(List.of(operations));
+    }
+
+    private FilterAction keepFilters() {
+        return new FilterAction(List.of(new FilterOperation("KEEP", "", "", List.of())));
+    }
+
+    private SortAction keepSort() {
+        return new SortAction("KEEP", List.of());
     }
 }

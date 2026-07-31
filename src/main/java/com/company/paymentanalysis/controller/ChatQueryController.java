@@ -2,8 +2,10 @@ package com.company.paymentanalysis.controller;
 
 import com.company.paymentanalysis.chat.ChatConversationMemoryService;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService.ChatMemoryUnavailableException;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
 import com.company.paymentanalysis.chat.ChatQueryWorkflowService;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
+import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.io.Serializable;
 import java.util.List;
@@ -52,7 +54,8 @@ public class ChatQueryController {
             // Redis 不可用时仍允许当前浏览器继续查数，但不伪造持久化记忆。
         }
         ChatResponse response =
-                workflowService.query(new ChatRequest(userId, conversationId, message, restoredContext));
+                workflowService.query(new ChatRequest(
+                        userId, conversationId, message, restoredContext, request.confirmed()));
         try {
             memoryService.saveTurn(userId, conversationId, message, response);
         } catch (ChatMemoryUnavailableException ignored) {
@@ -117,22 +120,38 @@ public class ChatQueryController {
         return normalized;
     }
 
-    public record ChatRequest(String userId, String sessionId, String message, QueryContext context)
+    public record ChatRequest(
+            String userId, String sessionId, String message, QueryContext context, boolean confirmed)
             implements Serializable {
+
+        public ChatRequest(String userId, String sessionId, String message, QueryContext context) {
+            this(userId, sessionId, message, context, false);
+        }
     }
 
     public record ChatResponse(
             String status, String reply, List<String> suggestions, QueryContext context, QueryResult result,
             String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
-            String conversationId, LlmResultMessage llmMessage) implements Serializable {
+            String conversationId, QueryAction queryAction, LlmResultMessage llmMessage) implements Serializable {
     }
 
     public record QueryContext(
             String startDate, String endDate, String periodLabel,
-            List<String> metricIds, List<String> dimensionIds) implements Serializable {
+            List<String> metricIds, List<String> dimensionIds,
+            List<DimensionFilter> dimensionFilters, List<SortSpec> sorts) implements Serializable {
+
+        public QueryContext {
+            startDate = startDate == null ? "" : startDate;
+            endDate = endDate == null ? "" : endDate;
+            periodLabel = periodLabel == null ? "" : periodLabel;
+            metricIds = metricIds == null ? List.of() : List.copyOf(metricIds);
+            dimensionIds = dimensionIds == null ? List.of() : List.copyOf(dimensionIds);
+            dimensionFilters = dimensionFilters == null ? List.of() : List.copyOf(dimensionFilters);
+            sorts = sorts == null ? List.of() : List.copyOf(sorts);
+        }
 
         public static QueryContext empty() {
-            return new QueryContext("", "", "", List.of(), List.of());
+            return new QueryContext("", "", "", List.of(), List.of(), List.of(), List.of());
         }
 
         public boolean hasPeriod() {
@@ -141,8 +160,16 @@ public class ChatQueryController {
 
         @JsonIgnore
         public boolean isEmpty() {
-            return !hasPeriod() && metricIds.isEmpty() && dimensionIds.isEmpty();
+            return !hasPeriod() && metricIds.isEmpty() && dimensionIds.isEmpty()
+                    && dimensionFilters.isEmpty() && sorts.isEmpty();
         }
+    }
+
+    public record DimensionFilter(String dimensionId, String operator, List<String> values)
+            implements Serializable {
+    }
+
+    public record SortSpec(String fieldId, String direction) implements Serializable {
     }
 
     public record QueryResult(String summary, List<ResultColumn> columns, List<Map<String, String>> rows)
@@ -157,7 +184,8 @@ public class ChatQueryController {
 
     public record ChatQueryPlan(
             String dataSource, String dataSetId, List<String> rows,
-            List<String> columns, List<QueryFilter> filters, String sqlPreview) implements Serializable {
+            List<String> columns, List<QueryFilter> filters, String sqlPreview,
+            QueryRequest smartBiRequest) implements Serializable {
     }
 
     public record QueryFilter(String name, String operation, List<String> values) implements Serializable {
@@ -175,7 +203,7 @@ public class ChatQueryController {
     public record ConversationMessage(
             int id, String role, String text, List<String> suggestions, QueryResult result,
             String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
-            String tone, LlmResultMessage llmMessage)
+            String status, String tone, QueryAction queryAction, LlmResultMessage llmMessage)
             implements Serializable {
     }
 

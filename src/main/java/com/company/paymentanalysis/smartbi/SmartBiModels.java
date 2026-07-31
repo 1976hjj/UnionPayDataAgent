@@ -36,7 +36,24 @@ public final class SmartBiModels {
             List<String> rows,
             List<String> columns,
             List<Filter> filters,
-            RelationNode relationNode) implements Serializable {
+            RelationNode relationNode,
+            List<Sort> sorts) implements Serializable {
+
+        public QueryRequest {
+            rows = rows == null ? List.of() : List.copyOf(rows);
+            columns = columns == null ? List.of() : List.copyOf(columns);
+            filters = filters == null ? List.of() : List.copyOf(filters);
+            sorts = sorts == null ? List.of() : List.copyOf(sorts);
+        }
+
+        public QueryRequest(
+                String dataSetId, List<String> rows, List<String> columns,
+                List<Filter> filters, RelationNode relationNode) {
+            this(dataSetId, rows, columns, filters, relationNode, List.of());
+        }
+    }
+
+    public record Sort(String field, String direction) implements Serializable {
     }
 
     public record QueryResponse(

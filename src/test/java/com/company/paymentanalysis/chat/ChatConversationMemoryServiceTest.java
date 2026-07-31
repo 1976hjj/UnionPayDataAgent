@@ -61,11 +61,11 @@ class ChatConversationMemoryServiceTest {
                 redis, new ObjectMapper(), new ChatMemoryProperties(true, "test:chat:", 30, 50));
         QueryContext context = new QueryContext(
                 "2026-07-01", "2026-07-30", "2026年7月",
-                List.of("transactionAmount"), List.of("channel"));
+                List.of("transactionAmount"), List.of("channel"), List.of(), List.of());
         ChatResponse response = new ChatResponse(
                 "completed", "查询完成", List.of(), context, null, "LangGraph4j → Mock LLM → Mock SmartBI",
                 List.of(new WorkflowStep("node", "节点", "COMPLETED", "完成")),
-                null, "conversation-1", null);
+                null, "conversation-1", null, null);
 
         service.saveTurn("user-1", "conversation-1", "查7月交易金额", response);
 

@@ -5,6 +5,7 @@ import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryResponse;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,16 +33,16 @@ public class MockChatSmartBiDataService {
     public boolean supports(QueryRequest request) {
         return request != null
                 && request.columns() != null
-                && request.columns().size() == 1
-                && METRICS.contains(request.columns().get(0))
+                && !request.columns().isEmpty()
+                && request.columns().stream().allMatch(METRICS::contains)
                 && request.rows().stream().allMatch(MEMBERS::containsKey);
     }
 
     public QueryResponse query(QueryRequest request) {
-        String metric = request.columns().get(0);
         List<Map<String, Object>> rows = request.rows().isEmpty()
-                ? List.of(Map.of(metric, aggregateValue(request, metric)))
-                : groupedRows(request, metric);
+                ? List.of(aggregateRow(request))
+                : groupedRows(request);
+        rows = sortedRows(request, rows);
         return new QueryResponse(
                 "mock-chat-smartbi-" + UUID.randomUUID(),
                 rows,
@@ -50,7 +51,36 @@ public class MockChatSmartBiDataService {
                         "rowCount", rows.size()));
     }
 
-    private List<Map<String, Object>> groupedRows(QueryRequest request, String metric) {
+    private Map<String, Object> aggregateRow(QueryRequest request) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        request.columns().forEach(metric -> row.put(metric, aggregateValue(request, metric)));
+        return Map.copyOf(row);
+    }
+
+    private List<Map<String, Object>> sortedRows(
+            QueryRequest request, List<Map<String, Object>> rows) {
+        if (request.sorts().isEmpty() || rows.size() < 2) {
+            return rows;
+        }
+        Comparator<Map<String, Object>> comparator = null;
+        for (var sort : request.sorts()) {
+            Comparator<Map<String, Object>> next =
+                    Comparator.comparing(row -> comparable(row.get(sort.field())),
+                            Comparator.nullsLast(Comparator.naturalOrder()));
+            if ("DESC".equals(sort.direction())) {
+                next = next.reversed();
+            }
+            comparator = comparator == null ? next : comparator.thenComparing(next);
+        }
+        return rows.stream().sorted(comparator).toList();
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private Comparable comparable(Object value) {
+        return value instanceof Comparable comparable ? comparable : value == null ? null : value.toString();
+    }
+
+    private List<Map<String, Object>> groupedRows(QueryRequest request) {
         List<String> firstDimensionMembers = selectedMembers(request, request.rows().get(0));
         List<Map<String, Object>> rows = new ArrayList<>();
         for (int index = 0; index < firstDimensionMembers.size(); index++) {
@@ -59,7 +89,8 @@ public class MockChatSmartBiDataService {
                 List<String> members = selectedMembers(request, dimension);
                 row.put(dimension, members.get(Math.min(index, members.size() - 1)));
             }
-            row.put(metric, metricValue(metric, index));
+            int rowIndex = index;
+            request.columns().forEach(metric -> row.put(metric, metricValue(metric, rowIndex)));
             rows.add(row);
         }
         return List.copyOf(rows);

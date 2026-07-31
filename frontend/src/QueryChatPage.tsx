@@ -23,6 +23,8 @@ type QueryContext = {
   periodLabel: string
   metricIds: string[]
   dimensionIds: string[]
+  dimensionFilters: { dimensionId: string; operator: string; values: string[] }[]
+  sorts: { fieldId: string; direction: 'ASC' | 'DESC' }[]
 }
 
 type ResultColumn = {
@@ -50,6 +52,56 @@ type QueryFilter = {
   values: string[]
 }
 
+type ActionOperation = {
+  action: 'KEEP' | 'ADD' | 'REMOVE' | 'CLEAR'
+  ids: string[]
+}
+
+type QueryAction = {
+  intent: 'QUERY'
+  periodAction: 'KEEP' | 'SET' | 'CLEAR'
+  startDate: string
+  endDate: string
+  periodLabel: string
+  metricAction: { operations: ActionOperation[] }
+  dimensionAction: { operations: ActionOperation[] }
+  filterAction: {
+    operations: {
+      action: 'KEEP' | 'SET' | 'REMOVE' | 'CLEAR'
+      dimensionId: string
+      operator: string
+      values: string[]
+    }[]
+  }
+  sortAction: {
+    action: 'KEEP' | 'SET' | 'CLEAR'
+    items: { fieldId: string; direction: 'ASC' | 'DESC' }[]
+  }
+}
+
+type SmartBiFilter = {
+  id: string
+  name: string
+  operation: string
+  values: string[]
+}
+
+type SmartBiRelationNode = {
+  childNodes: SmartBiRelationNode[] | null
+  filter: SmartBiFilter | null
+  relation: string | null
+  leaf: string
+}
+
+type SmartBiQueryRequest = {
+  dataSetId: string
+  rows: string[]
+  columns: string[]
+  filters: SmartBiFilter[]
+  relationNode: SmartBiRelationNode
+  sorts: { field: string; direction: 'ASC' | 'DESC' }[]
+}
+
 type ChatQueryPlan = {
   dataSource: string
   dataSetId: string
@@ -57,6 +109,7 @@ type ChatQueryPlan = {
   columns: string[]
   filters: QueryFilter[]
   sqlPreview: string
+  smartBiRequest: SmartBiQueryRequest
 }
 
 type LlmResultMessage = {
@@ -68,7 +121,7 @@ type LlmResultMessage = {
 }
 
 type ChatResponse = {
-  status: 'clarifying' | 'completed' | 'rejected'
+  status: 'clarifying' | 'confirming' | 'completed' | 'rejected'
   reply: string
   suggestions: string[]
   context: QueryContext
@@ -77,6 +130,7 @@ type ChatResponse = {
   workflowSteps: WorkflowStep[]
   queryPlan: ChatQueryPlan | null
   conversationId: string
+  queryAction: QueryAction
   llmMessage: LlmResultMessage
 }
 
@@ -90,7 +144,9 @@ type Message = {
   workflowSteps?: WorkflowStep[]
   queryPlan?: ChatQueryPlan | null
   tone?: 'normal' | 'rejected'
+  queryAction?: QueryAction | null
   llmMessage?: LlmResultMessage | null
+  status?: ChatResponse['status'] | null
 }
 
 type ConversationSummary = {
@@ -118,6 +174,8 @@ const EMPTY_CONTEXT: QueryContext = {
   periodLabel: '',
   metricIds: [],
   dimensionIds: [],
+  dimensionFilters: [],
+  sorts: [],
 }
 
 const FALLBACK_METADATA: Metadata = {
@@ -183,11 +241,13 @@ function WorkflowTrace({
   engine,
   steps,
   plan,
+  queryAction,
   llmMessage,
 }: {
   engine: string
   steps: WorkflowStep[]
   plan?: ChatQueryPlan | null
+  queryAction?: QueryAction | null
   llmMessage?: LlmResultMessage | null
 }) {
   return (
@@ -209,9 +269,16 @@ function WorkflowTrace({
             </li>
           ))}
         </ol>
+        {queryAction && (
+          <details className="sql-preview" open>
+            <summary>1. QueryAction（LLM 交互 JSON）</summary>
+            <pre><code>{JSON.stringify(queryAction, null, 2)}</code></pre>
+            <small>大模型给出的查询状态变更指令，已通过后端结构和白名单校验。</small>
+          </details>
+        )}
         {llmMessage && (
-          <details className="llm-message-preview" open>
-            <summary>大模型 messages</summary>
+          <details className="llm-message-preview">
+            <summary>LLM 请求 messages 与原始响应</summary>
             <div><span>model</span><code>{llmMessage.model}</code></div>
             <section className="llm-message-list">
               {llmMessage.requestMessages?.map((message, index) => (
@@ -245,9 +312,14 @@ function WorkflowTrace({
                 <strong>{plan.filters.map((filter) => `${filter.name} ${filter.operation} ${filter.values.join(' ～ ')}`).join('；')}</strong>
               </div>
             </div>
+            <details className="sql-preview" open>
+              <summary>2. SmartBI QueryRequest（最终接口 JSON）</summary>
+              <pre><code>{JSON.stringify(plan.smartBiRequest, null, 2)}</code></pre>
+              <small>实际发送给 SmartBI Client 的查询对象；当前由 Mock SmartBI 接收。</small>
+            </details>
             {plan.sqlPreview && (
-              <details className="sql-preview" open>
-                <summary>等价 SQL 预览</summary>
+              <details className="sql-preview">
+                <summary>辅助：等价 SQL 预览</summary>
                 <pre><code>{plan.sqlPreview}</code></pre>
                 <small>仅用于理解查询逻辑，SmartBI 实际执行以 JSON 查询计划为准。</small>
               </details>
@@ -315,6 +387,20 @@ export default function QueryChatPage() {
     .map((id) => metadata.dimensions.find((dimension) => dimension.id === id)?.name)
     .filter(Boolean)
     .join('、')
+  const filterNames = context.dimensionFilters
+    .map((filter) => {
+      const name = metadata.dimensions.find((dimension) => dimension.id === filter.dimensionId)?.name || filter.dimensionId
+      return `${name} ${filter.operator} ${filter.values.join('、')}`
+    })
+    .join('；')
+  const sortNames = context.sorts
+    .map((sort) => {
+      const name = metadata.metrics.find((metric) => metric.id === sort.fieldId)?.name
+        || metadata.dimensions.find((dimension) => dimension.id === sort.fieldId)?.name
+        || sort.fieldId
+      return `${name} ${sort.direction}`
+    })
+    .join('；')
 
   async function initializeMemory() {
     setHistoryLoading(true)
@@ -363,6 +449,7 @@ export default function QueryChatPage() {
       const restoredMessages = detail.messages.map((item, index) => ({
         ...item,
         suggestions: index === lastAssistantIndex ? item.suggestions : undefined,
+        status: index === lastAssistantIndex ? item.status : null,
       }))
       setConversationId(detail.conversationId)
       setContext(detail.context)
@@ -415,7 +502,7 @@ export default function QueryChatPage() {
     }
   }
 
-  async function sendMessage(content: string) {
+  async function sendMessage(content: string, confirmed = false) {
     const message = content.trim()
     if (!message) {
       setValidation('请输入查数需求')
@@ -428,7 +515,10 @@ export default function QueryChatPage() {
 
     const userId = messageId
     setMessageId((current) => current + 1)
-    setMessages((current) => [...current.map((item) => ({ ...item, suggestions: undefined })), { id: userId, role: 'user', text: message }])
+    setMessages((current) => [
+      ...current.map((item) => ({ ...item, suggestions: undefined, status: null })),
+      { id: userId, role: 'user', text: message },
+    ])
     setInput('')
     setValidation('')
     setPending(true)
@@ -442,6 +532,7 @@ export default function QueryChatPage() {
           sessionId: conversationId,
           message,
           context,
+          confirmed,
         }),
       })
       if (!response.ok) {
@@ -461,7 +552,9 @@ export default function QueryChatPage() {
         executionEngine: data.executionEngine,
         workflowSteps: data.workflowSteps,
         queryPlan: data.queryPlan,
+        queryAction: data.queryAction,
         llmMessage: data.llmMessage,
+        status: data.status,
         tone: data.status === 'rejected' ? 'rejected' : 'normal',
       }])
       setMessageId((current) => current + 1)
@@ -551,8 +644,29 @@ export default function QueryChatPage() {
                       engine={message.executionEngine}
                       steps={message.workflowSteps}
                       plan={message.queryPlan}
+                      queryAction={message.queryAction}
                       llmMessage={message.llmMessage}
                     />
+                  )}
+                  {message.status === 'confirming' && (
+                    <div className="query-confirm-actions">
+                      <button
+                        className="confirm-query-button"
+                        disabled={pending}
+                        type="button"
+                        onClick={() => void sendMessage('确认执行', true)}
+                      >
+                        确认执行
+                      </button>
+                      <button
+                        disabled={pending}
+                        type="button"
+                        onClick={() => setInput('请修改为：')}
+                      >
+                        继续修改
+                      </button>
+                      <span>确认前不会调用 SmartBI</span>
+                    </div>
                   )}
                   {message.suggestions && message.suggestions.length > 0 && (
                     <div className="suggestion-list">
@@ -599,6 +713,8 @@ export default function QueryChatPage() {
             <ContextItem label="时间范围" value={context.periodLabel} ready={Boolean(context.periodLabel)} />
             <ContextItem label="度量" value={metricNames} ready={Boolean(metricNames)} />
             <ContextItem label="分组维度（可选）" value={dimensionNames || '不分组，返回汇总'} ready={true} />
+            <ContextItem label="维度过滤（可选）" value={filterNames || '无'} ready={true} />
+            <ContextItem label="排序（可选）" value={sortNames || '无'} ready={true} />
           </div>
           <div className="capability-card">
             <strong>支持的 3 个度量</strong>

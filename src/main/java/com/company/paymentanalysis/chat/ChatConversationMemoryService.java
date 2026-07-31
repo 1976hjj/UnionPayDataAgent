@@ -49,11 +49,13 @@ public class ChatConversationMemoryService {
                 new ArrayList<>(previous == null ? List.of() : previous.messages());
         int nextId = messages.stream().mapToInt(ConversationMessage::id).max().orElse(0) + 1;
         messages.add(new ConversationMessage(
-                nextId, "user", userMessage, List.of(), null, null, List.of(), null, "normal", null));
+                nextId, "user", userMessage, List.of(), null, null, List.of(), null,
+                null, "normal", null, null));
         messages.add(new ConversationMessage(
                 nextId + 1, "assistant", response.reply(), response.suggestions(), response.result(),
                 response.executionEngine(), response.workflowSteps(), response.queryPlan(),
-                "rejected".equals(response.status()) ? "rejected" : "normal", response.llmMessage()));
+                response.status(), "rejected".equals(response.status()) ? "rejected" : "normal",
+                response.queryAction(), response.llmMessage()));
 
         StoredConversation saved = new StoredConversation(
                 userId, conversationId, previous == null ? title(userMessage) : previous.title(),

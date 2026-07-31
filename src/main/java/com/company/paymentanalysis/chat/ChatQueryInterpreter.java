@@ -11,94 +11,49 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.Serializable;
 import java.time.Clock;
 import java.time.LocalDate;
-import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
-import java.util.function.Function;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 
 @Component
 public class ChatQueryInterpreter {
 
-    private static final Set<String> INTENTS = Set.of("QUERY", "GREETING", "RESET", "OUT_OF_SCOPE");
     private static final Set<String> PERIOD_ACTIONS = Set.of("KEEP", "SET", "CLEAR");
     private static final Set<String> LIST_ACTIONS = Set.of("KEEP", "ADD", "REMOVE", "CLEAR");
+    private static final Set<String> FILTER_ACTIONS = Set.of("KEEP", "SET", "REMOVE", "CLEAR");
+    private static final Set<String> FILTER_OPERATORS = Set.of("EQUALS", "IN");
+    private static final Set<String> SORT_ACTIONS = Set.of("KEEP", "SET", "CLEAR");
+    private static final Set<String> SORT_DIRECTIONS = Set.of("ASC", "DESC");
     private static final Set<String> METRICS =
             Set.of("transactionAmount", "transactionCount", "successRate");
-    private static final Set<String> DIMENSIONS =
-            Set.of(
-                    "tradeYear", "tradeMonth", "tradeDate",
-                    "channel", "region", "merchantType", "paymentMethod");
-    private static final List<String> REMOVAL_WORDS = List.of("取消", "移除", "去掉", "删除", "不要");
-    private static final List<String> ADDITION_WORDS = List.of("增加", "新增", "追加", "加上");
-    private static final List<String> EDIT_WORDS = List.of(
-            "取消", "移除", "去掉", "删除", "不要",
-            "增加", "新增", "追加", "加上",
-            "改为按", "换成按", "取代", "替换");
+    private static final Set<String> DIMENSIONS = Set.of(
+            "tradeYear", "tradeMonth", "tradeDate", "channel", "region",
+            "merchantType", "paymentMethod");
 
     private final OpenAiCompatibleLlmClient llmClient;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     public ChatQueryInterpreter(
-            OpenAiCompatibleLlmClient llmClient,
-            ObjectMapper objectMapper,
-            Clock clock) {
+            OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
         this.clock = clock;
     }
 
-    public InterpretationResult interpret(ChatRequest request, QueryContext current) {
-        Interpretation deterministic = deterministicInterpretation(request.message(), current);
-        LlmResultMessage llmMessage = null;
+    public QueryActionResult interpret(ChatRequest request, QueryContext current) {
         try {
-            String mockJson = objectMapper.writeValueAsString(deterministic);
-            llmMessage = llmClient.completeWithMessage(
-                    List.of(
-                            new ChatMessage(
-                                    "system",
-                                    """
-                                    你是支付数据查数意图解析器，只能处理查数。
-                                    只返回 JSON，不要解释或 Markdown。
-                                    intent 只能是 QUERY、GREETING、RESET、OUT_OF_SCOPE。
-                                    periodAction 只能是 KEEP、SET、CLEAR。
-                                    JSON 必须始终包含 intent、periodAction、startDate、endDate、periodLabel、
-                                    metricAction、dimensionAction 这七个字段，不得省略。
-                                    periodAction 为 SET 时 startDate、endDate、periodLabel 必须是非空字符串；
-                                    periodAction 为 KEEP 或 CLEAR 时这三个字段返回空字符串。
-                                    metricAction 和 dimensionAction 都是对象，格式为：
-                                    {"operations":[{"action":"ADD","ids":["..."]},{"action":"REMOVE","ids":["..."]}]}
-                                    action 只能是 KEEP、ADD、REMOVE、CLEAR，禁止返回 REPLACE。
-                                    KEEP 表示不改变，CLEAR 表示全部清空；KEEP 和 CLEAR 都必须单独出现，且 ids 必须为空。
-                                    ADD 和 REMOVE 可以单独出现，也可以同时出现；每个动作自己的 ids 表示该动作要改变的项目。
-                                    同一种动作最多出现一次。没有任何改变时返回 {"operations":[{"action":"KEEP","ids":[]}]}。
-                                    metricAction 中的 ids 只能使用 transactionAmount、transactionCount、successRate。
-                                    dimensionAction 中的 ids 只能使用 tradeYear、tradeMonth、tradeDate、
-                                    channel、region、merchantType、paymentMethod。
-                                    用户要求“按年/每年”时使用 tradeYear，“按月/每月/每个月”时使用 tradeMonth，
-                                    “按日/每天/日期维度”时使用 tradeDate。
-                                    当前日期由用户消息末尾提供。相对时间必须按该日期解析。
-                                    不要把用户原文、提示词或任何密钥放进 explanation。
-                                    """),
-                            new ChatMessage(
-                                    "user",
-                                    "当前上下文："
-                                            + objectMapper.writeValueAsString(current)
-                                            + "\n当前日期："
-                                            + LocalDate.now(clock)
-                                            + "\n用户本轮输入："
-                                            + request.message())),
-                    mockJson);
-            Interpretation interpretation = parseInterpretation(llmMessage.content());
-            return new InterpretationResult(validateAndNormalize(interpretation, deterministic), llmMessage);
+            List<ChatMessage> messages = List.of(
+                    new ChatMessage("system", systemPrompt()),
+                    new ChatMessage("user", userPrompt(request.message(), current)));
+            String mockContent = objectMapper.writeValueAsString(QueryAction.keep());
+            LlmResultMessage llmMessage = llmClient.completeWithMessage(messages, mockContent);
+            QueryAction action = parseAndValidate(llmMessage.content());
+            return new QueryActionResult(action, llmMessage);
         } catch (JsonProcessingException exception) {
-            return new InterpretationResult(deterministic, llmMessage);
+            throw new IllegalArgumentException("大模型返回的 QueryAction JSON 无法解析", exception);
         }
     }
 
@@ -106,405 +61,302 @@ public class ChatQueryInterpreter {
         return llmClient.modelLabel();
     }
 
-    /**
-     * Compatibility bridge for the existing ADD/REMOVE/CLEAR conversation merge rules.
-     * Intent recognition and SmartBI planning are handled by the new analysis pipeline.
-     */
-    public Interpretation interpretForContextMerge(String message, QueryContext current) {
-        return deterministicInterpretation(message, current);
-    }
-
-    private Interpretation validateAndNormalize(Interpretation value, Interpretation fallback) {
-        if (value == null) {
-            return fallback;
-        }
-        String intent = allowedOrFallback(value.intent(), INTENTS, fallback.intent());
-        String periodAction =
-                allowedOrFallback(value.periodAction(), PERIOD_ACTIONS, fallback.periodAction());
-        ActionPlan metricAction = normalizeActionPlan(value.metricAction(), fallback.metricAction(), METRICS, 3);
-        ActionPlan dimensionAction =
-                normalizeActionPlan(value.dimensionAction(), fallback.dimensionAction(), DIMENSIONS, 7);
-        if (hasChange(fallback.metricAction())) {
-            metricAction = fallback.metricAction();
-        }
-        if (hasChange(fallback.dimensionAction())) {
-            dimensionAction = fallback.dimensionAction();
-        }
-        return new Interpretation(
-                intent,
-                periodAction,
-                value.startDate() == null ? fallback.startDate() : value.startDate(),
-                value.endDate() == null ? fallback.endDate() : value.endDate(),
-                value.periodLabel() == null ? fallback.periodLabel() : value.periodLabel(),
-                metricAction,
-                dimensionAction,
-                value.explanation() == null ? fallback.explanation() : value.explanation());
-    }
-
-    private String allowedOrFallback(String value, Set<String> allowed, String fallback) {
-        return value != null && allowed.contains(value) ? value : fallback;
-    }
-
-    private Interpretation deterministicInterpretation(String message, QueryContext current) {
-        if (message.contains("重新查询")
-                || message.contains("重来")
-                || message.contains("清空查询")
-                || message.contains("清空条件")
-                || "清空".equals(message.trim())) {
-            return new Interpretation(
-                    "RESET", "CLEAR", "", "", "", clearPlan(), clearPlan(), "清空当前查询条件");
-        }
-        if (isGreeting(message) && current.isEmpty()) {
-            return new Interpretation(
-                    "GREETING", "KEEP", "", "", "", keepPlan(), keepPlan(), "支付查数问候");
-        }
-        if (!isQueryRelated(message)) {
-            return new Interpretation(
-                    "OUT_OF_SCOPE", "KEEP", "", "", "", keepPlan(), keepPlan(), "非支付查数请求");
-        }
-
-        String periodAction = "KEEP";
-        String startDate = "";
-        String endDate = "";
-        String periodLabel = "";
-        LocalDate today = LocalDate.now(clock);
-        if (message.contains("近三个月") || message.contains("最近三个月")) {
-            periodAction = "SET";
-            startDate = today.minusMonths(2).withDayOfMonth(1).toString();
-            endDate = today.toString();
-            periodLabel = "近三个月";
-        } else if (message.contains("最近7天") || message.contains("近7天")) {
-            periodAction = "SET";
-            startDate = today.minusDays(6).toString();
-            endDate = today.toString();
-            periodLabel = "最近7天";
-        } else if (message.contains("上月")) {
-            periodAction = "SET";
-            LocalDate previousMonth = today.minusMonths(1);
-            startDate = previousMonth.withDayOfMonth(1).toString();
-            endDate = previousMonth.withDayOfMonth(previousMonth.lengthOfMonth()).toString();
-            periodLabel = previousMonth.getYear() + "年" + previousMonth.getMonthValue() + "月";
-        } else if (message.contains("本月")) {
-            periodAction = "SET";
-            startDate = today.withDayOfMonth(1).toString();
-            endDate = today.toString();
-            periodLabel = today.getYear() + "年" + today.getMonthValue() + "月";
-        } else {
-            List<Integer> mentionedMonths = mentionedMonths(message);
-            if (mentionedMonths.size() == 1) {
-                YearMonth month = YearMonth.of(today.getYear(), mentionedMonths.get(0));
-                periodAction = "SET";
-                startDate = month.atDay(1).toString();
-                endDate = month.atEndOfMonth().toString();
-                periodLabel = month.getYear() + "年" + month.getMonthValue() + "月";
-            }
-        }
-
-        List<String> metrics = detectMetrics(message);
-        ActionPlan metricAction;
-        if (message.contains("清空全部度量")
-                || message.contains("清空所有度量")
-                || message.contains("清空全部指标")
-                || message.contains("清空所有指标")
-                || message.contains("不要任何指标")) {
-            metricAction = clearPlan();
-        } else {
-            List<String> metricRemovals =
-                    idsFollowingActions(message, REMOVAL_WORDS, this::detectMetrics);
-            List<String> metricAdditions =
-                    idsFollowingActions(message, ADDITION_WORDS, this::detectMetrics);
-            ListEdits metricSubstitution = substitutionEdits(message, this::detectMetrics);
-            if (!metricSubstitution.removals().isEmpty() || !metricSubstitution.additions().isEmpty()) {
-                metricRemovals = metricSubstitution.removals();
-                metricAdditions = metricSubstitution.additions();
-            }
-            if (containsRemovalWord(message) && metricRemovals.isEmpty()) {
-                metricRemovals = excluding(metrics, metricAdditions);
-            }
-            if (containsAdditionWord(message) && metricAdditions.isEmpty()) {
-                metricAdditions = excluding(metrics, metricRemovals);
-            }
-            if (!metricAdditions.isEmpty() || !metricRemovals.isEmpty()) {
-                metricAction = editPlan(metricAdditions, metricRemovals);
-            } else if (!metrics.isEmpty() && (message.contains("只看") || message.contains("改为"))) {
-                metricAction = replacementPlan(current.metricIds(), metrics);
-            } else {
-                metricAction = editPlan(metrics, List.of());
-            }
-        }
-
-        List<String> mentionedDimensions = detectDimensions(message);
-        ActionPlan dimensionAction;
-        if (message.contains("不分维度")
-                || message.contains("看汇总")
-                || message.contains("清空全部维度")
-                || message.contains("清空所有维度")
-                || message.contains("清空维度")) {
-            dimensionAction = clearPlan();
-        } else {
-            List<String> removals =
-                    idsFollowingActions(message, REMOVAL_WORDS, this::detectDimensions);
-            List<String> additions =
-                    idsFollowingActions(message, ADDITION_WORDS, this::detectDimensions);
-            ListEdits substitution = substitutionEdits(message, this::detectDimensions);
-            if (!substitution.removals().isEmpty() || !substitution.additions().isEmpty()) {
-                removals = substitution.removals();
-                additions = substitution.additions();
-            }
-            if (containsRemovalWord(message) && removals.isEmpty()) {
-                removals = excluding(mentionedDimensions, additions);
-            }
-            if (containsAdditionWord(message) && additions.isEmpty()) {
-                additions = excluding(mentionedDimensions, removals);
-            }
-            if (additions.isEmpty() && removals.isEmpty() && !mentionedDimensions.isEmpty()) {
-                if (message.contains("改为按") || message.contains("换成按")) {
-                    dimensionAction = replacementPlan(current.dimensionIds(), mentionedDimensions);
-                } else {
-                    dimensionAction = editPlan(mentionedDimensions, List.of());
+    private String systemPrompt() {
+        return """
+                你是支付数据查数条件转换器。你的唯一任务是把本轮用户输入转换成 QueryAction JSON。
+                只返回一个严格 JSON 对象，不要 Markdown、解释、候选答案或额外字段。
+                不要使用 answer、QueryAction 等外层包装。顶层对象必须严格采用以下结构：
+                {
+                  "intent":"QUERY",
+                  "periodAction":"KEEP",
+                  "startDate":"",
+                  "endDate":"",
+                  "periodLabel":"",
+                  "metricAction":{"operations":[{"action":"KEEP","ids":[]}]},
+                  "dimensionAction":{"operations":[{"action":"KEEP","ids":[]}]},
+                  "filterAction":{"operations":[{"action":"KEEP","dimensionId":"","operator":"","values":[]}]},
+                  "sortAction":{"action":"KEEP","items":[]}
                 }
-            } else {
-                dimensionAction = editPlan(additions, removals);
-            }
-        }
-        return new Interpretation(
-                "QUERY",
-                periodAction,
-                startDate,
-                endDate,
-                periodLabel,
-                metricAction,
-                dimensionAction,
-                "识别支付查数条件并合并多轮上下文");
+                intent 固定返回 QUERY。
+                periodAction 只能是 KEEP、SET、CLEAR。
+                periodAction=SET 时必须返回 yyyy-MM-dd 格式的 startDate、endDate 和 periodLabel；
+                KEEP 或 CLEAR 时 startDate、endDate、periodLabel 必须为空字符串。
+                metricAction 和 dimensionAction 的格式固定为：
+                {"operations":[{"action":"ADD","ids":["..."]}]}
+                action 只能是 KEEP、ADD、REMOVE、CLEAR。
+                KEEP 或 CLEAR 必须单独出现且 ids 为空；ADD 与 REMOVE 可以同时出现。
+                用户要求替换某类条件时，必须同时返回 REMOVE 原有 id 和 ADD 新 id；
+                不得因为已经生成 REMOVE 而遗漏用户明确要求的新 id。
+                dimensionAction 表示分组维度，ADD 某维度就是增加对应的 GROUP BY。
+                filterAction.operations 的 action 只能是 KEEP、SET、REMOVE、CLEAR：
+                SET 必须填写 dimensionId、operator 和 values；operator 只能是 EQUALS 或 IN；
+                REMOVE 只填写 dimensionId；KEEP/CLEAR 必须单独出现并将其他字段置空。
+                sortAction.action 只能是 KEEP、SET、CLEAR。SET 时 items 至少一项，
+                每项格式为 {"fieldId":"...","direction":"ASC"}，direction 只能是 ASC 或 DESC；
+                items 的先后顺序就是多字段排序优先级。
+                metric ids 只能是 transactionAmount、transactionCount、successRate。
+                dimension ids 只能是 tradeYear、tradeMonth、tradeDate、channel、region、
+                merchantType、paymentMethod。
+                当前上下文代表已经生效的查询条件。本轮没有修改某类条件时必须返回 KEEP，
+                不要重复 ADD 已存在的条件。相对日期必须根据用户消息中提供的当前日期换算。
+                时间范围和时间分组维度是两件事；除非用户明确要求按年、月、日分组，
+                否则不要自动增加 tradeYear、tradeMonth 或 tradeDate。
+                """;
     }
 
-    private boolean isGreeting(String message) {
-        return message.matches("^(你好|您好|嗨|hello|hi)[！!。.]?$");
+    private String userPrompt(String message, QueryContext current) throws JsonProcessingException {
+        return "当前日期：" + LocalDate.now(clock)
+                + "\n当前查询状态：" + objectMapper.writeValueAsString(current)
+                + "\n用户本轮输入：" + message;
     }
 
-    private boolean isQueryRelated(String message) {
-        String normalized = message.toLowerCase(Locale.ROOT);
-        return List.of(
-                        "查", "看", "数据", "交易", "金额", "笔数", "成功率", "指标", "度量",
-                        "渠道", "地区", "省", "城市", "商户", "支付方式", "付款方式", "维度",
-                        "日期", "按年", "每年", "按月", "每月", "每个月", "按日", "每天", "每日",
-                        "本月", "上月", "最近", "月", "天", "汇总", "全部", "追加", "加上", "分组")
-                .stream()
-                .anyMatch(normalized::contains);
-    }
-
-    private List<Integer> mentionedMonths(String message) {
-        Matcher matcher = Pattern.compile("(?<!\\d)(1[0-2]|[1-9])月").matcher(message);
-        LinkedHashSet<Integer> months = new LinkedHashSet<>();
-        while (matcher.find()) {
-            months.add(Integer.parseInt(matcher.group(1)));
-        }
-        return List.copyOf(months);
-    }
-
-    private boolean containsRemovalWord(String message) {
-        return REMOVAL_WORDS.stream().anyMatch(message::contains);
-    }
-
-    private boolean containsAdditionWord(String message) {
-        return ADDITION_WORDS.stream().anyMatch(message::contains);
-    }
-
-    private List<String> idsFollowingActions(
-            String message, List<String> actionWords, Function<String, List<String>> detector) {
-        List<String> values = new ArrayList<>();
-        for (String actionWord : actionWords) {
-            int fromIndex = 0;
-            while ((fromIndex = message.indexOf(actionWord, fromIndex)) >= 0) {
-                int start = fromIndex + actionWord.length();
-                int end = nextEditWordIndex(message, start);
-                values.addAll(detector.apply(message.substring(start, end)));
-                fromIndex = start;
-            }
-        }
-        return values.stream().distinct().toList();
-    }
-
-    private ListEdits substitutionEdits(
-            String message, Function<String, List<String>> detector) {
-        int replaceIndex = message.indexOf("取代");
-        if (replaceIndex >= 0) {
-            List<String> additions = detector.apply(message.substring(0, replaceIndex));
-            List<String> removals = detector.apply(message.substring(replaceIndex + "取代".length()));
-            return new ListEdits(removals, additions);
-        }
-        for (String word : List.of("替换为", "替换成")) {
-            replaceIndex = message.indexOf(word);
-            if (replaceIndex >= 0) {
-                List<String> removals = detector.apply(message.substring(0, replaceIndex));
-                List<String> additions = detector.apply(message.substring(replaceIndex + word.length()));
-                return new ListEdits(removals, additions);
-            }
-        }
-        return new ListEdits(List.of(), List.of());
-    }
-
-    private int nextEditWordIndex(String message, int start) {
-        return EDIT_WORDS.stream()
-                .mapToInt(word -> message.indexOf(word, start))
-                .filter(index -> index >= 0)
-                .min()
-                .orElse(message.length());
-    }
-
-    private List<String> detectDimensions(String text) {
-        List<String> dimensions = new ArrayList<>();
-        if (text.contains("按年") || text.contains("每年") || text.contains("年度维度")
-                || text.contains("年维度")) {
-            dimensions.add("tradeYear");
-        }
-        if (text.contains("按月") || text.contains("每月") || text.contains("每个月")
-                || text.contains("月份维度") || text.contains("月维度")) {
-            dimensions.add("tradeMonth");
-        }
-        if (text.contains("按日") || text.contains("每天") || text.contains("每日")
-                || text.contains("日期维度") || text.contains("日维度")) {
-            dimensions.add("tradeDate");
-        }
-        if (text.contains("渠道")) {
-            dimensions.add("channel");
-        }
-        if (text.contains("地区") || text.contains("省份") || text.contains("城市")) {
-            dimensions.add("region");
-        }
-        if (text.contains("商户")) {
-            dimensions.add("merchantType");
-        }
-        if (text.contains("支付方式") || text.contains("付款方式")) {
-            dimensions.add("paymentMethod");
-        }
-        return dimensions;
-    }
-
-    private List<String> detectMetrics(String text) {
-        List<String> metrics = new ArrayList<>();
-        if (text.contains("全部度量") || text.contains("所有度量")
-                || text.contains("全部指标") || text.contains("所有指标")) {
-            return List.of("transactionAmount", "transactionCount", "successRate");
-        }
-        if (text.contains("金额") || text.contains("交易额")) {
-            metrics.add("transactionAmount");
-        }
-        if (text.contains("笔数") || text.contains("交易量")) {
-            metrics.add("transactionCount");
-        }
-        if (text.contains("成功率")) {
-            metrics.add("successRate");
-        }
-        return List.copyOf(metrics);
-    }
-
-    private ActionPlan normalizeActionPlan(
-            ActionPlan value, ActionPlan fallback, Set<String> allowedIds, int limit) {
-        if (value == null || value.operations() == null) {
-            return fallback;
-        }
-        List<ActionOperation> operations = value.operations().stream()
-                .filter(operation -> operation != null && LIST_ACTIONS.contains(operation.action()))
-                .toList();
-        boolean hasKeep = operations.stream().anyMatch(operation -> "KEEP".equals(operation.action()));
-        boolean hasClear = operations.stream().anyMatch(operation -> "CLEAR".equals(operation.action()));
-        if ((hasKeep || hasClear) && operations.stream()
-                .anyMatch(operation -> !operation.action().equals(hasKeep ? "KEEP" : "CLEAR"))) {
-            return fallback;
-        }
-        if (hasKeep) {
-            return keepPlan();
-        }
-        if (hasClear) {
-            return clearPlan();
-        }
-        LinkedHashSet<String> additions = idsFor(operations, "ADD", allowedIds, limit);
-        LinkedHashSet<String> removals = idsFor(operations, "REMOVE", allowedIds, limit);
-        removals.removeAll(additions);
-        return editPlan(List.copyOf(additions), List.copyOf(removals));
-    }
-
-    private LinkedHashSet<String> idsFor(
-            List<ActionOperation> operations, String action, Set<String> allowedIds, int limit) {
-        LinkedHashSet<String> result = new LinkedHashSet<>();
-        operations.stream()
-                .filter(operation -> action.equals(operation.action()))
-                .flatMap(operation -> safeList(operation.ids()).stream())
-                .filter(allowedIds::contains)
-                .limit(limit)
-                .forEach(result::add);
-        return result;
-    }
-
-    private boolean hasChange(ActionPlan plan) {
-        return plan != null
-                && plan.operations() != null
-                && plan.operations().stream()
-                        .anyMatch(operation -> operation != null && !"KEEP".equals(operation.action()));
-    }
-
-    private ActionPlan replacementPlan(List<String> current, List<String> desired) {
-        List<String> removals = safeList(current).stream().filter(id -> !desired.contains(id)).toList();
-        List<String> additions = desired.stream().filter(id -> !safeList(current).contains(id)).toList();
-        return editPlan(additions, removals);
-    }
-
-    private ActionPlan editPlan(List<String> additions, List<String> removals) {
-        List<ActionOperation> operations = new ArrayList<>();
-        List<String> uniqueRemovals = safeList(removals).stream().distinct().toList();
-        List<String> uniqueAdditions = safeList(additions).stream().distinct().toList();
-        if (!uniqueRemovals.isEmpty()) {
-            operations.add(new ActionOperation("REMOVE", uniqueRemovals));
-        }
-        if (!uniqueAdditions.isEmpty()) {
-            operations.add(new ActionOperation("ADD", uniqueAdditions));
-        }
-        return operations.isEmpty() ? keepPlan() : new ActionPlan(List.copyOf(operations));
-    }
-
-    private ActionPlan keepPlan() {
-        return new ActionPlan(List.of(new ActionOperation("KEEP", List.of())));
-    }
-
-    private ActionPlan clearPlan() {
-        return new ActionPlan(List.of(new ActionOperation("CLEAR", List.of())));
-    }
-
-    private List<String> excluding(List<String> values, List<String> excluded) {
-        List<String> result = new ArrayList<>();
-        for (String value : values) {
-            if (!excluded.contains(value)) {
-                result.add(value);
-            }
-        }
-        return List.copyOf(result);
-    }
-
-    private record ListEdits(List<String> removals, List<String> additions) {
-    }
-
-    private Interpretation parseInterpretation(String content) throws JsonProcessingException {
+    private QueryAction parseAndValidate(String content) throws JsonProcessingException {
         JsonNode root = objectMapper.readTree(stripMarkdownFence(content));
-        JsonNode payload = root != null && root.path("answer").isObject() ? root.path("answer") : root;
-        return objectMapper.treeToValue(payload, Interpretation.class);
+        JsonNode payload = unwrapTransportEnvelope(root);
+        if (payload == null || !payload.isObject()) {
+            throw new IllegalArgumentException("QueryAction 必须是 JSON 对象");
+        }
+        for (String field : List.of(
+                "intent", "periodAction", "startDate", "endDate", "periodLabel",
+                "metricAction", "dimensionAction", "filterAction", "sortAction")) {
+            if (!payload.has(field)) {
+                throw new IllegalArgumentException("QueryAction 缺少字段：" + field);
+            }
+        }
+        validateExactFields(payload, Set.of(
+                "intent", "periodAction", "startDate", "endDate", "periodLabel",
+                "metricAction", "dimensionAction", "filterAction", "sortAction"), "QueryAction");
+        validateActionJson(payload.path("metricAction"), "metricAction");
+        validateActionJson(payload.path("dimensionAction"), "dimensionAction");
+        validateFilterActionJson(payload.path("filterAction"));
+        validateSortActionJson(payload.path("sortAction"));
+        QueryAction action = objectMapper.treeToValue(payload, QueryAction.class);
+        if (!"QUERY".equals(action.intent())) {
+            throw new IllegalArgumentException("QueryAction.intent 只能是 QUERY");
+        }
+        if (!PERIOD_ACTIONS.contains(action.periodAction())) {
+            throw new IllegalArgumentException("不支持的 periodAction：" + action.periodAction());
+        }
+        validatePeriod(action);
+        return new QueryAction(
+                "QUERY",
+                action.periodAction(),
+                action.startDate(),
+                action.endDate(),
+                action.periodLabel(),
+                validateActionPlan(action.metricAction(), METRICS, 3, "metricAction"),
+                validateActionPlan(action.dimensionAction(), DIMENSIONS, 7, "dimensionAction"),
+                validateFilterAction(action.filterAction()),
+                validateSortAction(action.sortAction()));
+    }
+
+    private JsonNode unwrapTransportEnvelope(JsonNode root) {
+        if (root != null && root.path("answer").isObject()) {
+            return root.path("answer");
+        }
+        if (root != null && root.path("QueryAction").isObject()) {
+            return root.path("QueryAction");
+        }
+        return root;
+    }
+
+    private void validatePeriod(QueryAction action) {
+        if ("SET".equals(action.periodAction())) {
+            if (action.startDate().isBlank() || action.endDate().isBlank() || action.periodLabel().isBlank()) {
+                throw new IllegalArgumentException("periodAction=SET 时日期和标签不能为空");
+            }
+            LocalDate start = LocalDate.parse(action.startDate());
+            LocalDate end = LocalDate.parse(action.endDate());
+            if (start.isAfter(end)) {
+                throw new IllegalArgumentException("QueryAction 开始日期不能晚于结束日期");
+            }
+            return;
+        }
+        if (!action.startDate().isBlank() || !action.endDate().isBlank() || !action.periodLabel().isBlank()) {
+            throw new IllegalArgumentException("periodAction=KEEP/CLEAR 时日期和标签必须为空");
+        }
+    }
+
+    private ActionPlan validateActionPlan(
+            ActionPlan plan, Set<String> allowedIds, int maximum, String fieldName) {
+        if (plan == null || plan.operations() == null || plan.operations().isEmpty()) {
+            throw new IllegalArgumentException(fieldName + ".operations 不能为空");
+        }
+        List<ActionOperation> normalized = new ArrayList<>();
+        Set<String> seenActions = new LinkedHashSet<>();
+        for (ActionOperation operation : plan.operations()) {
+            if (operation == null || !LIST_ACTIONS.contains(operation.action())) {
+                throw new IllegalArgumentException(fieldName + " 包含不支持的 action");
+            }
+            if (!seenActions.add(operation.action())) {
+                throw new IllegalArgumentException(fieldName + " 中同一种 action 不能重复");
+            }
+            List<String> ids = operation.ids() == null ? List.of() : List.copyOf(operation.ids());
+            List<String> unknownIds = ids.stream().filter(id -> !allowedIds.contains(id)).toList();
+            if (!unknownIds.isEmpty()) {
+                throw new IllegalArgumentException(fieldName + " 包含不支持的 id：" + unknownIds);
+            }
+            if (new LinkedHashSet<>(ids).size() != ids.size()) {
+                throw new IllegalArgumentException(fieldName + " 中的 id 不允许重复");
+            }
+            if (ids.size() > maximum) {
+                throw new IllegalArgumentException(fieldName + " 最多包含 " + maximum + " 个 id");
+            }
+            if (("KEEP".equals(operation.action()) || "CLEAR".equals(operation.action()))
+                    && (plan.operations().size() != 1 || !ids.isEmpty())) {
+                throw new IllegalArgumentException(fieldName + " 的 KEEP/CLEAR 必须单独出现且 ids 为空");
+            }
+            if (("ADD".equals(operation.action()) || "REMOVE".equals(operation.action())) && ids.isEmpty()) {
+                throw new IllegalArgumentException(fieldName + " 的 ADD/REMOVE 必须包含合法 ids");
+            }
+            normalized.add(new ActionOperation(operation.action(), ids));
+        }
+        return new ActionPlan(List.copyOf(normalized));
+    }
+
+    private FilterAction validateFilterAction(FilterAction action) {
+        if (action == null || action.operations() == null || action.operations().isEmpty()) {
+            throw new IllegalArgumentException("filterAction.operations 不能为空");
+        }
+        List<FilterOperation> operations = action.operations();
+        for (FilterOperation operation : operations) {
+            if (operation == null || !FILTER_ACTIONS.contains(operation.action())) {
+                throw new IllegalArgumentException("filterAction 包含不支持的 action");
+            }
+            boolean singleton = "KEEP".equals(operation.action()) || "CLEAR".equals(operation.action());
+            if (singleton && (operations.size() != 1
+                    || !operation.dimensionId().isBlank()
+                    || !operation.operator().isBlank()
+                    || !operation.values().isEmpty())) {
+                throw new IllegalArgumentException("filterAction 的 KEEP/CLEAR 必须单独出现且条件为空");
+            }
+            if ("REMOVE".equals(operation.action())
+                    && (!DIMENSIONS.contains(operation.dimensionId())
+                    || !operation.operator().isBlank()
+                    || !operation.values().isEmpty())) {
+                throw new IllegalArgumentException("filterAction 的 REMOVE 只允许填写合法 dimensionId");
+            }
+            if ("SET".equals(operation.action())
+                    && (!DIMENSIONS.contains(operation.dimensionId())
+                    || !FILTER_OPERATORS.contains(operation.operator())
+                    || operation.values().isEmpty()
+                    || operation.values().stream().anyMatch(String::isBlank))) {
+                throw new IllegalArgumentException("filterAction 的 SET 条件不合法");
+            }
+            if ("SET".equals(operation.action())
+                    && (new LinkedHashSet<>(operation.values()).size() != operation.values().size()
+                    || "EQUALS".equals(operation.operator()) && operation.values().size() != 1)) {
+                throw new IllegalArgumentException("filterAction 的 SET 值数量或重复项不合法");
+            }
+        }
+        long dimensions = operations.stream()
+                .filter(operation -> "SET".equals(operation.action()) || "REMOVE".equals(operation.action()))
+                .map(FilterOperation::dimensionId).distinct().count();
+        if (dimensions != operations.stream()
+                .filter(operation -> "SET".equals(operation.action()) || "REMOVE".equals(operation.action()))
+                .count()) {
+            throw new IllegalArgumentException("filterAction 同一维度每轮只能操作一次");
+        }
+        return new FilterAction(List.copyOf(operations));
+    }
+
+    private SortAction validateSortAction(SortAction action) {
+        if (action == null || !SORT_ACTIONS.contains(action.action())) {
+            throw new IllegalArgumentException("sortAction.action 不合法");
+        }
+        List<SortItem> items = action.items() == null ? List.of() : List.copyOf(action.items());
+        if (!"SET".equals(action.action()) && !items.isEmpty()) {
+            throw new IllegalArgumentException("sortAction KEEP/CLEAR 时 items 必须为空");
+        }
+        if ("SET".equals(action.action()) && items.isEmpty()) {
+            throw new IllegalArgumentException("sortAction SET 时 items 不能为空");
+        }
+        Set<String> allowedFields = new LinkedHashSet<>(METRICS);
+        allowedFields.addAll(DIMENSIONS);
+        Set<String> seen = new LinkedHashSet<>();
+        for (SortItem item : items) {
+            if (item == null || !allowedFields.contains(item.fieldId())
+                    || !SORT_DIRECTIONS.contains(item.direction())) {
+                throw new IllegalArgumentException("sortAction 包含不合法的排序项");
+            }
+            if (!seen.add(item.fieldId())) {
+                throw new IllegalArgumentException("sortAction 排序字段不允许重复");
+            }
+        }
+        return new SortAction(action.action(), items);
+    }
+
+    private void validateActionJson(JsonNode plan, String fieldName) {
+        if (!plan.isObject()) {
+            throw new IllegalArgumentException(fieldName + " 必须是 JSON 对象");
+        }
+        validateExactFields(plan, Set.of("operations"), fieldName);
+        JsonNode operations = plan.path("operations");
+        if (!operations.isArray()) {
+            throw new IllegalArgumentException(fieldName + ".operations 必须是数组");
+        }
+        for (JsonNode operation : operations) {
+            if (!operation.isObject()) {
+                throw new IllegalArgumentException(fieldName + ".operations 元素必须是对象");
+            }
+            validateExactFields(operation, Set.of("action", "ids"), fieldName + ".operations");
+        }
+    }
+
+    private void validateFilterActionJson(JsonNode action) {
+        if (!action.isObject()) {
+            throw new IllegalArgumentException("filterAction 必须是 JSON 对象");
+        }
+        validateExactFields(action, Set.of("operations"), "filterAction");
+        JsonNode operations = action.path("operations");
+        if (!operations.isArray()) {
+            throw new IllegalArgumentException("filterAction.operations 必须是数组");
+        }
+        for (JsonNode operation : operations) {
+            validateExactFields(operation, Set.of(
+                    "action", "dimensionId", "operator", "values"), "filterAction.operations");
+        }
+    }
+
+    private void validateSortActionJson(JsonNode action) {
+        if (!action.isObject()) {
+            throw new IllegalArgumentException("sortAction 必须是 JSON 对象");
+        }
+        validateExactFields(action, Set.of("action", "items"), "sortAction");
+        JsonNode items = action.path("items");
+        if (!items.isArray()) {
+            throw new IllegalArgumentException("sortAction.items 必须是数组");
+        }
+        for (JsonNode item : items) {
+            validateExactFields(item, Set.of("fieldId", "direction"), "sortAction.items");
+        }
+    }
+
+    private void validateExactFields(JsonNode node, Set<String> expected, String fieldName) {
+        Set<String> actual = new LinkedHashSet<>();
+        node.fieldNames().forEachRemaining(actual::add);
+        if (!actual.equals(expected)) {
+            Set<String> extra = new LinkedHashSet<>(actual);
+            extra.removeAll(expected);
+            if (!extra.isEmpty()) {
+                throw new IllegalArgumentException(fieldName + " 包含额外字段：" + extra);
+            }
+        }
     }
 
     private String stripMarkdownFence(String content) {
-        String trimmed = content.trim();
+        String trimmed = content == null ? "" : content.trim();
         if (!trimmed.startsWith("```")) {
             return trimmed;
         }
         int firstNewline = trimmed.indexOf('\n');
         int lastFence = trimmed.lastIndexOf("```");
-        return trimmed.substring(firstNewline + 1, lastFence).trim();
+        return firstNewline < 0 || lastFence <= firstNewline
+                ? trimmed
+                : trimmed.substring(firstNewline + 1, lastFence).trim();
     }
 
-    private List<String> safeList(List<String> values) {
-        return values == null ? List.of() : values;
-    }
-
-    public record Interpretation(
+    public record QueryAction(
             String intent,
             String periodAction,
             String startDate,
@@ -512,7 +364,25 @@ public class ChatQueryInterpreter {
             String periodLabel,
             ActionPlan metricAction,
             ActionPlan dimensionAction,
-            String explanation) implements Serializable {
+            FilterAction filterAction,
+            SortAction sortAction) implements Serializable {
+
+        public QueryAction {
+            intent = intent == null ? "" : intent;
+            periodAction = periodAction == null ? "" : periodAction;
+            startDate = startDate == null ? "" : startDate;
+            endDate = endDate == null ? "" : endDate;
+            periodLabel = periodLabel == null ? "" : periodLabel;
+        }
+
+        public static QueryAction keep() {
+            ActionPlan keep = new ActionPlan(List.of(new ActionOperation("KEEP", List.of())));
+            FilterAction keepFilters = new FilterAction(List.of(
+                    new FilterOperation("KEEP", "", "", List.of())));
+            return new QueryAction(
+                    "QUERY", "KEEP", "", "", "", keep, keep,
+                    keepFilters, new SortAction("KEEP", List.of()));
+        }
     }
 
     public record ActionPlan(List<ActionOperation> operations) implements Serializable {
@@ -521,6 +391,27 @@ public class ChatQueryInterpreter {
     public record ActionOperation(String action, List<String> ids) implements Serializable {
     }
 
-    public record InterpretationResult(Interpretation interpretation, LlmResultMessage llmMessage) {
+    public record FilterAction(List<FilterOperation> operations) implements Serializable {
+    }
+
+    public record FilterOperation(
+            String action, String dimensionId, String operator, List<String> values)
+            implements Serializable {
+
+        public FilterOperation {
+            action = action == null ? "" : action;
+            dimensionId = dimensionId == null ? "" : dimensionId;
+            operator = operator == null ? "" : operator;
+            values = values == null ? List.of() : List.copyOf(values);
+        }
+    }
+
+    public record SortAction(String action, List<SortItem> items) implements Serializable {
+    }
+
+    public record SortItem(String fieldId, String direction) implements Serializable {
+    }
+
+    public record QueryActionResult(QueryAction action, LlmResultMessage llmMessage) {
     }
 }

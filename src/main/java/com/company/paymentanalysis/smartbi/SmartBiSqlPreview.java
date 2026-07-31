@@ -20,7 +20,15 @@ public final class SmartBiSqlPreview {
                     ? List.of()
                     : request.filters().stream().map(SmartBiSqlPreview::filterSql).toList();
         }
-        return build(request.dataSetId(), request.rows(), request.columns(), predicates);
+        String sql = build(request.dataSetId(), request.rows(), request.columns(), predicates);
+        if (request.sorts().isEmpty()) {
+            return sql;
+        }
+        String orderBy = request.sorts().stream()
+                .map(sort -> sort.field() + " " + sort.direction())
+                .reduce((left, right) -> left + ", " + right)
+                .orElse("");
+        return sql.substring(0, sql.length() - 1) + "\nORDER BY " + orderBy + ";";
     }
 
     public static String build(
