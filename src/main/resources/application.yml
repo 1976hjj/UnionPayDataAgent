@@ -32,13 +32,18 @@ llm:
   mock-enabled: ${LLM_MOCK_ENABLED:false}
   base-url: ${LLM_BASE_URL:https://open.bigmodel.cn}
   api-key: ${LLM_API_KEY:}
-  model: ${LLM_MODEL:glm-4-flash-250414}
+  model: ${LLM_MODEL:glm-4.7-flash}
+  models:
+    - glm-4.7
+    - glm-4.7-flashx
+    - glm-4.7-flash
+    - glm-4-flash-250414
   chat-path: ${LLM_CHAT_PATH:/api/paas/v4/chat/completions}
   json-mode: ${LLM_JSON_MODE:true}
-  thinking-supported: ${LLM_THINKING_SUPPORTED:false}
+  thinking-supported: ${LLM_THINKING_SUPPORTED:true}
   thinking-enabled: ${LLM_THINKING_ENABLED:false}
-  max-tokens: ${LLM_MAX_TOKENS:2048}
-  temperature: ${LLM_TEMPERATURE:0.1}
-  max-attempts: ${LLM_MAX_ATTEMPTS:4}
-  retry-delay-ms: ${LLM_RETRY_DELAY_MS:1200}
+  max-tokens: ${LLM_MAX_TOKENS:512}
+  temperature: ${LLM_TEMPERATURE:0.0}
+  max-attempts: ${LLM_MAX_ATTEMPTS:2}
+  retry-delay-ms: ${LLM_RETRY_DELAY_MS:300}
 

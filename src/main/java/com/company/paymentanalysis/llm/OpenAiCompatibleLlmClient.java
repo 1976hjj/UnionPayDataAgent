@@ -3,8 +3,10 @@ package com.company.paymentanalysis.llm;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.Serializable;
 import java.time.Instant;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -16,8 +18,8 @@ public class OpenAiCompatibleLlmClient {
 
     private final LlmProperties properties;
     private final RestClient.Builder restClientBuilder;
-    private volatile Instant lastSuccessAt;
-    private volatile Instant lastFailureAt;
+    private final Map<String, Instant> lastSuccessAt = new ConcurrentHashMap<>();
+    private final Map<String, Instant> lastFailureAt = new ConcurrentHashMap<>();
 
     public OpenAiCompatibleLlmClient(LlmProperties properties, RestClient.Builder restClientBuilder) {
         this.properties = properties;
@@ -29,11 +31,16 @@ public class OpenAiCompatibleLlmClient {
     }
 
     public LlmResultMessage completeWithMessage(List<ChatMessage> messages, String mockContent) {
+        return completeWithMessage(messages, mockContent, null);
+    }
+
+    public LlmResultMessage completeWithMessage(
+            List<ChatMessage> messages, String mockContent, String requestedModel) {
+        String model = resolveModel(requestedModel);
         if (properties.mockEnabled()) {
-            return new LlmResultMessage(
-                    properties.model(), "assistant", mockContent, List.copyOf(messages));
+            return new LlmResultMessage(model, "assistant", mockContent, List.copyOf(messages));
         }
-        if (!StringUtils.hasText(properties.baseUrl()) || !StringUtils.hasText(properties.model())) {
+        if (!StringUtils.hasText(properties.baseUrl()) || !StringUtils.hasText(model)) {
             throw new IllegalStateException("启用真实 LLM 时必须配置 LLM_BASE_URL 和 LLM_MODEL");
         }
 
@@ -48,7 +55,7 @@ public class OpenAiCompatibleLlmClient {
         }
 
         ChatCompletionRequest body = new ChatCompletionRequest(
-                properties.model(),
+                model,
                 messages,
                 false,
                 properties.jsonMode() ? Map.of("type", "json_object") : null,
@@ -57,17 +64,23 @@ public class OpenAiCompatibleLlmClient {
                         : null,
                 properties.maxTokens(),
                 properties.temperature());
-        JsonNode response = executeWithRetry(request, body);
+        JsonNode response;
+        try {
+            response = executeWithRetry(request, body);
+        } catch (RuntimeException exception) {
+            lastFailureAt.put(model, Instant.now());
+            throw exception;
+        }
         JsonNode message = response == null ? null : response.at("/choices/0/message");
         JsonNode content = message == null ? null : message.get("content");
         if (content == null || content.isMissingNode()) {
-            lastFailureAt = Instant.now();
+            lastFailureAt.put(model, Instant.now());
             throw new IllegalStateException("LLM 返回中缺少 choices[0].message.content");
         }
-        lastSuccessAt = Instant.now();
+        lastSuccessAt.put(model, Instant.now());
         String role = message.path("role").asText("assistant");
         return new LlmResultMessage(
-                response.path("model").asText(properties.model()),
+                response.path("model").asText(model),
                 role,
                 content.asText(),
                 List.copyOf(messages),
@@ -83,7 +96,6 @@ public class OpenAiCompatibleLlmClient {
                 boolean retryable = exception.getStatusCode().value() == 429
                         || exception.getStatusCode().is5xxServerError();
                 if (!retryable || attempt == attempts) {
-                    lastFailureAt = Instant.now();
                     throw new IllegalStateException(
                             "LLM 调用失败（HTTP " + exception.getStatusCode().value() + "）："
                                     + exception.getResponseBodyAsString(),
@@ -105,7 +117,15 @@ public class OpenAiCompatibleLlmClient {
     }
 
     public String modelLabel() {
-        return properties.mockEnabled() ? "Mock LLM" : properties.model();
+        return properties.mockEnabled() ? "Mock LLM" : resolveModel(null);
+    }
+
+    public String modelLabel(String requestedModel) {
+        if (!StringUtils.hasText(requestedModel)) {
+            return modelLabel();
+        }
+        String model = resolveModel(requestedModel);
+        return properties.mockEnabled() ? "Mock LLM（" + model + "）" : model;
     }
 
     public boolean isMockEnabled() {
@@ -113,19 +133,49 @@ public class OpenAiCompatibleLlmClient {
     }
 
     public LlmHealth health() {
+        return health(null);
+    }
+
+    public LlmHealth health(String requestedModel) {
+        String model = resolveModel(requestedModel);
         if (properties.mockEnabled()) {
-            return new LlmHealth("MOCK", "Mock LLM", "使用固定模拟解析", null);
+            return new LlmHealth("MOCK", "Mock LLM（" + model + "）", "使用固定模拟解析", null);
         }
-        if (!StringUtils.hasText(properties.baseUrl()) || !StringUtils.hasText(properties.model())) {
+        if (!StringUtils.hasText(properties.baseUrl()) || !StringUtils.hasText(model)) {
             return new LlmHealth("DOWN", "LLM", "缺少模型地址或模型名称", null);
         }
-        if (lastFailureAt != null && (lastSuccessAt == null || lastFailureAt.isAfter(lastSuccessAt))) {
-            return new LlmHealth("DOWN", properties.model(), "最近一次调用失败", lastFailureAt.toString());
+        Instant successAt = lastSuccessAt.get(model);
+        Instant failureAt = lastFailureAt.get(model);
+        if (failureAt != null && (successAt == null || failureAt.isAfter(successAt))) {
+            return new LlmHealth("DOWN", model, "最近一次调用失败", failureAt.toString());
         }
-        if (lastSuccessAt != null) {
-            return new LlmHealth("UP", properties.model(), "最近一次调用成功", lastSuccessAt.toString());
+        if (successAt != null) {
+            return new LlmHealth("UP", model, "最近一次调用成功", successAt.toString());
         }
-        return new LlmHealth("READY", properties.model(), "配置完成，等待首次调用", null);
+        return new LlmHealth("READY", model, "已配置，尚未调用该模型", null);
+    }
+
+    public List<String> supportedModels() {
+        LinkedHashSet<String> models = new LinkedHashSet<>();
+        if (properties.models() != null) {
+            properties.models().stream().filter(StringUtils::hasText).map(String::trim).forEach(models::add);
+        }
+        if (StringUtils.hasText(properties.model())) {
+            models.add(properties.model().trim());
+        }
+        return List.copyOf(models);
+    }
+
+    public String defaultModel() {
+        return resolveModel(null);
+    }
+
+    public String resolveModel(String requestedModel) {
+        String model = StringUtils.hasText(requestedModel) ? requestedModel.trim() : properties.model();
+        if (!StringUtils.hasText(model) || !supportedModels().contains(model)) {
+            throw new IllegalArgumentException("不支持的 LLM 模型：" + model);
+        }
+        return model;
     }
 
     public record ChatMessage(String role, String content) implements Serializable {

@@ -50,12 +50,12 @@ public class ChatConversationMemoryService {
         int nextId = messages.stream().mapToInt(ConversationMessage::id).max().orElse(0) + 1;
         messages.add(new ConversationMessage(
                 nextId, "user", userMessage, List.of(), null, null, List.of(), null,
-                null, "normal", null, null));
+                null, "normal", null, null, null));
         messages.add(new ConversationMessage(
                 nextId + 1, "assistant", response.reply(), response.suggestions(), response.result(),
                 response.executionEngine(), response.workflowSteps(), response.queryPlan(),
                 response.status(), "rejected".equals(response.status()) ? "rejected" : "normal",
-                response.queryAction(), response.llmMessage()));
+                response.queryAction(), response.queryExplanation(), response.llmMessage()));
 
         StoredConversation saved = new StoredConversation(
                 userId, conversationId, previous == null ? title(userMessage) : previous.title(),

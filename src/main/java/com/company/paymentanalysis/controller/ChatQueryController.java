@@ -5,8 +5,10 @@ import com.company.paymentanalysis.chat.ChatConversationMemoryService.ChatMemory
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
 import com.company.paymentanalysis.chat.ChatQueryWorkflowService;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
+import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
@@ -29,11 +31,14 @@ public class ChatQueryController {
 
     private final ChatQueryWorkflowService workflowService;
     private final ChatConversationMemoryService memoryService;
+    private final OpenAiCompatibleLlmClient llmClient;
 
     public ChatQueryController(
-            ChatQueryWorkflowService workflowService, ChatConversationMemoryService memoryService) {
+            ChatQueryWorkflowService workflowService, ChatConversationMemoryService memoryService,
+            OpenAiCompatibleLlmClient llmClient) {
         this.workflowService = workflowService;
         this.memoryService = memoryService;
+        this.llmClient = llmClient;
     }
 
     @PostMapping("/query")
@@ -47,6 +52,12 @@ public class ChatQueryController {
         }
         String userId = identifier(request.userId(), "demo-user");
         String conversationId = identifier(request.sessionId(), UUID.randomUUID().toString());
+        String model;
+        try {
+            model = llmClient.resolveModel(request.model());
+        } catch (IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage());
+        }
         QueryContext restoredContext = request.context();
         try {
             restoredContext = memoryService.restoreContext(userId, conversationId).orElse(request.context());
@@ -55,7 +66,7 @@ public class ChatQueryController {
         }
         ChatResponse response =
                 workflowService.query(new ChatRequest(
-                        userId, conversationId, message, restoredContext, request.confirmed()));
+                        userId, conversationId, message, restoredContext, model, request.confirmed()));
         try {
             memoryService.saveTurn(userId, conversationId, message, response);
         } catch (ChatMemoryUnavailableException ignored) {
@@ -121,29 +132,32 @@ public class ChatQueryController {
     }
 
     public record ChatRequest(
-            String userId, String sessionId, String message, QueryContext context, boolean confirmed)
+            String userId, String sessionId, String message, QueryContext context, String model, boolean confirmed)
             implements Serializable {
 
         public ChatRequest(String userId, String sessionId, String message, QueryContext context) {
-            this(userId, sessionId, message, context, false);
+            this(userId, sessionId, message, context, null, false);
+        }
+
+        public ChatRequest(
+                String userId, String sessionId, String message, QueryContext context, boolean confirmed) {
+            this(userId, sessionId, message, context, null, confirmed);
         }
     }
 
     public record ChatResponse(
             String status, String reply, List<String> suggestions, QueryContext context, QueryResult result,
             String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
-            String conversationId, QueryAction queryAction, LlmResultMessage llmMessage) implements Serializable {
+            String conversationId, QueryAction queryAction, String queryExplanation,
+            LlmResultMessage llmMessage) implements Serializable {
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public record QueryContext(
-            String startDate, String endDate, String periodLabel,
             List<String> metricIds, List<String> dimensionIds,
             List<DimensionFilter> dimensionFilters, List<SortSpec> sorts) implements Serializable {
 
         public QueryContext {
-            startDate = startDate == null ? "" : startDate;
-            endDate = endDate == null ? "" : endDate;
-            periodLabel = periodLabel == null ? "" : periodLabel;
             metricIds = metricIds == null ? List.of() : List.copyOf(metricIds);
             dimensionIds = dimensionIds == null ? List.of() : List.copyOf(dimensionIds);
             dimensionFilters = dimensionFilters == null ? List.of() : List.copyOf(dimensionFilters);
@@ -151,16 +165,12 @@ public class ChatQueryController {
         }
 
         public static QueryContext empty() {
-            return new QueryContext("", "", "", List.of(), List.of(), List.of(), List.of());
-        }
-
-        public boolean hasPeriod() {
-            return !startDate.isBlank() && !endDate.isBlank();
+            return new QueryContext(List.of(), List.of(), List.of(), List.of());
         }
 
         @JsonIgnore
         public boolean isEmpty() {
-            return !hasPeriod() && metricIds.isEmpty() && dimensionIds.isEmpty()
+            return metricIds.isEmpty() && dimensionIds.isEmpty()
                     && dimensionFilters.isEmpty() && sorts.isEmpty();
         }
     }
@@ -203,7 +213,8 @@ public class ChatQueryController {
     public record ConversationMessage(
             int id, String role, String text, List<String> suggestions, QueryResult result,
             String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
-            String status, String tone, QueryAction queryAction, LlmResultMessage llmMessage)
+            String status, String tone, QueryAction queryAction, String queryExplanation,
+            LlmResultMessage llmMessage)
             implements Serializable {
     }
 

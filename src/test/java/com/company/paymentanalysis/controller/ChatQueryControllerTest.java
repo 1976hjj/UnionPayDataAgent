@@ -1,6 +1,8 @@
 package com.company.paymentanalysis.controller;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -19,6 +21,7 @@ import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryActionResult;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.SortAction;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.SortItem;
+import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.ChatMessage;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
 import com.company.paymentanalysis.smartbi.SmartBiClient;
 import java.util.List;
@@ -54,46 +57,81 @@ class ChatQueryControllerTest {
     @BeforeEach
     void configureInterpreter() {
         when(interpreter.engineLabel()).thenReturn("Test LLM");
+        when(interpreter.engineLabel(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     @Test
-    void previewsAllParametersBeforeConfirmationAndQueriesOnlyAfterExplicitConfirmation() throws Exception {
+    void passesTheSelectedModelIntoTheQueryWorkflow() throws Exception {
         when(interpreter.interpret(any(), any())).thenReturn(result(new QueryAction(
-                "QUERY", "SET", "2026-02-01", "2026-07-31", "近半年",
-                operations(new ActionOperation("ADD", List.of("transactionAmount"))),
-                operations(new ActionOperation("ADD", List.of("region", "tradeMonth"))),
-                keepFilters(), keepSort())));
+                "QUERY", plan("SET", List.of("transactionAmount")),
+                plan("CLEAR", List.of()), clearFilters(), new SortAction("CLEAR", List.of()))));
 
         mockMvc.perform(post("/api/chat/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "userId":"test-user",
-                                  "sessionId":"query-contract",
-                                  "message":"查近半年交易金额，按地区和月份",
+                                  "sessionId":"selected-model",
+                                  "message":"查询交易金额",
+                                  "model":"glm-4.7-flashx",
+                                  "context":null
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.executionEngine")
+                        .value(org.hamcrest.Matchers.containsString("glm-4.7-flashx")));
+
+        verify(interpreter).interpret(
+                argThat(request -> "glm-4.7-flashx".equals(request.model())), any());
+    }
+
+    @Test
+    void rejectsModelsOutsideTheConfiguredAllowList() throws Exception {
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId":"test-user",
+                                  "sessionId":"invalid-model",
+                                  "message":"查询交易金额",
+                                  "model":"unknown-model",
+                                  "context":null
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+
+        verify(interpreter, never()).interpret(any(), any());
+    }
+
+    @Test
+    void treatsYearAsAFilterAndQueriesOnlyAfterConfirmation() throws Exception {
+        when(interpreter.interpret(any(), any())).thenReturn(result(new QueryAction(
+                "QUERY",
+                plan("SET", List.of("transactionAmount")),
+                plan("SET", List.of("tradeMonth")),
+                new FilterAction(List.of(
+                        new FilterOperation("SET", "tradeYear", "EQUALS", List.of("2025")))),
+                new SortAction("CLEAR", List.of()))));
+
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId":"test-user",
+                                  "sessionId":"year-month",
+                                  "message":"我要看2025年的每个月交易金额",
                                   "context":null
                                 }
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("confirming"))
-                .andExpect(jsonPath("$.queryAction.intent").value("QUERY"))
-                .andExpect(jsonPath("$.queryAction.periodAction").value("SET"))
-                .andExpect(jsonPath("$.queryAction.metricAction.operations[0].action").value("ADD"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.dataSetId").isNotEmpty())
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("region_name"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[1]").value("sett_dt_Month2"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.columns[0]").value("trans_amt"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].name").value("trade_date"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].operation").value("BETWEEN"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].values[0]").value("2026-02-01"))
-                .andExpect(jsonPath("$.workflowSteps[0].node").value("interpretQueryAction"))
-                .andExpect(jsonPath("$.workflowSteps.length()").value(6))
-                .andExpect(jsonPath("$.workflowSteps[4].status").value("SKIPPED"))
-                .andExpect(jsonPath("$.workflowSteps[4].detail")
-                        .value(org.hamcrest.Matchers.containsString("等待用户确认")))
-                .andExpect(jsonPath("$.executionEngine").value("LangGraph4j → Test LLM → SmartBI Client"))
-                .andExpect(jsonPath("$.llmMessage.requestMessages.length()").value(2))
-                .andExpect(jsonPath("$.reply").value(org.hamcrest.Matchers.containsString("请确认本次查询参数")))
+                .andExpect(jsonPath("$.context.dimensionIds[0]").value("tradeMonth"))
+                .andExpect(jsonPath("$.context.dimensionFilters[0].dimensionId").value("tradeYear"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("sett_dt_Month2"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].name").value("sett_dt_Year"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].values[0]").value("2025"))
+                .andExpect(jsonPath("$.reply")
+                        .value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("时间范围"))))
                 .andExpect(jsonPath("$.result").doesNotExist());
         verify(smartBiClient, never()).query(any());
 
@@ -102,153 +140,129 @@ class ChatQueryControllerTest {
                         .content("""
                                 {
                                   "userId":"test-user",
-                                  "sessionId":"query-contract",
+                                  "sessionId":"year-month",
                                   "message":"确认执行",
                                   "confirmed":true,
                                   "context":{
-                                    "startDate":"2026-02-01",
-                                    "endDate":"2026-07-31",
-                                    "periodLabel":"近半年",
                                     "metricIds":["transactionAmount"],
-                                    "dimensionIds":["region","tradeMonth"]
+                                    "dimensionIds":["tradeMonth"],
+                                    "dimensionFilters":[{
+                                      "dimensionId":"tradeYear",
+                                      "operator":"EQUALS",
+                                      "values":["2025"]
+                                    }],
+                                    "sorts":[]
                                   }
                                 }
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("completed"))
-                .andExpect(jsonPath("$.queryAction.periodAction").value("KEEP"))
-                .andExpect(jsonPath("$.llmMessage.requestMessages.length()").value(0))
-                .andExpect(jsonPath("$.workflowSteps[4].status").value("COMPLETED"))
-                .andExpect(jsonPath("$.result.rows").isNotEmpty());
+                .andExpect(jsonPath("$.queryExplanation").isNotEmpty())
+                .andExpect(jsonPath("$.queryAction.filterAction.operations[0].dimensionId")
+                        .value("tradeYear"))
+                .andExpect(jsonPath("$.result.rows.length()").value(12));
         verify(smartBiClient, times(1)).query(any());
     }
 
     @Test
-    void mergesQueryActionWithTheExistingConversationContext() throws Exception {
+    void buildsContinuousDateRangeFromDimensionFilter() throws Exception {
         when(interpreter.interpret(any(), any())).thenReturn(result(new QueryAction(
-                "QUERY", "KEEP", "", "", "",
-                operations(new ActionOperation("ADD", List.of("transactionCount"))),
-                operations(new ActionOperation("REMOVE", List.of("region")),
-                        new ActionOperation("ADD", List.of("channel"))),
-                keepFilters(), keepSort())));
+                "QUERY",
+                plan("SET", List.of("transactionCount")),
+                plan("SET", List.of("tradeDate")),
+                new FilterAction(List.of(new FilterOperation(
+                        "SET", "tradeDate", "BETWEEN", List.of("2026-02-01", "2026-07-31")))),
+                new SortAction("SET", List.of(new SortItem("tradeDate", "ASC"))))));
 
         mockMvc.perform(post("/api/chat/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "userId":"test-user",
-                                  "sessionId":"query-merge",
-                                  "message":"再加交易笔数，并把地区换成受理渠道",
-                                  "context":{
-                                    "startDate":"2026-02-01",
-                                    "endDate":"2026-07-31",
-                                    "periodLabel":"近半年",
-                                    "metricIds":["transactionAmount"],
-                                    "dimensionIds":["region"]
-                                  }
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("confirming"))
-                .andExpect(jsonPath("$.context.metricIds[0]").value("transactionAmount"))
-                .andExpect(jsonPath("$.context.metricIds[1]").value("transactionCount"))
-                .andExpect(jsonPath("$.context.dimensionIds[0]").value("channel"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.columns.length()").value(2))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("accept_channel"))
-                .andExpect(jsonPath("$.result").doesNotExist());
-    }
-
-    @Test
-    void executesModelProvidedGroupFilterAndSortWithoutNaturalLanguageRules() throws Exception {
-        QueryAction action = new QueryAction(
-                "QUERY", "SET", "2026-07-01", "2026-07-31", "2026年7月",
-                operations(new ActionOperation("ADD", List.of("transactionAmount"))),
-                operations(new ActionOperation("ADD", List.of("region"))),
-                new FilterAction(List.of(
-                        new FilterOperation("SET", "region", "IN", List.of("华南", "华东")))),
-                new SortAction("SET", List.of(new SortItem("transactionAmount", "ASC"))));
-        when(interpreter.interpret(any(), any())).thenReturn(result(action));
-
-        mockMvc.perform(post("/api/chat/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "userId":"test-user",
-                                  "sessionId":"group-filter-sort",
-                                  "message":"the backend must use only the mocked QueryAction",
+                                  "sessionId":"date-range",
+                                  "message":"查近半年每天交易笔数，按日升序",
                                   "context":null
                                 }
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("confirming"))
-                .andExpect(jsonPath("$.queryAction.dimensionAction.operations[0].ids[0]").value("region"))
-                .andExpect(jsonPath("$.queryAction.filterAction.operations[0].values[0]").value("华南"))
-                .andExpect(jsonPath("$.queryAction.sortAction.items[0].direction").value("ASC"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("region_name"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[1].name").value("region_name"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[1].operation").value("IN"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[1].values.length()").value(2))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.relationNode.childNodes.length()").value(2))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.sorts[0].field").value("trans_amt"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.sorts[0].direction").value("ASC"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("sett_dt_Day"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].name").value("trade_date"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].operation").value("BETWEEN"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].values.length()").value(2))
                 .andExpect(jsonPath("$.queryPlan.sqlPreview")
-                        .value(org.hamcrest.Matchers.containsString("GROUP BY region_name")))
-                .andExpect(jsonPath("$.queryPlan.sqlPreview")
-                        .value(org.hamcrest.Matchers.containsString("ORDER BY trans_amt ASC")))
-                .andExpect(jsonPath("$.result").doesNotExist());
+                        .value(org.hamcrest.Matchers.containsString(
+                                "trade_date BETWEEN '2026-02-01' AND '2026-07-31'")));
+    }
+
+    @Test
+    void validatesOnlyMetricAndSortConsistency() throws Exception {
+        when(interpreter.interpret(any(), any())).thenReturn(result(new QueryAction(
+                "QUERY",
+                plan("SET", List.of("transactionCount")),
+                plan("CLEAR", List.of()),
+                clearFilters(),
+                new SortAction("SET", List.of(new SortItem("region", "DESC"))))));
+
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"userId":"test-user","sessionId":"bad-sort","message":"测试","context":null}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("clarifying"))
+                .andExpect(jsonPath("$.reply")
+                        .value(org.hamcrest.Matchers.containsString("排序字段对应的度量或分组维度")))
+                .andExpect(jsonPath("$.reply")
+                        .value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("时间范围"))));
+    }
+
+    @Test
+    void appliesCompleteModelStateWithoutLeakingPreviousConditions() throws Exception {
+        when(interpreter.interpret(any(), any())).thenReturn(new QueryActionResult(
+                new QueryAction(
+                        "QUERY",
+                        plan("SET", List.of("transactionCount")),
+                        plan("SET", List.of("channel")),
+                        new FilterAction(List.of(
+                                new FilterOperation("SET", "channel", "EQUALS", List.of("online")))),
+                        new SortAction("CLEAR", List.of())),
+                "改为交易笔数，按受理渠道分组并筛选线上渠道，同时清除旧排序。",
+                new LlmResultMessage("glm-4-flash-250414", "assistant", "{}", List.of())));
 
         mockMvc.perform(post("/api/chat/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "userId":"test-user",
-                                  "sessionId":"group-filter-sort",
-                                  "message":"确认执行",
-                                  "confirmed":true,
+                                  "sessionId":"replace-complete-state",
+                                  "message":"改为按线上受理渠道查询交易笔数，不要排序",
                                   "context":{
-                                    "startDate":"2026-07-01",
-                                    "endDate":"2026-07-31",
-                                    "periodLabel":"2026年7月",
                                     "metricIds":["transactionAmount"],
                                     "dimensionIds":["region"],
                                     "dimensionFilters":[{
                                       "dimensionId":"region",
-                                      "operator":"IN",
-                                      "values":["华南","华东"]
+                                      "operator":"EQUALS",
+                                      "values":["Europe"]
                                     }],
-                                    "sorts":[{
-                                      "fieldId":"transactionAmount",
-                                      "direction":"ASC"
-                                    }]
+                                    "sorts":[{"fieldId":"transactionAmount","direction":"DESC"}]
                                   }
                                 }
-                                """))
+                """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("completed"))
-                .andExpect(jsonPath("$.result.rows.length()").value(2))
-                .andExpect(jsonPath("$.result.rows[0].region").value("华东"));
-    }
-
-    @Test
-    void asksForMissingStateWithoutGeneratingSmartBiJson() throws Exception {
-        when(interpreter.interpret(any(), any())).thenReturn(result(QueryAction.keep()));
-
-        mockMvc.perform(post("/api/chat/query")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "userId":"test-user",
-                                  "sessionId":"query-incomplete",
-                                  "message":"继续",
-                                  "context":null
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("clarifying"))
-                .andExpect(jsonPath("$.queryAction.intent").value("QUERY"))
-                .andExpect(jsonPath("$.queryPlan").doesNotExist())
-                .andExpect(jsonPath("$.workflowSteps[3].status").value("SKIPPED"))
-                .andExpect(jsonPath("$.workflowSteps[4].status").value("SKIPPED"));
+                .andExpect(jsonPath("$.status").value("confirming"))
+                .andExpect(jsonPath("$.context.metricIds.length()").value(1))
+                .andExpect(jsonPath("$.context.metricIds[0]").value("transactionCount"))
+                .andExpect(jsonPath("$.context.dimensionIds.length()").value(1))
+                .andExpect(jsonPath("$.context.dimensionIds[0]").value("channel"))
+                .andExpect(jsonPath("$.context.dimensionFilters.length()").value(1))
+                .andExpect(jsonPath("$.context.dimensionFilters[0].dimensionId").value("channel"))
+                .andExpect(jsonPath("$.context.dimensionFilters[0].values[0]").value("online"))
+                .andExpect(jsonPath("$.context.sorts.length()").value(0))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.columns[0]").value("trans_cnt"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("accept_channel"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].name").value("accept_channel"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.sorts.length()").value(0));
     }
 
     @Test
@@ -263,19 +277,14 @@ class ChatQueryControllerTest {
     private QueryActionResult result(QueryAction action) {
         return new QueryActionResult(action, new LlmResultMessage(
                 "glm-4-flash-250414", "assistant", "{}", List.of(
-                        new com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.ChatMessage("system", "schema"),
-                        new com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.ChatMessage("user", "query"))));
+                        new ChatMessage("system", "schema"), new ChatMessage("user", "query"))));
     }
 
-    private ActionPlan operations(ActionOperation... operations) {
-        return new ActionPlan(List.of(operations));
+    private ActionPlan plan(String action, List<String> ids) {
+        return new ActionPlan(List.of(new ActionOperation(action, ids)));
     }
 
-    private FilterAction keepFilters() {
-        return new FilterAction(List.of(new FilterOperation("KEEP", "", "", List.of())));
-    }
-
-    private SortAction keepSort() {
-        return new SortAction("KEEP", List.of());
+    private FilterAction clearFilters() {
+        return new FilterAction(List.of(new FilterOperation("CLEAR", "", "", List.of())));
     }
 }

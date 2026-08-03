@@ -8,6 +8,7 @@ import com.company.paymentanalysis.smartbi.SmartBiClient;
 import com.company.paymentanalysis.smartbi.SmartBiClient.SmartBiHealth;
 import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -28,9 +29,9 @@ public class SystemDependencyController {
     }
 
     @GetMapping("/dependencies")
-    public DependencyHealthResponse dependencies() {
+    public DependencyHealthResponse dependencies(@RequestParam(required = false) String model) {
         MemoryStatus redis = memoryService.status();
-        LlmHealth llm = llmClient.health();
+        LlmHealth llm = llmClient.health(model);
         SmartBiHealth smartBi = smartBiClient.health();
         List<DependencyStatus> dependencies = List.of(
                 new DependencyStatus(
@@ -43,9 +44,17 @@ public class SystemDependencyController {
         return new DependencyHealthResponse(overall, dependencies);
     }
 
+    @GetMapping("/models")
+    public ModelOptionsResponse models() {
+        return new ModelOptionsResponse(llmClient.defaultModel(), llmClient.supportedModels());
+    }
+
     public record DependencyHealthResponse(String overallStatus, List<DependencyStatus> dependencies) {
     }
 
     public record DependencyStatus(String code, String name, String status, String detail, String checkedAt) {
+    }
+
+    public record ModelOptionsResponse(String defaultModel, List<String> models) {
     }
 }

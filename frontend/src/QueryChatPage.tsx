@@ -18,9 +18,6 @@ type Metadata = {
 }
 
 type QueryContext = {
-  startDate: string
-  endDate: string
-  periodLabel: string
   metricIds: string[]
   dimensionIds: string[]
   dimensionFilters: { dimensionId: string; operator: string; values: string[] }[]
@@ -53,28 +50,24 @@ type QueryFilter = {
 }
 
 type ActionOperation = {
-  action: 'KEEP' | 'ADD' | 'REMOVE' | 'CLEAR'
+  action: 'SET' | 'CLEAR'
   ids: string[]
 }
 
 type QueryAction = {
   intent: 'QUERY'
-  periodAction: 'KEEP' | 'SET' | 'CLEAR'
-  startDate: string
-  endDate: string
-  periodLabel: string
   metricAction: { operations: ActionOperation[] }
   dimensionAction: { operations: ActionOperation[] }
   filterAction: {
     operations: {
-      action: 'KEEP' | 'SET' | 'REMOVE' | 'CLEAR'
+      action: 'SET' | 'CLEAR'
       dimensionId: string
       operator: string
       values: string[]
     }[]
   }
   sortAction: {
-    action: 'KEEP' | 'SET' | 'CLEAR'
+    action: 'SET' | 'CLEAR'
     items: { fieldId: string; direction: 'ASC' | 'DESC' }[]
   }
 }
@@ -131,6 +124,7 @@ type ChatResponse = {
   queryPlan: ChatQueryPlan | null
   conversationId: string
   queryAction: QueryAction
+  queryExplanation: string
   llmMessage: LlmResultMessage
 }
 
@@ -145,6 +139,7 @@ type Message = {
   queryPlan?: ChatQueryPlan | null
   tone?: 'normal' | 'rejected'
   queryAction?: QueryAction | null
+  queryExplanation?: string | null
   llmMessage?: LlmResultMessage | null
   status?: ChatResponse['status'] | null
 }
@@ -169,9 +164,6 @@ const CURRENT_USER_ID = 'demo-user'
 const ACTIVE_CONVERSATION_KEY = `payment-analysis:active-conversation:${CURRENT_USER_ID}`
 
 const EMPTY_CONTEXT: QueryContext = {
-  startDate: '',
-  endDate: '',
-  periodLabel: '',
   metricIds: [],
   dimensionIds: [],
   dimensionFilters: [],
@@ -242,16 +234,18 @@ function WorkflowTrace({
   steps,
   plan,
   queryAction,
+  queryExplanation,
   llmMessage,
 }: {
   engine: string
   steps: WorkflowStep[]
   plan?: ChatQueryPlan | null
   queryAction?: QueryAction | null
+  queryExplanation?: string | null
   llmMessage?: LlmResultMessage | null
 }) {
   return (
-    <details className="chat-workflow-trace" open>
+    <details className="chat-workflow-trace">
       <summary>
         <span>查看 LangGraph4j 执行过程</span>
         <small>{engine}</small>
@@ -269,6 +263,12 @@ function WorkflowTrace({
             </li>
           ))}
         </ol>
+        {queryExplanation && (
+          <div className="query-explanation">
+            <strong>模型解析说明</strong>
+            <p>{queryExplanation}</p>
+          </div>
+        )}
         {queryAction && (
           <details className="sql-preview" open>
             <summary>1. QueryAction（LLM 交互 JSON）</summary>
@@ -283,7 +283,11 @@ function WorkflowTrace({
             <section className="llm-message-list">
               {llmMessage.requestMessages?.map((message, index) => (
                 <article key={`${message.role}-${index}`}>
-                  <strong>发送 · {message.role}</strong>
+                  <strong>{index < 2
+                    ? `发送 · ${message.role}`
+                    : message.role === 'assistant'
+                      ? '协议校验 · 模型原输出'
+                      : '协议修复指令 · internal'}</strong>
                   <pre><code>{message.content}</code></pre>
                 </article>
               ))}
@@ -349,7 +353,7 @@ function formatConversationTime(value: string) {
   }).format(date)
 }
 
-export default function QueryChatPage() {
+export default function QueryChatPage({ selectedModel }: { selectedModel: string }) {
   const [metadata, setMetadata] = useState<Metadata>(FALLBACK_METADATA)
   const [messages, setMessages] = useState<Message[]>([WELCOME])
   const [context, setContext] = useState<QueryContext>(EMPTY_CONTEXT)
@@ -361,6 +365,7 @@ export default function QueryChatPage() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null)
+  const [openSidePanel, setOpenSidePanel] = useState<'history' | 'context' | null>(null)
   const messageListRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -379,6 +384,14 @@ export default function QueryChatPage() {
     if (list) list.scrollTop = list.scrollHeight
   }, [messages, pending])
 
+  useEffect(() => {
+    function closeOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') setOpenSidePanel(null)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [])
+
   const metricNames = context.metricIds
     .map((id) => metadata.metrics.find((metric) => metric.id === id)?.name)
     .filter(Boolean)
@@ -393,6 +406,7 @@ export default function QueryChatPage() {
       return `${name} ${filter.operator} ${filter.values.join('、')}`
     })
     .join('；')
+  const dimensionFilterNames = filterNames
   const sortNames = context.sorts
     .map((sort) => {
       const name = metadata.metrics.find((metric) => metric.id === sort.fieldId)?.name
@@ -457,6 +471,7 @@ export default function QueryChatPage() {
       setMessageId(Math.max(2, ...restoredMessages.map((item) => item.id + 1)))
       setInput('')
       setValidation('')
+      setOpenSidePanel(null)
       localStorage.setItem(ACTIVE_CONVERSATION_KEY, detail.conversationId)
       return true
     } catch {
@@ -475,6 +490,7 @@ export default function QueryChatPage() {
     setInput('')
     setValidation('')
     setPending(false)
+    setOpenSidePanel(null)
     localStorage.setItem(ACTIVE_CONVERSATION_KEY, nextConversationId)
   }
 
@@ -532,6 +548,7 @@ export default function QueryChatPage() {
           sessionId: conversationId,
           message,
           context,
+          model: selectedModel,
           confirmed,
         }),
       })
@@ -553,6 +570,7 @@ export default function QueryChatPage() {
         workflowSteps: data.workflowSteps,
         queryPlan: data.queryPlan,
         queryAction: data.queryAction,
+        queryExplanation: data.queryExplanation,
         llmMessage: data.llmMessage,
         status: data.status,
         tone: data.status === 'rejected' ? 'rejected' : 'normal',
@@ -569,6 +587,7 @@ export default function QueryChatPage() {
       setMessageId((current) => current + 1)
     } finally {
       setPending(false)
+      window.dispatchEvent(new Event('model-health-changed'))
     }
   }
 
@@ -587,10 +606,28 @@ export default function QueryChatPage() {
   return (
     <section className="query-chat-page">
       <div className="chat-layout">
-        <aside className="conversation-history-panel">
+        {openSidePanel && (
+          <button
+            aria-label="关闭侧栏"
+            className="chat-side-backdrop"
+            onClick={() => setOpenSidePanel(null)}
+            type="button"
+          />
+        )}
+        <aside className={`conversation-history-panel ${openSidePanel === 'history' ? 'is-open' : ''}`}>
           <div className="history-heading">
             <div><strong>历史查询</strong><small>演示用户的对话</small></div>
-            <button type="button" onClick={startNewConversation} aria-label="新建对话">＋</button>
+            <div className="side-panel-actions">
+              <button type="button" onClick={startNewConversation} aria-label="新建对话">＋</button>
+              <button
+                className="side-panel-close"
+                type="button"
+                onClick={() => setOpenSidePanel(null)}
+                aria-label="关闭历史查询"
+              >
+                ×
+              </button>
+            </div>
           </div>
           <div className="history-list">
             {historyLoading && <p className="history-empty">正在读取会话…</p>}
@@ -628,8 +665,29 @@ export default function QueryChatPage() {
 
         <div className="chat-panel">
           <div className="chat-toolbar">
-            <div><span className="assistant-mark">BI</span><div><strong>支付查数助手</strong><small>真实大模型解析 · Mock SmartBI 取数</small></div></div>
-            <button type="button" onClick={startNewConversation}>＋ 新对话</button>
+            <div className="chat-toolbar-main">
+              <span className="assistant-mark">BI</span>
+              <div><strong>支付查数助手</strong><small>真实大模型解析 · Mock SmartBI 取数</small></div>
+            </div>
+            <div className="chat-toolbar-actions">
+              <button
+                aria-expanded={openSidePanel === 'history'}
+                className="chat-mobile-tool"
+                onClick={() => setOpenSidePanel(openSidePanel === 'history' ? null : 'history')}
+                type="button"
+              >
+                历史
+              </button>
+              <button
+                aria-expanded={openSidePanel === 'context'}
+                className="chat-mobile-tool"
+                onClick={() => setOpenSidePanel(openSidePanel === 'context' ? null : 'context')}
+                type="button"
+              >
+                条件
+              </button>
+              <button type="button" onClick={startNewConversation}>＋ 新对话</button>
+            </div>
           </div>
 
           <div className="message-list" ref={messageListRef} aria-live="polite">
@@ -645,6 +703,7 @@ export default function QueryChatPage() {
                       steps={message.workflowSteps}
                       plan={message.queryPlan}
                       queryAction={message.queryAction}
+                      queryExplanation={message.queryExplanation}
                       llmMessage={message.llmMessage}
                     />
                   )}
@@ -705,15 +764,26 @@ export default function QueryChatPage() {
           </form>
         </div>
 
-        <aside className="context-panel">
+        <aside className={`context-panel ${openSidePanel === 'context' ? 'is-open' : ''}`}>
           <div className="context-heading">
             <div><strong>当前查询条件</strong><small>随对话实时更新</small></div>
+            <button
+              className="side-panel-close"
+              type="button"
+              onClick={() => setOpenSidePanel(null)}
+              aria-label="关闭查询条件"
+            >
+              ×
+            </button>
           </div>
           <div className="context-list">
-            <ContextItem label="时间范围" value={context.periodLabel} ready={Boolean(context.periodLabel)} />
             <ContextItem label="度量" value={metricNames} ready={Boolean(metricNames)} />
             <ContextItem label="分组维度（可选）" value={dimensionNames || '不分组，返回汇总'} ready={true} />
-            <ContextItem label="维度过滤（可选）" value={filterNames || '无'} ready={true} />
+            <ContextItem
+              label="维度过滤（可选）"
+              value={dimensionFilterNames || '无'}
+              ready={true}
+            />
             <ContextItem label="排序（可选）" value={sortNames || '无'} ready={true} />
           </div>
           <div className="capability-card">

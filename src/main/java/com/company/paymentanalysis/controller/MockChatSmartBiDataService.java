@@ -4,6 +4,8 @@ import com.company.paymentanalysis.smartbi.SmartBiModels.Filter;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryResponse;
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -101,6 +103,8 @@ public class MockChatSmartBiDataService {
         List<String> requested = request.filters().stream()
                 .filter(filter -> filter.name().equals(dimension)
                         || "sett_dt_Month2".equals(dimension)
+                                && Set.of("trade_date", "sett_dt_Year").contains(filter.name())
+                        || "sett_dt_Day".equals(dimension)
                                 && "trade_date".equals(filter.name()))
                 .flatMap(filter -> membersForFilter(dimension, filter).stream())
                 .distinct()
@@ -110,14 +114,29 @@ public class MockChatSmartBiDataService {
 
     private List<String> membersForFilter(String dimension, Filter filter) {
         if ("sett_dt_Month2".equals(dimension)
+                && "sett_dt_Year".equals(filter.name())
+                && !filter.values().isEmpty()) {
+            String year = filter.values().get(0);
+            return java.util.stream.IntStream.rangeClosed(1, 12)
+                    .mapToObj(month -> year + "-" + String.format("%02d", month))
+                    .toList();
+        }
+        if ("sett_dt_Month2".equals(dimension)
                 && "BETWEEN".equalsIgnoreCase(filter.operation())
                 && filter.values().size() >= 2) {
-            String startMonth = filter.values().get(0).substring(0, 7);
-            String endMonth = filter.values().get(1).substring(0, 7);
-            return MEMBERS.get(dimension).stream()
-                    .filter(month -> month.compareTo(startMonth) >= 0
-                            && month.compareTo(endMonth) <= 0)
+            YearMonth start = YearMonth.parse(filter.values().get(0).substring(0, 7));
+            YearMonth end = YearMonth.parse(filter.values().get(1).substring(0, 7));
+            return java.util.stream.Stream.iterate(
+                            start, month -> !month.isAfter(end), month -> month.plusMonths(1))
+                    .map(YearMonth::toString)
                     .toList();
+        }
+        if ("sett_dt_Day".equals(dimension)
+                && "BETWEEN".equalsIgnoreCase(filter.operation())
+                && filter.values().size() >= 2) {
+            LocalDate start = LocalDate.parse(filter.values().get(0));
+            LocalDate end = LocalDate.parse(filter.values().get(1));
+            return start.datesUntil(end.plusDays(1)).map(LocalDate::toString).toList();
         }
         return filter.values();
     }

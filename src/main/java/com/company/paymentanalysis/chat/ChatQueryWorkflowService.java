@@ -21,6 +21,7 @@ import com.company.paymentanalysis.controller.ChatQueryController.QueryResult;
 import com.company.paymentanalysis.controller.ChatQueryController.ResultColumn;
 import com.company.paymentanalysis.controller.ChatQueryController.SortSpec;
 import com.company.paymentanalysis.controller.ChatQueryController.WorkflowStep;
+import com.company.paymentanalysis.query.QueryMetadataCatalog;
 import com.company.paymentanalysis.smartbi.SmartBiClient;
 import com.company.paymentanalysis.smartbi.SmartBiModels.Filter;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
@@ -51,35 +52,16 @@ public class ChatQueryWorkflowService {
     private static final String REQUEST = "request";
     private static final String CONTEXT = "context";
     private static final String QUERY_ACTION = "queryAction";
+    private static final String QUERY_EXPLANATION = "queryExplanation";
     private static final String SMARTBI_REQUEST = "smartBiRequest";
     private static final String SMARTBI_RESPONSE = "smartBiResponse";
     private static final String LLM_MESSAGE = "llmMessage";
     private static final String STATUS = "status";
+    private static final String VALIDATION_ISSUES = "validationIssues";
     private static final String PLAN = "plan";
     private static final String RESULT = "result";
     private static final String STEPS = "steps";
     private static final String RESPONSE = "response";
-
-    private static final Map<String, String> METRIC_NAMES = Map.of(
-            "transactionAmount", "交易金额",
-            "transactionCount", "交易笔数",
-            "successRate", "支付成功率");
-    private static final Map<String, String> DIMENSION_NAMES = Map.of(
-            "tradeYear", "年",
-            "tradeMonth", "月",
-            "tradeDate", "日",
-            "channel", "受理渠道",
-            "region", "地区",
-            "merchantType", "商户类型",
-            "paymentMethod", "支付方式");
-    private static final Map<String, String> FIELD_NAMES = Map.ofEntries(
-            Map.entry("sett_dt_Year", "年"),
-            Map.entry("sett_dt_Month2", "月"),
-            Map.entry("sett_dt_Day", "日"),
-            Map.entry("accept_channel", "受理渠道"),
-            Map.entry("region_name", "地区"),
-            Map.entry("merchant_type", "商户类型"),
-            Map.entry("payment_method", "支付方式"));
 
     private final ChatQueryInterpreter interpreter;
     private final SmartBiQueryBuilder queryBuilder;
@@ -125,9 +107,10 @@ public class ChatQueryWorkflowService {
         ChatRequest request = required(state, REQUEST);
         if (request.confirmed()) {
             return Map.of(
-                    QUERY_ACTION, QueryAction.keep(),
+                    QUERY_ACTION, QueryAction.fromContext(required(state, CONTEXT)),
+                    QUERY_EXPLANATION, "用户已确认页面中的查询条件，本轮直接复用，不再次调用大模型。",
                     LLM_MESSAGE, new LlmResultMessage(
-                            interpreter.engineLabel(), "system",
+                            interpreter.engineLabel(request.model()), "system",
                             "显式确认请求：复用页面已展示的 QueryContext，不再次调用 LLM。",
                             List.of()),
                     STEPS, appendStep(state, new WorkflowStep(
@@ -137,18 +120,23 @@ public class ChatQueryWorkflowService {
                             "显式 confirmed=true，未再次调用大模型")));
         }
         QueryActionResult result = interpreter.interpret(request, required(state, CONTEXT));
+        String normalizationDetail = result.normalizationNotes().isEmpty()
+                ? ""
+                : "；" + String.join("；", result.normalizationNotes());
         return Map.of(
                 QUERY_ACTION, result.action(),
+                QUERY_EXPLANATION, result.explanation(),
                 LLM_MESSAGE, result.llmMessage(),
                 STEPS, appendStep(state, new WorkflowStep(
                         "interpretQueryAction",
                         "大模型生成 QueryAction JSON",
                         "COMPLETED",
-                        interpreter.engineLabel() + " 已返回时间、度量和维度 action")));
+                        interpreter.engineLabel(request.model()) + " 已返回时间、度量和维度 action"
+                                + normalizationDetail)));
     }
 
     private Map<String, Object> mergeConversationContext(ChatState state) {
-        QueryContext merged = merge(required(state, CONTEXT), required(state, QUERY_ACTION));
+        QueryContext merged = merge(required(state, QUERY_ACTION));
         return Map.of(
                 CONTEXT, merged,
                 STEPS, appendStep(state, new WorkflowStep(
@@ -161,9 +149,6 @@ public class ChatQueryWorkflowService {
     private Map<String, Object> validateQueryContext(ChatState state) {
         QueryContext context = required(state, CONTEXT);
         List<String> missing = new ArrayList<>();
-        if (!context.hasPeriod()) {
-            missing.add("时间范围");
-        }
         if (context.metricIds().isEmpty()) {
             missing.add("度量");
         }
@@ -178,6 +163,7 @@ public class ChatQueryWorkflowService {
                 : "仍需补充：" + String.join("、", missing);
         return Map.of(
                 STATUS, status,
+                VALIDATION_ISSUES, List.copyOf(missing),
                 STEPS, appendStep(state, new WorkflowStep(
                         "validateQueryContext", "校验最终查询状态", "COMPLETED", detail)));
     }
@@ -236,6 +222,7 @@ public class ChatQueryWorkflowService {
         QueryContext context = required(state, CONTEXT);
         ChatRequest chatRequest = required(state, REQUEST);
         boolean ready = "ready".equals(status);
+        List<String> validationIssues = state.<List<String>>value(VALIDATION_ISSUES).orElseGet(List::of);
         boolean executed = ready && chatRequest.confirmed();
         QueryResult result = executed ? required(state, RESULT) : null;
         String responseStatus = executed ? "completed" : ready ? "confirming" : "clarifying";
@@ -243,9 +230,7 @@ public class ChatQueryWorkflowService {
                 ? result.summary()
                 : ready
                         ? confirmationSummary(context)
-                        : context.metricIds().isEmpty()
-                                ? "请指定要查询的度量。"
-                                : "请指定查询时间范围。";
+                        : clarificationReply(validationIssues);
         List<WorkflowStep> steps = appendStep(state, new WorkflowStep(
                 "generateChatResponse",
                 "生成查数回复",
@@ -258,82 +243,46 @@ public class ChatQueryWorkflowService {
                 suggestions(responseStatus, context),
                 context,
                 result,
-                "LangGraph4j → " + interpreter.engineLabel() + " → SmartBI Client",
+                "LangGraph4j → " + interpreter.engineLabel(chatRequest.model()) + " → SmartBI Client",
                 steps,
                 ready ? required(state, PLAN) : null,
                 chatRequest.sessionId(),
                 required(state, QUERY_ACTION),
+                required(state, QUERY_EXPLANATION),
                 required(state, LLM_MESSAGE));
         return Map.of(RESPONSE, response, STEPS, steps);
     }
 
-    private QueryContext merge(QueryContext current, QueryAction action) {
-        String startDate = current.startDate();
-        String endDate = current.endDate();
-        String periodLabel = current.periodLabel();
-        if ("SET".equals(action.periodAction())) {
-            startDate = action.startDate();
-            endDate = action.endDate();
-            periodLabel = action.periodLabel();
-        } else if ("CLEAR".equals(action.periodAction())) {
-            startDate = "";
-            endDate = "";
-            periodLabel = "";
-        }
+    private QueryContext merge(QueryAction action) {
         return new QueryContext(
-                startDate,
-                endDate,
-                periodLabel,
-                applyActions(current.metricIds(), action.metricAction()),
-                applyActions(current.dimensionIds(), action.dimensionAction()),
-                applyFilterActions(current.dimensionFilters(), action.filterAction()),
-                applySortAction(current.sorts(), action.sortAction()));
+                applyActions(action.metricAction()),
+                applyActions(action.dimensionAction()),
+                applyFilterActions(action.filterAction()),
+                applySortAction(action.sortAction()));
     }
 
-    private List<String> applyActions(List<String> current, ActionPlan plan) {
-        if (plan.operations().stream().anyMatch(operation -> "KEEP".equals(operation.action()))) {
-            return List.copyOf(current);
-        }
-        if (plan.operations().stream().anyMatch(operation -> "CLEAR".equals(operation.action()))) {
-            return List.of();
-        }
-        LinkedHashSet<String> values = new LinkedHashSet<>(current);
-        plan.operations().stream()
-                .filter(operation -> "REMOVE".equals(operation.action()))
-                .map(ActionOperation::ids)
-                .forEach(values::removeAll);
-        plan.operations().stream()
-                .filter(operation -> "ADD".equals(operation.action()))
-                .map(ActionOperation::ids)
-                .forEach(values::addAll);
-        return List.copyOf(values);
+    private List<String> applyActions(ActionPlan plan) {
+        ActionOperation operation = plan.operations().get(0);
+        return switch (operation.action()) {
+            case "CLEAR" -> List.of();
+            case "SET" -> List.copyOf(operation.ids());
+            default -> throw new IllegalArgumentException(
+                    "不支持的列表 action：" + operation.action());
+        };
     }
 
-    private List<DimensionFilter> applyFilterActions(
-            List<DimensionFilter> current, FilterAction action) {
-        if (action.operations().stream().anyMatch(operation -> "KEEP".equals(operation.action()))) {
-            return List.copyOf(current);
-        }
-        if (action.operations().stream().anyMatch(operation -> "CLEAR".equals(operation.action()))) {
+    private List<DimensionFilter> applyFilterActions(FilterAction action) {
+        if ("CLEAR".equals(action.operations().get(0).action())) {
             return List.of();
         }
-        Map<String, DimensionFilter> filters = new LinkedHashMap<>();
-        current.forEach(filter -> filters.put(filter.dimensionId(), filter));
-        action.operations().stream()
-                .filter(operation -> "REMOVE".equals(operation.action()))
-                .map(FilterOperation::dimensionId)
-                .forEach(filters::remove);
-        action.operations().stream()
-                .filter(operation -> "SET".equals(operation.action()))
+        return action.operations().stream()
                 .map(operation -> new DimensionFilter(
                         operation.dimensionId(), operation.operator(), operation.values()))
-                .forEach(filter -> filters.put(filter.dimensionId(), filter));
-        return List.copyOf(filters.values());
+                .toList();
     }
 
-    private List<SortSpec> applySortAction(List<SortSpec> current, SortAction action) {
+    private List<SortSpec> applySortAction(SortAction action) {
         return switch (action.action()) {
-            case "KEEP" -> List.copyOf(current);
             case "CLEAR" -> List.of();
             case "SET" -> action.items().stream()
                     .map(item -> new SortSpec(item.fieldId(), item.direction()))
@@ -346,17 +295,19 @@ public class ChatQueryWorkflowService {
             QueryContext context, QueryRequest request, QueryResponse response) {
         List<ResultColumn> columns = new ArrayList<>();
         if (context.dimensionIds().isEmpty()) {
-            columns.add(new ResultColumn("period", "时间范围", false));
+            columns.add(new ResultColumn("scope", "汇总", false));
         }
         context.dimensionIds().forEach(
-                id -> columns.add(new ResultColumn(id, DIMENSION_NAMES.get(id), false)));
+                id -> columns.add(new ResultColumn(
+                        id, QueryMetadataCatalog.displayName(id), false)));
         context.metricIds().forEach(
-                id -> columns.add(new ResultColumn(id, METRIC_NAMES.get(id), true)));
+                id -> columns.add(new ResultColumn(
+                        id, QueryMetadataCatalog.displayName(id), true)));
 
         List<Map<String, String>> rows = response.data().stream().map(source -> {
             Map<String, String> row = new LinkedHashMap<>();
             if (context.dimensionIds().isEmpty()) {
-                row.put("period", context.startDate() + " ～ " + context.endDate());
+                row.put("scope", "全部");
             }
             for (int index = 0; index < context.dimensionIds().size(); index++) {
                 row.put(
@@ -382,47 +333,53 @@ public class ChatQueryWorkflowService {
 
     private List<String> displayRows(QueryRequest request) {
         return request.rows().stream()
-                .map(field -> FIELD_NAMES.getOrDefault(field, field) + " (" + field + ")")
+                .map(field -> QueryMetadataCatalog.displayNameBySmartBiField(field)
+                        + " (" + field + ")")
                 .toList();
     }
 
     private List<String> displayColumns(QueryContext context) {
         return context.metricIds().stream()
-                .map(id -> METRIC_NAMES.get(id) + " (" + queryBuilder.metricField(id) + ")")
+                .map(id -> QueryMetadataCatalog.displayName(id)
+                        + " (" + queryBuilder.metricField(id) + ")")
                 .toList();
     }
 
     private QueryFilter displayFilter(Filter filter) {
-        String name = "trade_date".equals(filter.name())
-                ? "交易日期 (trade_date)"
-                : filter.name();
+        String name = QueryMetadataCatalog.displayNameBySmartBiField(filter.name())
+                + " (" + filter.name() + ")";
         return new QueryFilter(name, filter.operation(), filter.values());
     }
 
     private String contextSummary(QueryContext context) {
-        String period = context.hasPeriod() ? context.periodLabel() : "未指定时间";
         String metrics = context.metricIds().isEmpty()
                 ? "未指定度量"
-                : context.metricIds().stream().map(METRIC_NAMES::get).reduce((a, b) -> a + "、" + b).orElse("");
+                : context.metricIds().stream()
+                        .map(QueryMetadataCatalog::displayName)
+                        .reduce((a, b) -> a + "、" + b).orElse("");
         String dimensions = context.dimensionIds().isEmpty()
                 ? "不分组"
-                : context.dimensionIds().stream().map(DIMENSION_NAMES::get).reduce((a, b) -> a + "、" + b).orElse("");
-        return "时间：" + period + "；度量：" + metrics + "；维度：" + dimensions
-                + "；过滤：" + context.dimensionFilters().size()
+                : context.dimensionIds().stream()
+                        .map(QueryMetadataCatalog::displayName)
+                        .reduce((a, b) -> a + "、" + b).orElse("");
+        return "度量：" + metrics + "；维度：" + dimensions
+                + "；维度过滤：" + context.dimensionFilters().size()
                 + "；排序：" + context.sorts().size();
     }
 
     private String confirmationSummary(QueryContext context) {
         String metrics = context.metricIds().stream()
-                .map(METRIC_NAMES::get).reduce((left, right) -> left + "、" + right).orElse("无");
+                .map(QueryMetadataCatalog::displayName)
+                .reduce((left, right) -> left + "、" + right).orElse("无");
         String dimensions = context.dimensionIds().isEmpty()
                 ? "不分组"
                 : context.dimensionIds().stream()
-                        .map(DIMENSION_NAMES::get).reduce((left, right) -> left + "、" + right).orElse("不分组");
+                        .map(QueryMetadataCatalog::displayName)
+                        .reduce((left, right) -> left + "、" + right).orElse("不分组");
         String filters = context.dimensionFilters().isEmpty()
                 ? "无"
                 : context.dimensionFilters().stream().map(filter ->
-                        DIMENSION_NAMES.get(filter.dimensionId()) + " "
+                        QueryMetadataCatalog.displayName(filter.dimensionId()) + " "
                                 + filter.operator() + " " + String.join("、", filter.values()))
                         .reduce((left, right) -> left + "；" + right).orElse("无");
         String sorts = context.sorts().isEmpty()
@@ -430,19 +387,22 @@ public class ChatQueryWorkflowService {
                 : context.sorts().stream().map(sort ->
                         fieldDisplayName(sort.fieldId()) + " " + sort.direction())
                         .reduce((left, right) -> left + "；" + right).orElse("无");
-        return "请确认本次查询参数：时间=" + context.periodLabel()
-                + "（" + context.startDate() + " 至 " + context.endDate() + "）"
-                + "；度量=" + metrics
+        return "请确认本次查询参数：度量=" + metrics
                 + "；分组维度=" + dimensions
                 + "；维度过滤=" + filters
                 + "；排序=" + sorts
                 + "。确认后才会调用 SmartBI。";
     }
 
+    private String clarificationReply(List<String> validationIssues) {
+        if (validationIssues.isEmpty()) {
+            return "查询条件尚未完整，请补充必要条件。";
+        }
+        return "查询条件尚未完整：" + String.join("、", validationIssues) + "。";
+    }
+
     private String fieldDisplayName(String fieldId) {
-        return METRIC_NAMES.containsKey(fieldId)
-                ? METRIC_NAMES.get(fieldId)
-                : DIMENSION_NAMES.getOrDefault(fieldId, fieldId);
+        return QueryMetadataCatalog.displayName(fieldId);
     }
 
     private List<String> suggestions(String status, QueryContext context) {
@@ -462,9 +422,6 @@ public class ChatQueryWorkflowService {
             return QueryContext.empty();
         }
         return new QueryContext(
-                context.startDate() == null ? "" : context.startDate(),
-                context.endDate() == null ? "" : context.endDate(),
-                context.periodLabel() == null ? "" : context.periodLabel(),
                 context.metricIds() == null ? List.of() : List.copyOf(context.metricIds()),
                 context.dimensionIds() == null ? List.of() : List.copyOf(context.dimensionIds()),
                 context.dimensionFilters() == null ? List.of() : List.copyOf(context.dimensionFilters()),
@@ -492,10 +449,12 @@ public class ChatQueryWorkflowService {
                 Map.entry(REQUEST, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(CONTEXT, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(QUERY_ACTION, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(QUERY_EXPLANATION, Channels.base(() -> "")),
                 Map.entry(SMARTBI_REQUEST, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(SMARTBI_RESPONSE, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(LLM_MESSAGE, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(STATUS, Channels.base(() -> "")),
+                Map.entry(VALIDATION_ISSUES, Channels.base((Supplier<List<String>>) List::of)),
                 Map.entry(PLAN, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(RESULT, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(STEPS, Channels.base((Supplier<List<WorkflowStep>>) List::of)),
