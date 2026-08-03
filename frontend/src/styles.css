@@ -1814,6 +1814,20 @@ td { color: #3b5069; }
   background: #e9eef3;
 }
 
+.chat-workflow-list li.failed > span {
+  color: #fff;
+  background: #c84d4d;
+}
+
+.chat-workflow-list li.failed > div {
+  border-bottom-color: #efcaca;
+}
+
+.chat-workflow-list li.failed strong,
+.chat-workflow-list li.failed p {
+  color: #9e3434;
+}
+
 .chat-workflow-list li > div {
   min-width: 0;
   padding-bottom: 8px;

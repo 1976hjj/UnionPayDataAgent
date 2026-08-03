@@ -1,6 +1,7 @@
 package com.company.paymentanalysis.chat;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -13,6 +14,7 @@ import static org.mockito.Mockito.when;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.ActionOperation;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.FilterOperation;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryInterpretationException;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatRequest;
 import com.company.paymentanalysis.controller.ChatQueryController.QueryContext;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
@@ -221,6 +223,45 @@ class ChatQueryInterpreterTest {
 
         assertThat(action.filterAction().operations().get(0).values())
                 .containsExactly("2026-02-01", "2026-07-31");
+        verify(llm, times(2)).completeWithMessage(anyList(), anyString());
+    }
+
+    @Test
+    void exposesBothLlmAttemptsWhenProtocolRepairStillFails() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        String invalid = """
+                {
+                  "intent":"QUERY",
+                  "metricAction":{"operations":[{"action":"SET","ids":["transactionAmount"]}]},
+                  "dimensionAction":{"operations":[{"action":"SET","ids":[]}]},
+                  "filterAction":{"operations":[{"action":"CLEAR","dimensionId":"","operator":"","values":[]}]},
+                  "sortAction":{"action":"CLEAR","items":[]},
+                  "explanation":"查询最近三个月的交易金额。"
+                }
+                """;
+        when(llm.completeWithMessage(anyList(), anyString())).thenAnswer(invocation ->
+                new LlmResultMessage(
+                        "GLM-4.7", "assistant", invalid,
+                        List.copyOf(invocation.getArgument(0)),
+                        "{\"choices\":[{\"message\":{\"content\":\"invalid\"}}]}"));
+        ChatQueryInterpreter interpreter = new ChatQueryInterpreter(
+                llm, new ObjectMapper(),
+                Clock.fixed(Instant.parse("2026-08-03T00:00:00Z"), ZoneOffset.UTC));
+
+        QueryInterpretationException exception = catchThrowableOfType(
+                () -> interpreter.interpret(new ChatRequest(
+                        "user", "conversation", "查下澳门的最近3个月交易金额", QueryContext.empty()),
+                        QueryContext.empty()),
+                QueryInterpretationException.class);
+
+        assertThat(exception.stage()).isEqualTo("PROTOCOL_VALIDATION");
+        assertThat(exception).hasMessageContaining("dimensionAction 的 SET 必须包含完整 ids");
+        assertThat(exception.llmMessage().requestMessages()).hasSize(4);
+        assertThat(exception.llmMessage().requestMessages().get(2).role()).isEqualTo("assistant");
+        assertThat(exception.llmMessage().requestMessages().get(2).content()).isEqualTo(invalid);
+        assertThat(exception.llmMessage().requestMessages().get(3).content())
+                .contains("未通过协议校验", "dimensionAction 的 SET 必须包含完整 ids");
+        assertThat(exception.llmMessage().rawResponse()).contains("choices");
         verify(llm, times(2)).completeWithMessage(anyList(), anyString());
     }
 

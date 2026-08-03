@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $projectJarPath = [System.IO.Path]::GetFullPath(
     (Join-Path $PSScriptRoot "target\payment-analysis.jar")
 )
+$targetPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "target"))
 $javaHomePath = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME "bin\java.exe" } else { $null }
 $adoptiumJavaPaths = Get-ChildItem `
     -Path "$env:ProgramFiles\Eclipse Adoptium\jdk-*\bin\java.exe" `
@@ -102,6 +103,28 @@ function Stop-ExistingProjectProcess {
     throw "The existing payment-analysis process could not be stopped."
 }
 
+function Clear-TargetReadOnlyAttributes {
+    if (-not (Test-Path -LiteralPath $targetPath)) {
+        return
+    }
+    $projectRoot = [System.IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') + '\'
+    if (-not $targetPath.StartsWith($projectRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to modify attributes outside the project directory: $targetPath"
+    }
+    $items = @((Get-Item -LiteralPath $targetPath -Force)) + @(
+        Get-ChildItem -LiteralPath $targetPath -Recurse -Force -ErrorAction Stop
+    )
+    $readOnlyItems = @($items | Where-Object {
+        ($_.Attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0
+    })
+    foreach ($item in $readOnlyItems) {
+        $item.Attributes = $item.Attributes -bxor [System.IO.FileAttributes]::ReadOnly
+    }
+    if ($readOnlyItems.Count -gt 0) {
+        Write-Host "Cleared read-only attributes from $($readOnlyItems.Count) target item(s)."
+    }
+}
+
 function Build-Project {
     $mavenCommand = Get-Command mvn -ErrorAction SilentlyContinue
     if (-not $mavenCommand) {
@@ -132,6 +155,7 @@ function Test-RedisPort {
 
 Stop-ExistingProjectProcess
 Clear-AppPort
+Clear-TargetReadOnlyAttributes
 Build-Project
 $jarPath = (Resolve-Path -LiteralPath $projectJarPath).Path
 

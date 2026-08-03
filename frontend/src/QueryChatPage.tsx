@@ -39,7 +39,7 @@ type QueryResult = {
 type WorkflowStep = {
   node: string
   name: string
-  status: 'COMPLETED' | 'SKIPPED'
+  status: 'COMPLETED' | 'FAILED' | 'SKIPPED'
   detail: string
 }
 
@@ -123,9 +123,9 @@ type ChatResponse = {
   workflowSteps: WorkflowStep[]
   queryPlan: ChatQueryPlan | null
   conversationId: string
-  queryAction: QueryAction
-  queryExplanation: string
-  llmMessage: LlmResultMessage
+  queryAction: QueryAction | null
+  queryExplanation: string | null
+  llmMessage: LlmResultMessage | null
 }
 
 type Message = {
@@ -253,8 +253,8 @@ function WorkflowTrace({
       <div className="chat-workflow-body">
         <ol className="chat-workflow-list">
           {steps.map((step, index) => (
-            <li className={step.status === 'SKIPPED' ? 'skipped' : ''} key={step.node}>
-              <span>{step.status === 'SKIPPED' ? '—' : index + 1}</span>
+            <li className={step.status.toLowerCase()} key={`${step.node}-${index}`}>
+              <span>{step.status === 'SKIPPED' ? '—' : step.status === 'FAILED' ? '!' : index + 1}</span>
               <div>
                 <strong>{step.name}</strong>
                 <small>{step.node}</small>

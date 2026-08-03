@@ -10,6 +10,7 @@ import com.company.paymentanalysis.chat.ChatQueryInterpreter.FilterAction;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.FilterOperation;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryActionResult;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryInterpretationException;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.SortAction;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatQueryPlan;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatRequest;
@@ -36,6 +37,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.bsc.langgraph4j.CompiledGraph;
 import org.bsc.langgraph4j.GraphStateException;
@@ -62,6 +64,16 @@ public class ChatQueryWorkflowService {
     private static final String RESULT = "result";
     private static final String STEPS = "steps";
     private static final String RESPONSE = "response";
+    private static final String FAILURE_NODE = "failureNode";
+    private static final String FAILURE_NAME = "failureName";
+    private static final String FAILURE_DETAIL = "failureDetail";
+    private static final List<NodeDescriptor> WORKFLOW_NODES = List.of(
+            new NodeDescriptor("interpretQueryAction", "大模型生成 QueryAction JSON"),
+            new NodeDescriptor("mergeConversationContext", "执行 action 并合并会话状态"),
+            new NodeDescriptor("validateQueryContext", "校验最终查询状态"),
+            new NodeDescriptor("buildSmartBiQuery", "生成 SmartBI QueryRequest JSON"),
+            new NodeDescriptor("executeSmartBiQuery", "调用 SmartBI 接口"),
+            new NodeDescriptor("generateChatResponse", "生成查数回复"));
 
     private final ChatQueryInterpreter interpreter;
     private final SmartBiQueryBuilder queryBuilder;
@@ -78,12 +90,24 @@ public class ChatQueryWorkflowService {
         this.graph = new StateGraph<>(
                         ChatState.SCHEMA,
                         (AgentStateFactory<ChatState>) ChatState::new)
-                .addNode("interpretQueryAction", node_async(this::interpretQueryAction))
-                .addNode("mergeConversationContext", node_async(this::mergeConversationContext))
-                .addNode("validateQueryContext", node_async(this::validateQueryContext))
-                .addNode("buildSmartBiQuery", node_async(this::buildSmartBiQuery))
-                .addNode("executeSmartBiQuery", node_async(this::executeSmartBiQuery))
-                .addNode("generateChatResponse", node_async(this::generateChatResponse))
+                .addNode("interpretQueryAction", node_async(state -> runNode(
+                        "interpretQueryAction", "大模型生成 QueryAction JSON", state,
+                        this::interpretQueryAction)))
+                .addNode("mergeConversationContext", node_async(state -> runNode(
+                        "mergeConversationContext", "执行 action 并合并会话状态", state,
+                        this::mergeConversationContext)))
+                .addNode("validateQueryContext", node_async(state -> runNode(
+                        "validateQueryContext", "校验最终查询状态", state,
+                        this::validateQueryContext)))
+                .addNode("buildSmartBiQuery", node_async(state -> runNode(
+                        "buildSmartBiQuery", "生成 SmartBI QueryRequest JSON", state,
+                        this::buildSmartBiQuery)))
+                .addNode("executeSmartBiQuery", node_async(state -> runNode(
+                        "executeSmartBiQuery", "调用 SmartBI 接口", state,
+                        this::executeSmartBiQuery)))
+                .addNode("generateChatResponse", node_async(state -> runNode(
+                        "generateChatResponse", "生成查数回复", state,
+                        this::generateChatResponse)))
                 .addEdge(START, "interpretQueryAction")
                 .addEdge("interpretQueryAction", "mergeConversationContext")
                 .addEdge("mergeConversationContext", "validateQueryContext")
@@ -95,12 +119,121 @@ public class ChatQueryWorkflowService {
     }
 
     public ChatResponse query(ChatRequest request) {
-        return graph.invoke(Map.of(
-                        REQUEST, request,
-                        CONTEXT, normalize(request.context()),
-                        STEPS, List.of()))
-                .flatMap(state -> state.<ChatResponse>value(RESPONSE))
-                .orElseThrow(() -> new IllegalStateException("LangGraph4j 未生成查数结果"));
+        try {
+            return graph.invoke(Map.of(
+                            REQUEST, request,
+                            CONTEXT, normalize(request.context()),
+                            STEPS, List.of()))
+                    .flatMap(state -> state.<ChatResponse>value(RESPONSE))
+                    .orElseThrow(() -> new IllegalStateException("LangGraph4j 未生成查数结果"));
+        } catch (RuntimeException exception) {
+            return failedResponse(request, exception);
+        }
+    }
+
+    private Map<String, Object> runNode(
+            String node, String name, ChatState state,
+            Function<ChatState, Map<String, Object>> operation) {
+        try {
+            return operation.apply(state);
+        } catch (RuntimeException exception) {
+            QueryInterpretationException interpretationFailure =
+                    findCause(exception, QueryInterpretationException.class);
+            String detail = conciseMessage(
+                    interpretationFailure == null ? rootCause(exception) : interpretationFailure);
+            Map<String, Object> failure = new LinkedHashMap<>();
+            failure.put(STATUS, "failed");
+            failure.put(FAILURE_NODE, node);
+            failure.put(FAILURE_NAME, name);
+            failure.put(FAILURE_DETAIL, detail);
+            failure.put(STEPS, appendStep(state, new WorkflowStep(node, name, "FAILED", detail)));
+            if (interpretationFailure != null && interpretationFailure.llmMessage() != null) {
+                failure.put(LLM_MESSAGE, interpretationFailure.llmMessage());
+            }
+            return Map.copyOf(failure);
+        }
+    }
+
+    private ChatResponse failedResponse(ChatRequest request, RuntimeException exception) {
+        QueryInterpretationException interpretationFailure =
+                findCause(exception, QueryInterpretationException.class);
+        Throwable root = rootCause(exception);
+        String failedNode = "workflow";
+        String failedName = "LangGraph4j 查数流程";
+        String error = conciseMessage(interpretationFailure == null ? root : interpretationFailure);
+        LlmResultMessage llmMessage = interpretationFailure == null
+                ? null
+                : interpretationFailure.llmMessage();
+        List<WorkflowStep> steps = failureSteps(failedNode, error);
+        String reply = "查询流程在“" + failedName + "”节点停止：" + error
+                + "。后续 SmartBI 查询未执行。";
+        return new ChatResponse(
+                "rejected",
+                reply,
+                List.of(),
+                normalize(request.context()),
+                null,
+                "LangGraph4j → " + interpreter.engineLabel(request.model()) + " → SmartBI Client",
+                steps,
+                null,
+                request.sessionId(),
+                null,
+                "模型输出或流程数据未通过校验，当前查询状态未被更新。",
+                llmMessage);
+    }
+
+    private List<WorkflowStep> failureSteps(String failedNode, String error) {
+        boolean knownNode = WORKFLOW_NODES.stream().anyMatch(node -> node.node().equals(failedNode));
+        if (!knownNode) {
+            List<WorkflowStep> unknownSteps = new ArrayList<>();
+            unknownSteps.add(new WorkflowStep(failedNode, "LangGraph4j 查数流程", "FAILED", error));
+            for (NodeDescriptor node : WORKFLOW_NODES) {
+                unknownSteps.add(skipped(node.node(), node.name(), "流程异常，本节点状态不可用"));
+            }
+            return List.copyOf(unknownSteps);
+        }
+        List<WorkflowStep> steps = new ArrayList<>();
+        boolean failed = false;
+        for (NodeDescriptor node : WORKFLOW_NODES) {
+            if (node.node().equals(failedNode)) {
+                steps.add(new WorkflowStep(node.node(), node.name(), "FAILED", error));
+                failed = true;
+            } else if (failed) {
+                steps.add(skipped(node.node(), node.name(), "上游节点失败，本节点未执行"));
+            } else {
+                steps.add(new WorkflowStep(
+                        node.node(), node.name(), "COMPLETED", "该节点在流程中断前已完成"));
+            }
+        }
+        return List.copyOf(steps);
+    }
+
+    private Throwable rootCause(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    private <T extends Throwable> T findCause(Throwable throwable, Class<T> type) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (type.isInstance(current)) {
+                return type.cast(current);
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    private String conciseMessage(Throwable throwable) {
+        String message = throwable == null ? "未知错误" : throwable.getMessage();
+        if (message == null || message.isBlank()) {
+            message = throwable == null ? "未知错误" : throwable.getClass().getSimpleName();
+        }
+        String normalized = message.replaceAll("[\\r\\n\\t]+", " ").replaceAll("\\s{2,}", " ").trim();
+        return normalized.length() <= 400 ? normalized : normalized.substring(0, 400) + "…";
     }
 
     private Map<String, Object> interpretQueryAction(ChatState state) {
@@ -136,6 +269,10 @@ public class ChatQueryWorkflowService {
     }
 
     private Map<String, Object> mergeConversationContext(ChatState state) {
+        if (isFailed(state)) {
+            return Map.of(STEPS, appendStep(state, skipped(
+                    "mergeConversationContext", "执行 action 并合并会话状态", "上游节点失败，本节点未执行")));
+        }
         QueryContext merged = merge(required(state, QUERY_ACTION));
         return Map.of(
                 CONTEXT, merged,
@@ -147,6 +284,10 @@ public class ChatQueryWorkflowService {
     }
 
     private Map<String, Object> validateQueryContext(ChatState state) {
+        if (isFailed(state)) {
+            return Map.of(STEPS, appendStep(state, skipped(
+                    "validateQueryContext", "校验最终查询状态", "上游节点失败，本节点未执行")));
+        }
         QueryContext context = required(state, CONTEXT);
         List<String> missing = new ArrayList<>();
         if (context.metricIds().isEmpty()) {
@@ -169,6 +310,10 @@ public class ChatQueryWorkflowService {
     }
 
     private Map<String, Object> buildSmartBiQuery(ChatState state) {
+        if (isFailed(state)) {
+            return Map.of(STEPS, appendStep(state, skipped(
+                    "buildSmartBiQuery", "生成 SmartBI QueryRequest JSON", "上游节点失败，本节点未执行")));
+        }
         if (!"ready".equals(required(state, STATUS))) {
             return Map.of(STEPS, appendStep(state, skipped(
                     "buildSmartBiQuery", "生成 SmartBI QueryRequest JSON", "查询状态不完整，未生成")));
@@ -195,6 +340,10 @@ public class ChatQueryWorkflowService {
     }
 
     private Map<String, Object> executeSmartBiQuery(ChatState state) {
+        if (isFailed(state)) {
+            return Map.of(STEPS, appendStep(state, skipped(
+                    "executeSmartBiQuery", "调用 SmartBI 接口", "上游节点失败，本节点未执行")));
+        }
         if (!"ready".equals(required(state, STATUS))) {
             return Map.of(STEPS, appendStep(state, skipped(
                     "executeSmartBiQuery", "调用 SmartBI 接口", "查询状态不完整，未调用")));
@@ -221,6 +370,30 @@ public class ChatQueryWorkflowService {
         String status = required(state, STATUS);
         QueryContext context = required(state, CONTEXT);
         ChatRequest chatRequest = required(state, REQUEST);
+        if ("failed".equals(status)) {
+            String failureName = state.<String>value(FAILURE_NAME).orElse("LangGraph4j 查数流程");
+            String failureDetail = state.<String>value(FAILURE_DETAIL).orElse("未知错误");
+            List<WorkflowStep> steps = appendStep(state, new WorkflowStep(
+                    "generateChatResponse",
+                    "生成查数回复",
+                    "COMPLETED",
+                    "已返回节点级错误摘要；SmartBI 未执行"));
+            ChatResponse response = new ChatResponse(
+                    "rejected",
+                    "查询流程在“" + failureName + "”节点停止：" + failureDetail
+                            + "。后续 SmartBI 查询未执行。",
+                    List.of(),
+                    context,
+                    null,
+                    "LangGraph4j → " + interpreter.engineLabel(chatRequest.model()) + " → SmartBI Client",
+                    steps,
+                    null,
+                    chatRequest.sessionId(),
+                    null,
+                    "模型输出或流程数据未通过校验，当前查询状态未被更新。",
+                    state.<LlmResultMessage>value(LLM_MESSAGE).orElse(null));
+            return Map.of(RESPONSE, response, STEPS, steps);
+        }
         boolean ready = "ready".equals(status);
         List<String> validationIssues = state.<List<String>>value(VALIDATION_ISSUES).orElseGet(List::of);
         boolean executed = ready && chatRequest.confirmed();
@@ -432,6 +605,13 @@ public class ChatQueryWorkflowService {
         return new WorkflowStep(node, name, "SKIPPED", detail);
     }
 
+    private boolean isFailed(ChatState state) {
+        return "failed".equals(state.<String>value(STATUS).orElse(""));
+    }
+
+    private record NodeDescriptor(String node, String name) {
+    }
+
     private List<WorkflowStep> appendStep(ChatState state, WorkflowStep step) {
         List<WorkflowStep> steps =
                 new ArrayList<>(state.<List<WorkflowStep>>value(STEPS).orElseGet(List::of));
@@ -458,6 +638,9 @@ public class ChatQueryWorkflowService {
                 Map.entry(PLAN, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(RESULT, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(STEPS, Channels.base((Supplier<List<WorkflowStep>>) List::of)),
+                Map.entry(FAILURE_NODE, Channels.base(() -> "")),
+                Map.entry(FAILURE_NAME, Channels.base(() -> "")),
+                Map.entry(FAILURE_DETAIL, Channels.base(() -> "")),
                 Map.entry(RESPONSE, Channels.base((Supplier<Object>) Map::of)));
 
         ChatState(Map<String, Object> initData) {

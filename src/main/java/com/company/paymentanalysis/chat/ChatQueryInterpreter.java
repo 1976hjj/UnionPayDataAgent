@@ -47,7 +47,13 @@ public class ChatQueryInterpreter {
             ObjectNode mockPayload = objectMapper.valueToTree(QueryAction.fromContext(current));
             mockPayload.put("explanation", "沿用当前查询状态，未增加额外查询条件。");
             String mockContent = objectMapper.writeValueAsString(mockPayload);
-            LlmResultMessage firstMessage = complete(messages, mockContent, request.model());
+            LlmResultMessage firstMessage;
+            try {
+                firstMessage = complete(messages, mockContent, request.model());
+            } catch (RuntimeException exception) {
+                throw interpretationFailure(
+                        "LLM_REQUEST", "大模型调用失败", request, messages, exception);
+            }
             try {
                 ParsedQueryAction parsed = parseAndValidate(firstMessage.content());
                 return new QueryActionResult(parsed.action(), parsed.explanation(), firstMessage);
@@ -60,7 +66,16 @@ public class ChatQueryInterpreter {
                                 + firstValidationError.getMessage()
                                 + "。请根据原始用户输入修正，只返回完整 QueryAction JSON；"
                                 + "不要添加原始输入中不存在的查询条件。"));
-                LlmResultMessage repairedMessage = complete(repairMessages, mockContent, request.model());
+                LlmResultMessage repairedMessage;
+                try {
+                    repairedMessage = complete(repairMessages, mockContent, request.model());
+                } catch (RuntimeException exception) {
+                    throw new QueryInterpretationException(
+                            "LLM_REPAIR_REQUEST",
+                            "协议修复请求失败：" + conciseMessage(exception),
+                            firstMessage,
+                            exception);
+                }
                 try {
                     ParsedQueryAction parsed = parseAndValidate(repairedMessage.content());
                     return new QueryActionResult(
@@ -69,20 +84,68 @@ public class ChatQueryInterpreter {
                             repairedMessage,
                             List.of("首次模型输出未通过协议校验，已要求模型按原协议重新生成"));
                 } catch (JsonProcessingException | RuntimeException secondValidationError) {
-                    ParsedQueryAction parsed = parseAndValidate(
-                            completeMissingSortAction(repairedMessage.content(), current));
-                    return new QueryActionResult(
-                            parsed.action(),
-                            parsed.explanation(),
-                            repairedMessage,
-                            List.of(
-                                    "模型两次输出的排序结构不完整，已保留本轮之前的排序状态",
-                                    "原始校验原因：" + secondValidationError.getMessage()));
+                    String completed;
+                    try {
+                        completed = completeMissingSortAction(repairedMessage.content(), current);
+                    } catch (JsonProcessingException normalizationError) {
+                        throw protocolFailure(repairedMessage, normalizationError);
+                    }
+                    if (!completed.equals(repairedMessage.content())) {
+                        try {
+                            ParsedQueryAction parsed = parseAndValidate(completed);
+                            return new QueryActionResult(
+                                    parsed.action(),
+                                    parsed.explanation(),
+                                    repairedMessage,
+                                    List.of(
+                                            "模型两次输出的排序结构不完整，已保留本轮之前的排序状态",
+                                            "原始校验原因：" + secondValidationError.getMessage()));
+                        } catch (JsonProcessingException | RuntimeException finalValidationError) {
+                            throw protocolFailure(repairedMessage, finalValidationError);
+                        }
+                    }
+                    throw protocolFailure(repairedMessage, secondValidationError);
                 }
             }
+        } catch (QueryInterpretationException exception) {
+            throw exception;
         } catch (JsonProcessingException exception) {
-            throw new IllegalArgumentException("大模型返回的 QueryAction JSON 无法解析", exception);
+            throw new QueryInterpretationException(
+                    "PROTOCOL_VALIDATION",
+                    "大模型返回的 QueryAction JSON 无法解析：" + conciseMessage(exception),
+                    null,
+                    exception);
         }
+    }
+
+    private QueryInterpretationException interpretationFailure(
+            String stage, String summary, ChatRequest request,
+            List<ChatMessage> requestMessages, RuntimeException cause) {
+        LlmResultMessage attempt = new LlmResultMessage(
+                engineLabel(request.model()),
+                "error",
+                "未收到可解析的模型响应：" + conciseMessage(cause),
+                List.copyOf(requestMessages));
+        return new QueryInterpretationException(
+                stage, summary + "：" + conciseMessage(cause), attempt, cause);
+    }
+
+    private QueryInterpretationException protocolFailure(
+            LlmResultMessage llmMessage, Exception cause) {
+        return new QueryInterpretationException(
+                "PROTOCOL_VALIDATION",
+                "QueryAction 协议校验失败：" + conciseMessage(cause),
+                llmMessage,
+                cause);
+    }
+
+    private static String conciseMessage(Throwable throwable) {
+        String message = throwable == null ? "未知错误" : throwable.getMessage();
+        if (!StringUtils.hasText(message)) {
+            message = throwable == null ? "未知错误" : throwable.getClass().getSimpleName();
+        }
+        String normalized = message.replaceAll("[\\r\\n\\t]+", " ").replaceAll("\\s{2,}", " ").trim();
+        return normalized.length() <= 400 ? normalized : normalized.substring(0, 400) + "…";
     }
 
     public String engineLabel() {
@@ -548,6 +611,26 @@ public class ChatQueryInterpreter {
             normalizationNotes = normalizationNotes == null
                     ? List.of()
                     : List.copyOf(normalizationNotes);
+        }
+    }
+
+    public static final class QueryInterpretationException extends IllegalArgumentException {
+        private final String stage;
+        private final LlmResultMessage llmMessage;
+
+        public QueryInterpretationException(
+                String stage, String message, LlmResultMessage llmMessage, Throwable cause) {
+            super(message, cause);
+            this.stage = stage;
+            this.llmMessage = llmMessage;
+        }
+
+        public String stage() {
+            return stage;
+        }
+
+        public LlmResultMessage llmMessage() {
+            return llmMessage;
         }
     }
 }
