@@ -3,6 +3,8 @@ package com.company.paymentanalysis.llm;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.Serializable;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -36,19 +38,20 @@ public class OpenAiCompatibleLlmClient {
 
     public LlmResultMessage completeWithMessage(
             List<ChatMessage> messages, String mockContent, String requestedModel) {
-        String model = resolveModel(requestedModel);
+        LlmProperties.ModelProfile profile = resolveProfile(requestedModel);
+        String model = profile.model();
         if (properties.mockEnabled()) {
             return new LlmResultMessage(model, "assistant", mockContent, List.copyOf(messages));
         }
-        if (!StringUtils.hasText(properties.baseUrl()) || !StringUtils.hasText(model)) {
-            throw new IllegalStateException("启用真实 LLM 时必须配置 LLM_BASE_URL 和 LLM_MODEL");
+        if (!StringUtils.hasText(profile.baseUrl()) || !StringUtils.hasText(model)) {
+            throw new IllegalStateException("启用真实 LLM 时必须配置模型地址和模型名称");
         }
 
         RestClient.RequestBodySpec request = restClientBuilder
-                .baseUrl(properties.baseUrl())
+                .baseUrl(profile.baseUrl())
                 .build()
                 .post()
-                .uri(properties.chatPath())
+                .uri(profile.chatPath())
                 .header(HttpHeaders.CONTENT_TYPE, "application/json");
         if (StringUtils.hasText(properties.apiKey())) {
             request.header(HttpHeaders.AUTHORIZATION, "Bearer " + properties.apiKey());
@@ -58,26 +61,26 @@ public class OpenAiCompatibleLlmClient {
                 model,
                 messages,
                 false,
-                properties.jsonMode() ? Map.of("type", "json_object") : null,
-                properties.thinkingSupported()
-                        ? Map.of("type", properties.thinkingEnabled() ? "enabled" : "disabled")
+                profile.jsonMode() ? Map.of("type", "json_object") : null,
+                profile.thinkingSupported()
+                        ? Map.of("type", profile.thinkingEnabled() ? "enabled" : "disabled")
                         : null,
-                properties.maxTokens(),
-                properties.temperature());
+                profile.maxTokens(),
+                profile.temperature());
         JsonNode response;
         try {
             response = executeWithRetry(request, body);
         } catch (RuntimeException exception) {
-            lastFailureAt.put(model, Instant.now());
+            lastFailureAt.put(profile.id(), Instant.now());
             throw exception;
         }
         JsonNode message = response == null ? null : response.at("/choices/0/message");
         JsonNode content = message == null ? null : message.get("content");
         if (content == null || content.isMissingNode()) {
-            lastFailureAt.put(model, Instant.now());
+            lastFailureAt.put(profile.id(), Instant.now());
             throw new IllegalStateException("LLM 返回中缺少 choices[0].message.content");
         }
-        lastSuccessAt.put(model, Instant.now());
+        lastSuccessAt.put(profile.id(), Instant.now());
         String role = message.path("role").asText("assistant");
         return new LlmResultMessage(
                 response.path("model").asText(model),
@@ -117,15 +120,15 @@ public class OpenAiCompatibleLlmClient {
     }
 
     public String modelLabel() {
-        return properties.mockEnabled() ? "Mock LLM" : resolveModel(null);
+        return properties.mockEnabled() ? "Mock LLM" : resolveProfile(null).displayName();
     }
 
     public String modelLabel(String requestedModel) {
         if (!StringUtils.hasText(requestedModel)) {
             return modelLabel();
         }
-        String model = resolveModel(requestedModel);
-        return properties.mockEnabled() ? "Mock LLM（" + model + "）" : model;
+        LlmProperties.ModelProfile profile = resolveProfile(requestedModel);
+        return properties.mockEnabled() ? "Mock LLM（" + profile.displayName() + "）" : profile.displayName();
     }
 
     public boolean isMockEnabled() {
@@ -137,25 +140,63 @@ public class OpenAiCompatibleLlmClient {
     }
 
     public LlmHealth health(String requestedModel) {
-        String model = resolveModel(requestedModel);
+        LlmProperties.ModelProfile profile = resolveProfile(requestedModel);
         if (properties.mockEnabled()) {
-            return new LlmHealth("MOCK", "Mock LLM（" + model + "）", "使用固定模拟解析", null);
+            return new LlmHealth("MOCK", "Mock LLM（" + profile.displayName() + "）", "使用固定模拟解析", null);
         }
-        if (!StringUtils.hasText(properties.baseUrl()) || !StringUtils.hasText(model)) {
-            return new LlmHealth("DOWN", "LLM", "缺少模型地址或模型名称", null);
+        if (!StringUtils.hasText(profile.baseUrl()) || !StringUtils.hasText(profile.model())) {
+            return new LlmHealth("DOWN", profile.displayName(), "缺少模型地址或模型名称", null);
         }
-        Instant successAt = lastSuccessAt.get(model);
-        Instant failureAt = lastFailureAt.get(model);
+        Instant successAt = lastSuccessAt.get(profile.id());
+        Instant failureAt = lastFailureAt.get(profile.id());
         if (failureAt != null && (successAt == null || failureAt.isAfter(successAt))) {
-            return new LlmHealth("DOWN", model, "最近一次调用失败", failureAt.toString());
+            return new LlmHealth("DOWN", profile.displayName(), "最近一次调用失败", failureAt.toString());
         }
         if (successAt != null) {
-            return new LlmHealth("UP", model, "最近一次调用成功", successAt.toString());
+            return new LlmHealth("UP", profile.displayName(), "最近一次调用成功", successAt.toString());
         }
-        return new LlmHealth("READY", model, "已配置，尚未调用该模型", null);
+        return new LlmHealth("READY", profile.displayName(), "已配置，尚未调用该模型", null);
     }
 
     public List<String> supportedModels() {
+        return supportedProfiles().stream().map(LlmProperties.ModelProfile::id).toList();
+    }
+
+    public List<LlmProperties.ModelProfile> supportedProfiles() {
+        LinkedHashMap<String, LlmProperties.ModelProfile> profiles = new LinkedHashMap<>();
+        if (properties.profiles() != null) {
+            properties.profiles().stream()
+                    .filter(profile -> profile != null && StringUtils.hasText(profile.id()))
+                    .map(this::normalizeProfile)
+                    .forEach(profile -> profiles.putIfAbsent(profile.id(), profile));
+        }
+        if (profiles.isEmpty()) {
+            legacyProfiles().forEach(profile -> profiles.putIfAbsent(profile.id(), profile));
+        }
+        return List.copyOf(profiles.values());
+    }
+
+    public String defaultModel() {
+        return resolveProfile(null).id();
+    }
+
+    public String resolveModel(String requestedModel) {
+        return resolveProfile(requestedModel).model();
+    }
+
+    public String resolveSelection(String requestedModel) {
+        return resolveProfile(requestedModel).id();
+    }
+
+    private LlmProperties.ModelProfile resolveProfile(String requestedModel) {
+        String selection = StringUtils.hasText(requestedModel) ? requestedModel.trim() : properties.model();
+        return supportedProfiles().stream()
+                .filter(profile -> profile.id().equals(selection))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("不支持的 LLM 模型：" + selection));
+    }
+
+    private List<LlmProperties.ModelProfile> legacyProfiles() {
         LinkedHashSet<String> models = new LinkedHashSet<>();
         if (properties.models() != null) {
             properties.models().stream().filter(StringUtils::hasText).map(String::trim).forEach(models::add);
@@ -163,19 +204,41 @@ public class OpenAiCompatibleLlmClient {
         if (StringUtils.hasText(properties.model())) {
             models.add(properties.model().trim());
         }
-        return List.copyOf(models);
-    }
-
-    public String defaultModel() {
-        return resolveModel(null);
-    }
-
-    public String resolveModel(String requestedModel) {
-        String model = StringUtils.hasText(requestedModel) ? requestedModel.trim() : properties.model();
-        if (!StringUtils.hasText(model) || !supportedModels().contains(model)) {
-            throw new IllegalArgumentException("不支持的 LLM 模型：" + model);
+        List<LlmProperties.ModelProfile> profiles = new ArrayList<>();
+        for (String model : models) {
+            profiles.add(new LlmProperties.ModelProfile(
+                    model,
+                    model,
+                    model,
+                    properties.baseUrl(),
+                    properties.chatPath(),
+                    properties.jsonMode(),
+                    properties.thinkingSupported(),
+                    properties.thinkingEnabled(),
+                    properties.maxTokens(),
+                    properties.temperature()));
         }
-        return model;
+        return profiles;
+    }
+
+    private LlmProperties.ModelProfile normalizeProfile(LlmProperties.ModelProfile profile) {
+        String id = profile.id().trim();
+        String model = StringUtils.hasText(profile.model()) ? profile.model().trim() : id;
+        String displayName = StringUtils.hasText(profile.displayName()) ? profile.displayName().trim() : model;
+        String baseUrl = StringUtils.hasText(profile.baseUrl()) ? profile.baseUrl().trim() : properties.baseUrl();
+        String chatPath = StringUtils.hasText(profile.chatPath()) ? profile.chatPath().trim() : properties.chatPath();
+        boolean jsonMode = profile.jsonMode() == null ? properties.jsonMode() : profile.jsonMode();
+        boolean thinkingSupported = profile.thinkingSupported() == null
+                ? properties.thinkingSupported()
+                : profile.thinkingSupported();
+        boolean thinkingEnabled = profile.thinkingEnabled() == null
+                ? properties.thinkingEnabled()
+                : profile.thinkingEnabled();
+        int maxTokens = profile.maxTokens() == null ? properties.maxTokens() : profile.maxTokens();
+        double temperature = profile.temperature() == null ? properties.temperature() : profile.temperature();
+        return new LlmProperties.ModelProfile(
+                id, displayName, model, baseUrl, chatPath, jsonMode, thinkingSupported,
+                thinkingEnabled, maxTokens, temperature);
     }
 
     public record ChatMessage(String role, String content) implements Serializable {

@@ -54,7 +54,7 @@ public class ChatQueryController {
         String conversationId = identifier(request.sessionId(), UUID.randomUUID().toString());
         String model;
         try {
-            model = llmClient.resolveModel(request.model());
+            model = llmClient.resolveSelection(request.model());
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage());
         }

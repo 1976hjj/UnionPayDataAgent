@@ -118,31 +118,34 @@ header > div > span { margin-left: 12px; padding: 4px 9px; border-radius: 10px; 
 
 .header-actions { display: flex; align-items: center; gap: 10px; }
 .header-actions button { width: 30px; height: 30px; border: 1px solid #dce4ee; border-radius: 50%; color: #73849a; background: #fff; }
-.model-tabs {
+.model-selector {
   display: flex;
   align-items: center;
-  gap: 3px;
-  padding: 3px;
+  gap: 6px;
+  padding: 3px 8px;
   border: 1px solid #dce5ef;
   border-radius: 9px;
   background: #f5f8fc;
 }
 
-.header-actions .model-tabs button {
-  width: auto;
-  height: 26px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 6px;
+.model-selector label {
   color: #526b88;
-  background: transparent;
   font-size: 10px;
   font-weight: 600;
   white-space: nowrap;
 }
 
-.header-actions .model-tabs button:hover { color: #175fae; background: #eaf2fc; }
-.header-actions .model-tabs button.active { color: #fff; background: #2f73c8; box-shadow: 0 2px 7px rgb(47 115 200 / 22%); }
+.model-selector select {
+  width: 156px;
+  height: 26px;
+  border: 0;
+  outline: 0;
+  color: #24517f;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
 .dependency-health {
   display: flex;
   align-items: center;
@@ -2583,7 +2586,7 @@ td { color: #3b5069; }
 }
 
 @media (max-width: 1250px) {
-  .header-actions .model-tabs button { padding-inline: 6px; font-size: 9px; }
+  .model-selector select { width: 132px; font-size: 9px; }
 
   .app-shell {
     grid-template-columns: 76px minmax(0, 1fr);
@@ -3070,7 +3073,9 @@ td { color: #3b5069; }
 
   .dependency-health { display: none; }
   .header-actions { min-width: 0; }
-  .model-tabs { max-width: calc(100vw - 190px); overflow-x: auto; }
+  .model-selector { max-width: calc(100vw - 190px); }
+  .model-selector label { display: none; }
+  .model-selector select { width: min(160px, calc(100vw - 210px)); }
 
   .content,
   .content:has(.query-chat-page) {

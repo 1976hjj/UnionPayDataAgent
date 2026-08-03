@@ -11,37 +11,45 @@ type DependencyStatus = {
   checkedAt: string | null
 }
 
+type ModelOption = {
+  id: string
+  displayName: string
+}
+
 const INITIAL_DEPENDENCIES: DependencyStatus[] = [
   { code: 'redis', name: 'Redis', status: 'READY', detail: '正在检查', checkedAt: null },
   { code: 'llm', name: 'LLM', status: 'READY', detail: '正在检查', checkedAt: null },
   { code: 'smartbi', name: 'SmartBI', status: 'READY', detail: '正在检查', checkedAt: null },
 ]
 
-const FALLBACK_MODELS = ['glm-4.7', 'glm-4.7-flashx', 'glm-4.7-flash', 'glm-4-flash-250414']
+const FALLBACK_MODELS: ModelOption[] = [
+  { id: 'glm-4.7', displayName: 'GLM-4.7' },
+  { id: 'glm-4.7-flashx', displayName: 'GLM-4.7-FlashX' },
+  { id: 'glm-4.7-flash', displayName: 'GLM-4.7-Flash' },
+  { id: 'glm-4-flash-250414', displayName: 'GLM-4-Flash-250414' },
+  { id: 'deepseek-v3', displayName: 'DeepSeek-V3（公司）' },
+  { id: 'glm-4.6-fp8', displayName: 'GLM-4.6-FP8（公司）' },
+]
 const MODEL_STORAGE_KEY = 'payment-analysis:selected-model'
-
-function modelName(model: string) {
-  return model.split('-').map((part) => part === 'glm' ? 'GLM' : part === 'flashx' ? 'FlashX' : part === 'flash' ? 'Flash' : part).join('-')
-}
 
 export default function App() {
   const location = useLocation()
   const [dependencies, setDependencies] = useState<DependencyStatus[]>(INITIAL_DEPENDENCIES)
-  const [models, setModels] = useState<string[]>(FALLBACK_MODELS)
+  const [models, setModels] = useState<ModelOption[]>(FALLBACK_MODELS)
   const [selectedModel, setSelectedModel] = useState(
     () => {
       const saved = localStorage.getItem(MODEL_STORAGE_KEY)
-      return saved && FALLBACK_MODELS.includes(saved) ? saved : 'glm-4.7-flash'
+      return saved && FALLBACK_MODELS.some((model) => model.id === saved) ? saved : 'glm-4.7-flash'
     },
   )
 
   useEffect(() => {
     fetch('/api/system/models')
-      .then((response) => response.ok ? response.json() as Promise<{ defaultModel: string, models: string[] }> : Promise.reject())
+      .then((response) => response.ok ? response.json() as Promise<{ defaultModel: string, models: ModelOption[] }> : Promise.reject())
       .then((data) => {
         const available = data.models.length ? data.models : FALLBACK_MODELS
         setModels(available)
-        setSelectedModel((current) => available.includes(current) ? current : data.defaultModel)
+        setSelectedModel((current) => available.some((model) => model.id === current) ? current : data.defaultModel)
       })
       .catch(() => setModels(FALLBACK_MODELS))
   }, [])
@@ -94,19 +102,16 @@ export default function App() {
           <div><strong>支付数据智能分析平台</strong><span>测试环境</span></div>
           <div className="header-actions">
             {location.pathname.startsWith('/query') && (
-              <div className="model-tabs" aria-label="选择大模型" role="tablist">
-                {models.map((model) => (
-                  <button
-                    aria-selected={selectedModel === model}
-                    className={selectedModel === model ? 'active' : ''}
-                    key={model}
-                    onClick={() => selectModel(model)}
-                    role="tab"
-                    type="button"
-                  >
-                    {modelName(model)}
-                  </button>
-                ))}
+              <div className="model-selector">
+                <label htmlFor="llm-model">模型</label>
+                <select
+                  aria-label="选择大模型"
+                  id="llm-model"
+                  onChange={(event) => selectModel(event.target.value)}
+                  value={selectedModel}
+                >
+                  {models.map((model) => <option key={model.id} value={model.id}>{model.displayName}</option>)}
+                </select>
               </div>
             )}
             <div className="dependency-health" aria-label="中间件运行状态">

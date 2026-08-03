@@ -17,5 +17,19 @@ public record LlmProperties(
         int maxTokens,
         double temperature,
         int maxAttempts,
-        long retryDelayMs) {
+        long retryDelayMs,
+        List<ModelProfile> profiles) {
+
+    public record ModelProfile(
+            String id,
+            String displayName,
+            String model,
+            String baseUrl,
+            String chatPath,
+            Boolean jsonMode,
+            Boolean thinkingSupported,
+            Boolean thinkingEnabled,
+            Integer maxTokens,
+            Double temperature) {
+    }
 }

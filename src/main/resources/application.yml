@@ -33,11 +33,6 @@ llm:
   base-url: ${LLM_BASE_URL:https://open.bigmodel.cn}
   api-key: ${LLM_API_KEY:}
   model: ${LLM_MODEL:glm-4.7-flash}
-  models:
-    - glm-4.7
-    - glm-4.7-flashx
-    - glm-4.7-flash
-    - glm-4-flash-250414
   chat-path: ${LLM_CHAT_PATH:/api/paas/v4/chat/completions}
   json-mode: ${LLM_JSON_MODE:true}
   thinking-supported: ${LLM_THINKING_SUPPORTED:true}
@@ -46,4 +41,54 @@ llm:
   temperature: ${LLM_TEMPERATURE:0.0}
   max-attempts: ${LLM_MAX_ATTEMPTS:2}
   retry-delay-ms: ${LLM_RETRY_DELAY_MS:300}
+  profiles:
+    - id: glm-4.7
+      display-name: GLM-4.7
+      model: glm-4.7
+      base-url: ${ZHIPU_LLM_BASE_URL:${LLM_BASE_URL:https://open.bigmodel.cn}}
+      chat-path: /api/paas/v4/chat/completions
+      json-mode: true
+      thinking-supported: true
+      thinking-enabled: false
+    - id: glm-4.7-flashx
+      display-name: GLM-4.7-FlashX
+      model: glm-4.7-flashx
+      base-url: ${ZHIPU_LLM_BASE_URL:${LLM_BASE_URL:https://open.bigmodel.cn}}
+      chat-path: /api/paas/v4/chat/completions
+      json-mode: true
+      thinking-supported: true
+      thinking-enabled: false
+    - id: glm-4.7-flash
+      display-name: GLM-4.7-Flash
+      model: glm-4.7-flash
+      base-url: ${ZHIPU_LLM_BASE_URL:${LLM_BASE_URL:https://open.bigmodel.cn}}
+      chat-path: /api/paas/v4/chat/completions
+      json-mode: true
+      thinking-supported: true
+      thinking-enabled: false
+    - id: glm-4-flash-250414
+      display-name: GLM-4-Flash-250414
+      model: glm-4-flash-250414
+      base-url: ${ZHIPU_LLM_BASE_URL:${LLM_BASE_URL:https://open.bigmodel.cn}}
+      chat-path: /api/paas/v4/chat/completions
+      json-mode: true
+      thinking-supported: false
+    - id: deepseek-v3
+      display-name: DeepSeek-V3（公司）
+      model: deepseek-v3
+      base-url: ${DEEPSEEK_V3_BASE_URL:http://172.19.209.4:32000/v1}
+      chat-path: /chat/completions
+      json-mode: ${DEEPSEEK_V3_JSON_MODE:false}
+      thinking-supported: false
+      max-tokens: ${DEEPSEEK_V3_MAX_TOKENS:512}
+      temperature: ${DEEPSEEK_V3_TEMPERATURE:0.0}
+    - id: glm-4.6-fp8
+      display-name: GLM-4.6-FP8（公司）
+      model: glm-4.6-fp8
+      base-url: ${GLM_46_BASE_URL:http://172.19.209.6:32002/v1}
+      chat-path: /chat/completions
+      json-mode: ${GLM_46_JSON_MODE:false}
+      thinking-supported: false
+      max-tokens: ${GLM_46_MAX_TOKENS:512}
+      temperature: ${GLM_46_TEMPERATURE:0.0}
 

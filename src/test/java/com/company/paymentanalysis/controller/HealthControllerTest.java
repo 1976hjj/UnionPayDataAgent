@@ -30,10 +30,10 @@ class HealthControllerTest {
         mockMvc.perform(get("/api/system/models"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.defaultModel").value("glm-4.7-flash"))
-                .andExpect(jsonPath("$.models[0]").value("glm-4.7"))
-                .andExpect(jsonPath("$.models[1]").value("glm-4.7-flashx"))
-                .andExpect(jsonPath("$.models[2]").value("glm-4.7-flash"))
-                .andExpect(jsonPath("$.models[3]").value("glm-4-flash-250414"));
+                .andExpect(jsonPath("$.models[0].id").value("glm-4.7"))
+                .andExpect(jsonPath("$.models[0].displayName").value("GLM-4.7"))
+                .andExpect(jsonPath("$.models[4].id").value("deepseek-v3"))
+                .andExpect(jsonPath("$.models[5].id").value("glm-4.6-fp8"));
     }
 
     @Test
@@ -41,6 +41,6 @@ class HealthControllerTest {
         mockMvc.perform(get("/api/system/dependencies").param("model", "glm-4.7"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dependencies[1].code").value("llm"))
-                .andExpect(jsonPath("$.dependencies[1].name").value("glm-4.7"));
+                .andExpect(jsonPath("$.dependencies[1].name").value("GLM-4.7"));
     }
 }

@@ -46,7 +46,10 @@ public class SystemDependencyController {
 
     @GetMapping("/models")
     public ModelOptionsResponse models() {
-        return new ModelOptionsResponse(llmClient.defaultModel(), llmClient.supportedModels());
+        List<ModelOption> models = llmClient.supportedProfiles().stream()
+                .map(profile -> new ModelOption(profile.id(), profile.displayName()))
+                .toList();
+        return new ModelOptionsResponse(llmClient.defaultModel(), models);
     }
 
     public record DependencyHealthResponse(String overallStatus, List<DependencyStatus> dependencies) {
@@ -55,6 +58,9 @@ public class SystemDependencyController {
     public record DependencyStatus(String code, String name, String status, String detail, String checkedAt) {
     }
 
-    public record ModelOptionsResponse(String defaultModel, List<String> models) {
+    public record ModelOptionsResponse(String defaultModel, List<ModelOption> models) {
+    }
+
+    public record ModelOption(String id, String displayName) {
     }
 }
