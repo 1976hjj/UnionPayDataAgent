@@ -57,6 +57,14 @@ public final class SmartBiSqlPreview {
                     + String.join(", ", values.stream().map(SmartBiSqlPreview::quote).toList()) + ")";
             case "EQ", "EQUALS", "=" -> filter.name() + " = "
                     + (values.isEmpty() ? "NULL" : quote(values.get(0)));
+            case "GREATER_EQUALS" -> filter.name() + " >= "
+                    + (values.isEmpty() ? "NULL" : quote(values.get(0)));
+            case "LESS_EQUALS" -> filter.name() + " <= "
+                    + (values.isEmpty() ? "NULL" : quote(values.get(0)));
+            case "GREATER" -> filter.name() + " > "
+                    + (values.isEmpty() ? "NULL" : quote(values.get(0)));
+            case "LESS" -> filter.name() + " < "
+                    + (values.isEmpty() ? "NULL" : quote(values.get(0)));
             default -> filter.name() + " " + filter.operation() + " "
                     + (values.isEmpty() ? "NULL" : quote(values.get(0)));
         };

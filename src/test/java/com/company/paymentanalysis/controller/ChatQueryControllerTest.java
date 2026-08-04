@@ -188,11 +188,11 @@ class ChatQueryControllerTest {
                 .andExpect(jsonPath("$.status").value("confirming"))
                 .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("sett_dt_Day"))
                 .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].name").value("trade_date"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].operation").value("BETWEEN"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].values.length()").value(2))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].operation").value("GREATER_EQUALS"))
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[1].operation").value("LESS_EQUALS"))
                 .andExpect(jsonPath("$.queryPlan.sqlPreview")
                         .value(org.hamcrest.Matchers.containsString(
-                                "trade_date BETWEEN '2026-02-01' AND '2026-07-31'")));
+                                "trade_date >= '2026-02-01'")));
     }
 
     @Test
@@ -262,7 +262,7 @@ class ChatQueryControllerTest {
                 .andExpect(jsonPath("$.queryPlan.smartBiRequest.columns[0]").value("trans_cnt"))
                 .andExpect(jsonPath("$.queryPlan.smartBiRequest.rows[0]").value("accept_channel"))
                 .andExpect(jsonPath("$.queryPlan.smartBiRequest.filters[0].name").value("accept_channel"))
-                .andExpect(jsonPath("$.queryPlan.smartBiRequest.sorts.length()").value(0));
+                .andExpect(jsonPath("$.queryPlan.smartBiRequest.orderBys.length()").value(0));
     }
 
     @Test

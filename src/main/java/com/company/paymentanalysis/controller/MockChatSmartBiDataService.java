@@ -100,6 +100,10 @@ public class MockChatSmartBiDataService {
 
     private List<String> selectedMembers(QueryRequest request, String dimension) {
         List<String> available = MEMBERS.get(dimension);
+        List<String> rangedMembers = membersForRangeBounds(dimension, request.filters());
+        if (!rangedMembers.isEmpty()) {
+            return rangedMembers;
+        }
         List<String> requested = request.filters().stream()
                 .filter(filter -> filter.name().equals(dimension)
                         || "sett_dt_Month2".equals(dimension)
@@ -110,6 +114,52 @@ public class MockChatSmartBiDataService {
                 .distinct()
                 .toList();
         return requested.isEmpty() ? available : requested;
+    }
+
+    /**
+     * The SmartBI REST protocol represents an inclusive range as two documented
+     * predicates on the same field.  The mock expands that pair only so its
+     * generated date rows resemble a real grouped result; production requests
+     * are sent through unchanged.
+     */
+    private List<String> membersForRangeBounds(String dimension, List<Filter> filters) {
+        if (!Set.of("sett_dt_Month2", "sett_dt_Day").contains(dimension)) {
+            return List.of();
+        }
+
+        String sourceField = "trade_date";
+        String lowerBound = filters.stream()
+                .filter(filter -> sourceField.equals(filter.name()))
+                .filter(filter -> "GREATER_EQUALS".equalsIgnoreCase(filter.operation()))
+                .map(Filter::values)
+                .filter(values -> !values.isEmpty())
+                .map(values -> values.get(0))
+                .findFirst()
+                .orElse(null);
+        String upperBound = filters.stream()
+                .filter(filter -> sourceField.equals(filter.name()))
+                .filter(filter -> "LESS_EQUALS".equalsIgnoreCase(filter.operation()))
+                .map(Filter::values)
+                .filter(values -> !values.isEmpty())
+                .map(values -> values.get(0))
+                .findFirst()
+                .orElse(null);
+        if (lowerBound == null || upperBound == null) {
+            return List.of();
+        }
+
+        if ("sett_dt_Month2".equals(dimension)) {
+            YearMonth start = YearMonth.parse(lowerBound.substring(0, 7));
+            YearMonth end = YearMonth.parse(upperBound.substring(0, 7));
+            return java.util.stream.Stream.iterate(
+                            start, month -> !month.isAfter(end), month -> month.plusMonths(1))
+                    .map(YearMonth::toString)
+                    .toList();
+        }
+
+        LocalDate start = LocalDate.parse(lowerBound);
+        LocalDate end = LocalDate.parse(upperBound);
+        return start.datesUntil(end.plusDays(1)).map(LocalDate::toString).toList();
     }
 
     private List<String> membersForFilter(String dimension, Filter filter) {

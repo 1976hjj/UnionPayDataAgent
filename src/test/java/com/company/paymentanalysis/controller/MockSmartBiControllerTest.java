@@ -19,30 +19,48 @@ class MockSmartBiControllerTest {
     private MockMvc mockMvc;
 
     @Test
-    void acceptsSmartBiJsonAndReturnsFixedRows() throws Exception {
+    void acceptsTheSameOfficialJsonThatTheClientSends() throws Exception {
         mockMvc.perform(post("/api/mock/smartbi/query")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "dataSetId": "Iff8080810196b306b3067b2a0196b3067b2a0000",
-                                  "rows": ["sett_dt_Month2", "JYJZ_NAME"],
-                                  "columns": ["acpt_trans_rmb_amt_m", "acpt_trans_rmb_amt_hb"],
-                                  "filters": [
-                                    {"id":"1","name":"sett_dt_Month2","operation":"EQUALS","values":["2026-07"]},
-                                    {"id":"2","name":"sett_dt_Month2","operation":"EQUALS","values":["2026-06"]}
-                                  ],
-                                  "relationNode": {
-                                    "childNodes": [],
-                                    "relation": "AND",
-                                    "leaf": "false"
-                                  }
+                                  "dataSetId":"merchant_daily",
+                                  "rows":["region_name"],
+                                  "columns":["trans_amt"],
+                                  "filters":[{"id":"1","name":"region_name","operation":"IN","values":["EAST","SOUTH"]}],
+                                  "relationNode":{"childNodes":[],"filter":null,"relation":"AND","leaf":false},
+                                  "orderBys":[{"fieldName":"trans_amt","type":"DESC","orderPriority":1}]
                                 }
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.metadata.source").value("Mock SmartBI route"))
-                .andExpect(jsonPath("$.metadata.periodsCombined").value(true))
-                .andExpect(jsonPath("$.data.length()").value(4))
-                .andExpect(jsonPath("$.data[0].memberName").value("芯片卡"))
-                .andExpect(jsonPath("$.data[2].direction").value("DOWN"));
+                .andExpect(jsonPath("$.columnLabels").isArray())
+                .andExpect(jsonPath("$.iterator").isArray())
+                .andExpect(jsonPath("$.iterator[0][0].type").exists())
+                .andExpect(jsonPath("$.iterator[0][0].displayValue").exists())
+                .andExpect(jsonPath("$.iterator[0][0].value").exists())
+                .andExpect(jsonPath("$.totalRowCount").value(-1));
+    }
+
+    @Test
+    void expandsOfficialInclusiveRangePredicatesForMockDateRows() throws Exception {
+        mockMvc.perform(post("/api/mock/smartbi/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "dataSetId":"merchant_daily",
+                                  "rows":["sett_dt_Day"],
+                                  "columns":["trans_amt"],
+                                  "filters":[
+                                    {"id":"1-from","name":"trade_date","operation":"GREATER_EQUALS","values":["2026-07-30"]},
+                                    {"id":"1-to","name":"trade_date","operation":"LESS_EQUALS","values":["2026-08-01"]}
+                                  ],
+                                  "relationNode":{"childNodes":[],"filter":null,"relation":"AND","leaf":false},
+                                  "orderBys":[]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.iterator.length()").value(3))
+                .andExpect(jsonPath("$.iterator[0][0].value").value("2026-07-30"))
+                .andExpect(jsonPath("$.iterator[2][0].value").value("2026-08-01"));
     }
 }

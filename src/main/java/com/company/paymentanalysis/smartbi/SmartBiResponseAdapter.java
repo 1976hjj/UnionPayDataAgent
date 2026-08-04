@@ -1,7 +1,6 @@
 package com.company.paymentanalysis.smartbi;
 
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryResponse;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
@@ -10,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 
+/** Converts the documented SmartBI DataIterator response into application table rows. */
 @Component
 public class SmartBiResponseAdapter {
 
@@ -20,27 +20,12 @@ public class SmartBiResponseAdapter {
     }
 
     public QueryResponse normalize(JsonNode response) {
-        if (response.has("data") && response.get("data").isArray()) {
-            return normalizedResponse(response);
+        if (!response.has("iterator") || !response.get("iterator").isArray()) {
+            throw new IllegalStateException("SmartBI response is not a DataIterator: iterator is required");
         }
-        if (response.has("iterator") && response.get("iterator").isArray()) {
-            return dataIteratorResponse(response);
-        }
-        throw new IllegalStateException("无法识别 SmartBI 返回结构：缺少 data 或 iterator");
-    }
 
-    private QueryResponse normalizedResponse(JsonNode response) {
-        try {
-            return objectMapper.treeToValue(response, QueryResponse.class);
-        } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("解析 Mock SmartBI 返回失败", exception);
-        }
-    }
-
-    private QueryResponse dataIteratorResponse(JsonNode response) {
         List<String> labels = new ArrayList<>();
         response.path("columnLabels").forEach(label -> labels.add(label.asText()));
-
         List<Map<String, Object>> rows = new ArrayList<>();
         for (JsonNode sourceRow : response.path("iterator")) {
             Map<String, Object> row = new LinkedHashMap<>();
@@ -62,9 +47,7 @@ public class SmartBiResponseAdapter {
         JsonNode value = cell != null && cell.isObject() && cell.has("value")
                 ? cell.get("value")
                 : cell;
-        return value == null || value.isNull()
-                ? null
-                : objectMapper.convertValue(value, Object.class);
+        return value == null || value.isNull() ? null : objectMapper.convertValue(value, Object.class);
     }
 
     private String uniqueLabel(Map<String, Object> row, String label) {

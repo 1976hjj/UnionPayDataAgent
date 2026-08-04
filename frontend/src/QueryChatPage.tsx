@@ -83,7 +83,7 @@ type SmartBiRelationNode = {
   childNodes: SmartBiRelationNode[] | null
   filter: SmartBiFilter | null
   relation: string | null
-  leaf: string
+  leaf: boolean
 }
 
 type SmartBiQueryRequest = {
@@ -92,7 +92,7 @@ type SmartBiQueryRequest = {
   columns: string[]
   filters: SmartBiFilter[]
   relationNode: SmartBiRelationNode
-  sorts: { field: string; direction: 'ASC' | 'DESC' }[]
+  orderBys: { fieldName: string; type: 'ASC' | 'DESC'; orderPriority: number }[]
 }
 
 type ChatQueryPlan = {

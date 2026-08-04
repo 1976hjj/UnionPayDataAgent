@@ -1,5 +1,6 @@
 package com.company.paymentanalysis.smartbi;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
@@ -20,14 +21,14 @@ public final class SmartBiModels {
             List<RelationNode> childNodes,
             Filter filter,
             String relation,
-            String leaf) implements Serializable {
+            boolean leaf) implements Serializable {
 
         public static RelationNode leaf(Filter filter) {
-            return new RelationNode(null, filter, null, "true");
+            return new RelationNode(null, filter, null, true);
         }
 
         public static RelationNode group(String relation, List<RelationNode> children) {
-            return new RelationNode(children, null, relation, "false");
+            return new RelationNode(children, null, relation, false);
         }
     }
 
@@ -37,13 +38,13 @@ public final class SmartBiModels {
             List<String> columns,
             List<Filter> filters,
             RelationNode relationNode,
-            List<Sort> sorts) implements Serializable {
+            List<Sort> orderBys) implements Serializable {
 
         public QueryRequest {
             rows = rows == null ? List.of() : List.copyOf(rows);
             columns = columns == null ? List.of() : List.copyOf(columns);
             filters = filters == null ? List.of() : List.copyOf(filters);
-            sorts = sorts == null ? List.of() : List.copyOf(sorts);
+            orderBys = orderBys == null ? List.of() : List.copyOf(orderBys);
         }
 
         public QueryRequest(
@@ -51,9 +52,37 @@ public final class SmartBiModels {
                 List<Filter> filters, RelationNode relationNode) {
             this(dataSetId, rows, columns, filters, relationNode, List.of());
         }
+
+        @JsonIgnore
+        public List<Sort> sorts() {
+            return orderBys;
+        }
     }
 
-    public record Sort(String field, String direction) implements Serializable {
+    public record Sort(String fieldName, String type, int orderPriority) implements Serializable {
+
+        public Sort(String fieldName, String type) {
+            this(fieldName, type, 0);
+        }
+
+        @JsonIgnore
+        public String field() {
+            return fieldName;
+        }
+
+        @JsonIgnore
+        public String direction() {
+            return type;
+        }
+    }
+
+    public record CellData(String type, String displayValue, Object value) implements Serializable {
+    }
+
+    public record DataIteratorResponse(
+            List<String> columnLabels,
+            List<List<CellData>> iterator,
+            int totalRowCount) implements Serializable {
     }
 
     public record QueryResponse(

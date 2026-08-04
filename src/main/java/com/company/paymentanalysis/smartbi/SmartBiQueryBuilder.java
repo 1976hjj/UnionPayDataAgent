@@ -28,22 +28,27 @@ public class SmartBiQueryBuilder {
         List<Filter> filters = new ArrayList<>();
         for (int index = 0; index < context.dimensionFilters().size(); index++) {
             var filter = context.dimensionFilters().get(index);
-            filters.add(new Filter(
-                    String.valueOf(index + 1),
-                    QueryMetadataCatalog.smartBiFilterField(filter.dimensionId()),
-                    filter.operator(),
-                    filter.values()));
+            String id = String.valueOf(index + 1);
+            String field = QueryMetadataCatalog.smartBiFilterField(filter.dimensionId());
+            if ("BETWEEN".equals(filter.operator()) && filter.values().size() == 2) {
+                filters.add(new Filter(id + "-from", field, "GREATER_EQUALS", List.of(filter.values().get(0))));
+                filters.add(new Filter(id + "-to", field, "LESS_EQUALS", List.of(filter.values().get(1))));
+            } else {
+                filters.add(new Filter(id, field, filter.operator(), filter.values()));
+            }
         }
-        List<Sort> sorts = context.sorts().stream()
-                .map(sort -> new Sort(queryField(sort.fieldId()), sort.direction()))
-                .toList();
+        List<Sort> orderBys = new ArrayList<>();
+        for (int index = 0; index < context.sorts().size(); index++) {
+            var sort = context.sorts().get(index);
+            orderBys.add(new Sort(queryField(sort.fieldId()), sort.direction(), index + 1));
+        }
         return new QueryRequest(
                 properties.datasetId(),
                 rows,
                 columns,
                 List.copyOf(filters),
                 RelationNode.group("AND", filters.stream().map(RelationNode::leaf).toList()),
-                sorts);
+                List.copyOf(orderBys));
     }
 
     public String metricField(String metricCode) {

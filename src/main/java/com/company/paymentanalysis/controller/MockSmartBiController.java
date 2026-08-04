@@ -5,6 +5,9 @@ import static com.company.paymentanalysis.attribution.AttributionCatalog.DIMENSI
 
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryResponse;
+import com.company.paymentanalysis.smartbi.SmartBiModels.CellData;
+import com.company.paymentanalysis.smartbi.SmartBiModels.DataIteratorResponse;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -26,7 +29,18 @@ public class MockSmartBiController {
     }
 
     @PostMapping("/query")
-    public QueryResponse query(@RequestBody QueryRequest request) {
+    public DataIteratorResponse query(@RequestBody QueryRequest request) {
+        QueryResponse response = queryData(request);
+        List<String> labels = response.data().isEmpty()
+                ? List.of()
+                : List.copyOf(response.data().get(0).keySet());
+        List<List<CellData>> iterator = response.data().stream()
+                .map(row -> labels.stream().map(label -> cell(row.get(label))).toList())
+                .toList();
+        return new DataIteratorResponse(labels, iterator, -1);
+    }
+
+    private QueryResponse queryData(QueryRequest request) {
         if (chatDataService.supports(request)) {
             return chatDataService.query(request);
         }
@@ -45,6 +59,15 @@ public class MockSmartBiController {
                         "source", "Mock SmartBI route",
                         "periodsCombined", true,
                         "rowCount", data.size()));
+    }
+
+    private CellData cell(Object value) {
+        String type = value == null ? "NULL"
+                : value instanceof BigDecimal ? "BIGDECIMAL"
+                : value instanceof Number ? "NUMBER"
+                : value instanceof Boolean ? "BOOLEAN"
+                : "STRING";
+        return new CellData(type, value == null ? null : String.valueOf(value), value);
     }
 
     private List<Map<String, Object>> memberRows(String dimensionCode, String metricField) {
