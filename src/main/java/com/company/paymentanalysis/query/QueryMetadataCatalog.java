@@ -7,19 +7,110 @@ import java.util.Set;
 
 public final class QueryMetadataCatalog {
 
+    /**
+     * Production data-model dictionary. IDs are the SmartBI field names from
+     * “生产模型.xlsx”, so no invented intermediate field name is sent to SmartBI.
+     * The page's current small capability display is intentionally independent
+     * from this catalog and is not changed in this step.
+     */
     private static final Map<String, FieldDefinition> METRICS = orderedMap(
-            new FieldDefinition("transactionAmount", "交易金额", "trans_amt", "trans_amt"),
-            new FieldDefinition("transactionCount", "交易笔数", "trans_cnt", "trans_cnt"),
-            new FieldDefinition("successRate", "支付成功率", "success_rate", "success_rate"));
+            metric("trans_cnt_m", "总交易笔数"),
+            metric("trans_amt_m", "原币总金额"),
+            metric("trans_rmb_amt_m", "人民币总金额"),
+            metric("acpt_cnt_m", "承兑笔数"),
+            metric("acpt_trans_amt_m", "原币承兑金额"),
+            metric("acpt_trans_rmb_amt_m", "人民币承兑金额"),
+            metric("sh_jy_num_m", "当日商户数（有交易）"),
+            metric("sh_cg_num_m", "当日商户数（有成功交易）"),
+            metric("trans_cnt_tb", "总交易笔数同比"),
+            metric("trans_cnt_hb", "总交易笔数环比"),
+            metric("trans_amt_tb", "原币总金额同比"),
+            metric("trans_amt_hb", "原币总金额环比"),
+            metric("trans_rmb_amt_tb", "人民币总金额同比"),
+            metric("trans_rmb_amt_hb", "人民币总金额环比"),
+            metric("acpt_cnt_tb", "承兑笔数同比"),
+            metric("acpt_cnt_hb", "承兑笔数环比"),
+            metric("acpt_trans_amt_tb", "原币承兑金额同比"),
+            metric("acpt_trans_amt_hb", "原币承兑金额环比"),
+            metric("acpt_trans_rmb_amt_tb", "人民币承兑金额同比"),
+            metric("acpt_trans_rmb_amt_hb", "人民币承兑金额环比"),
+            metric("sh_jy_num_tb", "当日商户数（有交易）同比"),
+            metric("sh_jy_num_hb", "当日商户数（有交易）环比"),
+            metric("sh_cg_num_tb", "当日商户数（有成功交易）同比"),
+            metric("sh_cg_num_hb", "当日商户数（有成功交易）环比"));
 
     private static final Map<String, FieldDefinition> DIMENSIONS = orderedMap(
-            new FieldDefinition("tradeYear", "年", "sett_dt_Year", "sett_dt_Year"),
-            new FieldDefinition("tradeMonth", "月", "sett_dt_Month2", "sett_dt_Month2"),
-            new FieldDefinition("tradeDate", "日", "sett_dt_Day", "trade_date"),
-            new FieldDefinition("channel", "受理渠道", "accept_channel", "accept_channel"),
-            new FieldDefinition("region", "地区", "region_name", "region_name"),
-            new FieldDefinition("merchantType", "商户类型", "merchant_type", "merchant_type"),
-            new FieldDefinition("paymentMethod", "支付方式", "payment_method", "payment_method"));
+            dimension("sett_dt_Year2", "年"),
+            dimension("sett_dt_Month2", "月"),
+            dimension("sett_dt_Day2", "日"),
+            dimension("acq_reg_ch", "收单分公司"),
+            dimension("acq_mkt_ch", "收单市场"),
+            dimension("acq_reg_cde", "收单市场代码"),
+            dimension("iss_dq_ch", "发卡分公司"),
+            dimension("iss_sc_ch", "发卡市场"),
+            dimension("iss_reg_cde", "发卡市场代码"),
+            dimension("reg_nm_lvl_1", "中国大陆受理省市"),
+            dimension("reg_nm_lvl_2", "中国大陆受理区县"),
+            dimension("acq_ins_cde", "收单机构代码"),
+            dimension("iss_ins_cde", "发卡机构代码"),
+            dimension("acq_ins_ch", "收单机构名称"),
+            dimension("ins_ins_ch", "发卡机构名称"),
+            dimension("fwd_ins_cde", "转发机构代码"),
+            dimension("recv_ins_cde", "接受机构代码"),
+            dimension("recv_ins_nm", "接受机构名称"),
+            dimension("eci", "电子商务标识"),
+            dimension("mm_sh_sign", "免验密码标识"),
+            dimension("trans_nms", "交易类型"),
+            dimension("acq_pos_cond_cde", "服务点条件码"),
+            dimension("instalment", "分期期数"),
+            dimension("mpay_def", "移动支付"),
+            dimension("resp_cde", "响应码"),
+            dimension("DEFINITION", "响应码名称"),
+            dimension("proc_ind", "处理标记"),
+            dimension("rev_ind", "冲正标记"),
+            dimension("trans_cde", "交易代码"),
+            dimension("trans_nm", "交易代码名称"),
+            dimension("trans_mod_def", "交易模式名称"),
+            dimension("channel", "交易渠道代码"),
+            dimension("channel_def", "交易渠道名称"),
+            dimension("curr_cde", "交易货币代码"),
+            dimension("curr_nm_ch", "交易货币名称"),
+            dimension("srv_entry_mod", "服务点输入方式"),
+            dimension("ic_cond_cde", "IC卡条件代码"),
+            dimension("JYJZ_NAME", "交易介质"),
+            dimension("term_entry_cap", "终端读取能力"),
+            dimension("wallet_id", "钱包标识"),
+            dimension("name", "钱包名称"),
+            dimension("acq_sett_curr_cde", "受理方清算币种"),
+            dimension("iss_sett_curr_cde", "发卡方清算币种"),
+            dimension("trans_scen_ind", "IP用法"),
+            dimension("bi_tag", "B2B产品标识"),
+            dimension("token_ind_ch", "是否token发起"),
+            dimension("iss_trans_resp_cde", "发卡方响应码"),
+            dimension("DEFINITION3", "发卡方响应码名称"),
+            dimension("acq_trans_resp_cde", "收单方响应码"),
+            dimension("DEFINITION2", "收单方响应码名称"),
+            dimension("kpi_ind", "有效标识"),
+            dimension("brand", "卡品牌"),
+            dimension("card_bin", "卡bin"),
+            dimension("card_attr_def", "卡性质名称"),
+            dimension("card_media_def", "卡介质名称"),
+            dimension("card_rank_cde_def", "卡等级名称"),
+            dimension("tid", "TID"),
+            dimension("mer_id", "商户代码"),
+            dimension("mer_addr_nm", "商户名称"),
+            dimension("mcc_cde", "MCC"),
+            dimension("china_mcc_cde_lvl_3", "MCC分类"),
+            dimension("bid", "发卡BID"),
+            dimension("org_name", "发卡会员名称"),
+            dimension("rep_reg_ch2", "发卡会员分公司"),
+            dimension("abd_mkt_ch2", "发卡会员市场"),
+            dimension("vip_type", "发卡会员类型"),
+            dimension("bid2", "收单BID"),
+            dimension("org_name2", "收单会员名称"),
+            dimension("rep_reg_ch3", "收单会员分公司"),
+            dimension("abd_mkt_ch3", "收单会员市场"),
+            dimension("vip_type2", "收单会员类型"));
 
     private QueryMetadataCatalog() {
     }
@@ -91,6 +182,14 @@ public final class QueryMetadataCatalog {
             result.put(definition.id(), definition);
         }
         return Collections.unmodifiableMap(result);
+    }
+
+    private static FieldDefinition metric(String id, String displayName) {
+        return new FieldDefinition(id, displayName, id, id);
+    }
+
+    private static FieldDefinition dimension(String id, String displayName) {
+        return new FieldDefinition(id, displayName, id, id);
     }
 
     private static Map<String, FieldDefinition> allFields() {

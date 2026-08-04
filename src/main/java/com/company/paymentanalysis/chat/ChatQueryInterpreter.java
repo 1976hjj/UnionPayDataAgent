@@ -25,7 +25,9 @@ public class ChatQueryInterpreter {
 
     private static final Set<String> LIST_ACTIONS = Set.of("SET", "CLEAR");
     private static final Set<String> FILTER_ACTIONS = Set.of("SET", "CLEAR");
-    private static final Set<String> FILTER_OPERATORS = Set.of("EQUALS", "IN", "BETWEEN");
+    private static final Set<String> FILTER_OPERATORS = Set.of(
+            "EQUALS", "NOT_EQUALS", "IN", "BETWEEN",
+            "GREATER", "GREATER_EQUALS", "LESS", "LESS_EQUALS");
     private static final Set<String> SORT_ACTIONS = Set.of("SET", "CLEAR");
     private static final Set<String> SORT_DIRECTIONS = Set.of("ASC", "DESC");
     private final OpenAiCompatibleLlmClient llmClient;
@@ -205,7 +207,8 @@ public class ChatQueryInterpreter {
     private String filterPrompt() {
         return """
                 最终存在过滤条件时，filterAction.operations 用一个或多个 SET 元素返回完整过滤集合；
-                SET 必须填写 dimensionId、operator 和 values，operator 只能是 EQUALS、IN 或 BETWEEN。
+                SET 必须填写 dimensionId、operator 和 values。operator 只能是 EQUALS、NOT_EQUALS、IN、BETWEEN、
+                GREATER、GREATER_EQUALS、LESS 或 LESS_EQUALS。
                 最终没有过滤条件时只返回一个 CLEAR 元素，dimensionId、operator 为空且 values=[]。
                 只有用户明确提出成员筛选条件时才修改 filterAction；按维度分组不是过滤。
                 不得猜测、补充或枚举用户没有提出的过滤成员。""";
@@ -409,7 +412,8 @@ public class ChatQueryInterpreter {
             }
             if ("SET".equals(operation.action())
                     && (new LinkedHashSet<>(operation.values()).size() != operation.values().size()
-                    || "EQUALS".equals(operation.operator()) && operation.values().size() != 1
+                    || Set.of("EQUALS", "NOT_EQUALS", "GREATER", "GREATER_EQUALS", "LESS", "LESS_EQUALS")
+                            .contains(operation.operator()) && operation.values().size() != 1
                     || "BETWEEN".equals(operation.operator()) && operation.values().size() != 2)) {
                 throw new IllegalArgumentException("filterAction 的 SET 值数量或重复项不合法");
             }

@@ -171,20 +171,8 @@ const EMPTY_CONTEXT: QueryContext = {
 }
 
 const FALLBACK_METADATA: Metadata = {
-  metrics: [
-    { id: 'transactionAmount', name: '交易金额', unit: '元' },
-    { id: 'transactionCount', name: '交易笔数', unit: '笔' },
-    { id: 'successRate', name: '支付成功率', unit: '%' },
-  ],
-  dimensions: [
-    { id: 'tradeYear', name: '年' },
-    { id: 'tradeMonth', name: '月' },
-    { id: 'tradeDate', name: '日' },
-    { id: 'channel', name: '受理渠道' },
-    { id: 'region', name: '地区' },
-    { id: 'merchantType', name: '商户类型' },
-    { id: 'paymentMethod', name: '支付方式' },
-  ],
+  metrics: [],
+  dimensions: [],
 }
 
 const WELCOME: Message = {

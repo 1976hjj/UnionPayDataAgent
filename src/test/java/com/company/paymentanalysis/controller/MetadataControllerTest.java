@@ -18,16 +18,16 @@ class MetadataControllerTest {
     private MockMvc mockMvc;
 
     @Test
-    void returnsFixedStructuredMetadata() throws Exception {
+    void returnsTheProductionQueryMetadata() throws Exception {
         mockMvc.perform(get("/api/metadata"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.version").value("mock-v1"))
-                .andExpect(jsonPath("$.metrics.length()").value(3))
-                .andExpect(jsonPath("$.dimensions.length()").value(7))
-                .andExpect(jsonPath("$.metrics[0].name").value("交易金额"))
+                .andExpect(jsonPath("$.version").value("production-v1"))
+                .andExpect(jsonPath("$.metrics.length()").value(24))
+                .andExpect(jsonPath("$.dimensions.length()").value(71))
+                .andExpect(jsonPath("$.metrics[0].id").value("trans_cnt_m"))
+                .andExpect(jsonPath("$.metrics[0].name").value("总交易笔数"))
                 .andExpect(jsonPath("$.dimensions[0].name").value("年"))
-                .andExpect(jsonPath("$.dimensions[1].name").value("月"))
-                .andExpect(jsonPath("$.dimensions[2].name").value("日"))
-                .andExpect(jsonPath("$.dimensions[4].name").value("地区"));
+                .andExpect(jsonPath("$.dimensions[1].id").value("sett_dt_Month2"))
+                .andExpect(jsonPath("$.dimensions[4].id").value("acq_mkt_ch"));
     }
 }
