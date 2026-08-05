@@ -44,13 +44,13 @@ public final class QueryMetadataCatalog {
             dimension("sett_dt_Month2", "月"),
             dimension("sett_dt_Day2", "日"),
             dimension("acq_reg_ch", "收单分公司"),
-            dimension("acq_mkt_ch", "收单市场"),
+            dimension("acq_mkt_ch", "收单市场", "收单侧境内外市场、国家或区域；海外或洲际且未指定发卡方时优先"),
             dimension("acq_reg_cde", "收单市场代码"),
             dimension("iss_dq_ch", "发卡分公司"),
-            dimension("iss_sc_ch", "发卡市场"),
+            dimension("iss_sc_ch", "发卡市场", "发卡侧市场、国家或区域；仅在用户明确发卡方语义时优先"),
             dimension("iss_reg_cde", "发卡市场代码"),
-            dimension("reg_nm_lvl_1", "中国大陆受理省市"),
-            dimension("reg_nm_lvl_2", "中国大陆受理区县"),
+            dimension("reg_nm_lvl_1", "中国大陆受理省市", "仅用于中国大陆受理省级地域，如省、自治区、直辖市；不用于海外或洲际"),
+            dimension("reg_nm_lvl_2", "中国大陆受理区县", "仅用于中国大陆受理区县级地域；不用于海外或洲际"),
             dimension("acq_ins_cde", "收单机构代码"),
             dimension("iss_ins_cde", "发卡机构代码"),
             dimension("acq_ins_ch", "收单机构名称"),
@@ -171,7 +171,8 @@ public final class QueryMetadataCatalog {
 
     private static String prompt(Map<String, FieldDefinition> definitions) {
         return definitions.values().stream()
-                .map(field -> field.id() + "=" + field.displayName())
+                .map(field -> field.id() + "=" + field.displayName()
+                        + (field.promptHint().isBlank() ? "" : "（" + field.promptHint() + "）"))
                 .reduce((left, right) -> left + "、" + right)
                 .orElse("");
     }
@@ -185,11 +186,15 @@ public final class QueryMetadataCatalog {
     }
 
     private static FieldDefinition metric(String id, String displayName) {
-        return new FieldDefinition(id, displayName, id, id);
+        return new FieldDefinition(id, displayName, id, id, "");
     }
 
     private static FieldDefinition dimension(String id, String displayName) {
-        return new FieldDefinition(id, displayName, id, id);
+        return dimension(id, displayName, "");
+    }
+
+    private static FieldDefinition dimension(String id, String displayName, String promptHint) {
+        return new FieldDefinition(id, displayName, id, id, promptHint);
     }
 
     private static Map<String, FieldDefinition> allFields() {
@@ -199,6 +204,6 @@ public final class QueryMetadataCatalog {
     }
 
     private record FieldDefinition(
-            String id, String displayName, String smartBiField, String smartBiFilterField) {
+            String id, String displayName, String smartBiField, String smartBiFilterField, String promptHint) {
     }
 }

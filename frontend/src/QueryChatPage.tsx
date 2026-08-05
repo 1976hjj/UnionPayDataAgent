@@ -49,27 +49,11 @@ type QueryFilter = {
   values: string[]
 }
 
-type ActionOperation = {
-  action: 'SET' | 'CLEAR'
-  ids: string[]
-}
-
 type QueryAction = {
-  intent: 'QUERY'
-  metricAction: { operations: ActionOperation[] }
-  dimensionAction: { operations: ActionOperation[] }
-  filterAction: {
-    operations: {
-      action: 'SET' | 'CLEAR'
-      dimensionId: string
-      operator: string
-      values: string[]
-    }[]
-  }
-  sortAction: {
-    action: 'SET' | 'CLEAR'
-    items: { fieldId: string; direction: 'ASC' | 'DESC' }[]
-  }
+  metricIds: string[]
+  dimensionIds: string[]
+  dimensionFilters: QueryContext['dimensionFilters']
+  sorts: QueryContext['sorts']
 }
 
 type SmartBiFilter = {
@@ -259,9 +243,9 @@ function WorkflowTrace({
         )}
         {queryAction && (
           <details className="sql-preview" open>
-            <summary>1. QueryAction（LLM 交互 JSON）</summary>
+            <summary>1. QueryState（LLM 交互 JSON）</summary>
             <pre><code>{JSON.stringify(queryAction, null, 2)}</code></pre>
-            <small>大模型给出的查询状态变更指令，已通过后端结构和白名单校验。</small>
+            <small>大模型给出的完整查询状态，已通过后端结构和字段白名单校验。</small>
           </details>
         )}
         {llmMessage && (
@@ -775,11 +759,11 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
             <ContextItem label="排序（可选）" value={sortNames || '无'} ready={true} />
           </div>
           <div className="capability-card">
-            <strong>支持的 3 个度量</strong>
+            <strong>支持的 {metadata.metrics.length} 个度量</strong>
             {metadata.metrics.map((metric) => <span key={metric.id}>{metric.name}</span>)}
           </div>
           <div className="capability-card dimension-catalog">
-            <strong>支持的 4 个维度</strong>
+            <strong>支持的 {metadata.dimensions.length} 个维度</strong>
             {metadata.dimensions.map((dimension) => <span key={dimension.id}>{dimension.name}</span>)}
           </div>
           <div className="scope-note"><b>范围说明</b><span>当前仅处理支付数据查询。闲聊、写作及其他任务会被拒绝。</span></div>
