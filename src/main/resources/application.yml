@@ -91,4 +91,14 @@ llm:
       thinking-supported: false
       max-tokens: ${GLM_46_MAX_TOKENS:512}
       temperature: ${GLM_46_TEMPERATURE:0.0}
+    - id: company-openai
+      display-name: ${COMPANY_LLM_DISPLAY_NAME:公司大模型}
+      model: ${COMPANY_LLM_MODEL:company-model}
+      base-url: ${COMPANY_LLM_BASE_URL:}
+      chat-path: ${COMPANY_LLM_CHAT_PATH:/v1/chat/completions}
+      json-mode: ${COMPANY_LLM_JSON_MODE:true}
+      thinking-supported: ${COMPANY_LLM_THINKING_SUPPORTED:false}
+      thinking-enabled: ${COMPANY_LLM_THINKING_ENABLED:false}
+      max-tokens: ${COMPANY_LLM_MAX_TOKENS:512}
+      temperature: ${COMPANY_LLM_TEMPERATURE:0.0}
 
