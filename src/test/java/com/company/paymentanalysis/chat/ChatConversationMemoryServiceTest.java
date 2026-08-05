@@ -86,4 +86,29 @@ class ChatConversationMemoryServiceTest {
         assertThat(service.list("user-1")).isEmpty();
         assertThat(service.deleteConversation("user-1", "conversation-1")).isFalse();
     }
+
+    @Test
+    void fallsBackToInProcessMemoryWhenRedisIsDisabled() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        ChatConversationMemoryService service = new ChatConversationMemoryService(
+                redis, new ObjectMapper(), new ChatMemoryProperties(false, "test:chat:", 30, 50));
+        QueryContext context = new QueryContext(
+                List.of("transactionAmount"), List.of("channel"), List.of(), List.of());
+        ChatResponse response = new ChatResponse(
+                "completed", "query completed", List.of(), context, null,
+                "LangGraph4j -> LLM -> SmartBI", List.of(), null,
+                "conversation-local", null, "temporary memory", null);
+
+        service.saveTurn("user-local", "conversation-local", "recent transactions", response);
+
+        assertThat(service.restoreContext("user-local", "conversation-local")).contains(context);
+        assertThat(service.list("user-local"))
+                .singleElement()
+                .satisfies(summary -> assertThat(summary.conversationId()).isEqualTo("conversation-local"));
+        assertThat(service.detail("user-local", "conversation-local")).isPresent();
+        assertThat(service.status().available()).isFalse();
+        assertThat(service.status().detail()).contains("进程内临时会话");
+        assertThat(service.deleteConversation("user-local", "conversation-local")).isTrue();
+        assertThat(service.restoreContext("user-local", "conversation-local")).isEmpty();
+    }
 }

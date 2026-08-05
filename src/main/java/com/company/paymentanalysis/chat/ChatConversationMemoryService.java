@@ -15,6 +15,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -27,9 +28,10 @@ public class ChatConversationMemoryService {
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private final ChatMemoryProperties properties;
+    private final ConcurrentHashMap<String, StoredConversation> localConversations = new ConcurrentHashMap<>();
     private volatile Instant redisRetryAfter = Instant.EPOCH;
     private volatile boolean redisAvailable;
-    private volatile String redisDetail = "等待首次检查";
+    private volatile String redisDetail = "等待首次检查；不可用时自动使用进程内临时会话";
 
     public ChatConversationMemoryService(
             StringRedisTemplate redisTemplate, ObjectMapper objectMapper, ChatMemoryProperties properties) {
@@ -39,12 +41,12 @@ public class ChatConversationMemoryService {
     }
 
     public Optional<QueryContext> restoreContext(String userId, String conversationId) {
-        return find(userId, conversationId).map(StoredConversation::context);
+        return findWithFallback(userId, conversationId).map(StoredConversation::context);
     }
 
     public void saveTurn(String userId, String conversationId, String userMessage, ChatResponse response) {
         Instant now = Instant.now();
-        StoredConversation previous = find(userId, conversationId).orElse(null);
+        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
         List<ConversationMessage> messages =
                 new ArrayList<>(previous == null ? List.of() : previous.messages());
         int nextId = messages.stream().mapToInt(ConversationMessage::id).max().orElse(0) + 1;
@@ -61,11 +63,24 @@ public class ChatConversationMemoryService {
                 userId, conversationId, previous == null ? title(userMessage) : previous.title(),
                 previous == null ? now.toString() : previous.createdAt(),
                 now.toString(), response.context(), List.copyOf(messages));
-        save(saved);
+        localConversations.put(localKey(userId, conversationId), saved);
+        trimLocal(userId);
+        try {
+            save(saved);
+        } catch (ChatMemoryUnavailableException ignored) {
+            // Redis is optional. Keep the current conversation in this Java process.
+        }
     }
 
     public List<ConversationSummary> list(String userId) {
-        List<StoredConversation> conversations = listStored(userId);
+        List<StoredConversation> conversations;
+        try {
+            conversations = listStored(userId);
+            conversations.forEach(value ->
+                    localConversations.put(localKey(value.userId(), value.conversationId()), value));
+        } catch (ChatMemoryUnavailableException ignored) {
+            conversations = localStored(userId);
+        }
         return conversations.stream()
                 .sorted(Comparator.comparing(StoredConversation::updatedAt).reversed())
                 .limit(maxConversations())
@@ -75,22 +90,26 @@ public class ChatConversationMemoryService {
     }
 
     public Optional<ConversationDetail> detail(String userId, String conversationId) {
-        return find(userId, conversationId)
+        return findWithFallback(userId, conversationId)
                 .map(value -> new ConversationDetail(
                         value.conversationId(), value.title(), value.createdAt(), value.updatedAt(),
                         value.context(), value.messages()));
     }
 
     public boolean deleteConversation(String userId, String conversationId) {
-        ensureRedisAttemptAllowed();
+        boolean localDeleted = localConversations.remove(localKey(userId, conversationId)) != null;
         try {
+            ensureRedisAttemptAllowed();
             String conversationKey = conversationKey(userId, conversationId);
             Boolean deleted = redisTemplate.delete(conversationKey);
             redisTemplate.opsForZSet().remove(indexKey(userId), conversationId);
             markRedisAvailable();
-            return Boolean.TRUE.equals(deleted);
+            return localDeleted || Boolean.TRUE.equals(deleted);
+        } catch (ChatMemoryUnavailableException ignored) {
+            return localDeleted;
         } catch (RuntimeException exception) {
-            throw unavailable(exception);
+            unavailable(exception);
+            return localDeleted;
         }
     }
 
@@ -110,6 +129,35 @@ public class ChatConversationMemoryService {
         } catch (RuntimeException | JsonProcessingException exception) {
             throw unavailable(exception);
         }
+    }
+
+    private Optional<StoredConversation> findWithFallback(String userId, String conversationId) {
+        try {
+            Optional<StoredConversation> stored = find(userId, conversationId);
+            stored.ifPresent(value -> localConversations.put(localKey(userId, conversationId), value));
+            return stored.isPresent()
+                    ? stored
+                    : Optional.ofNullable(localConversations.get(localKey(userId, conversationId)));
+        } catch (ChatMemoryUnavailableException ignored) {
+            return Optional.ofNullable(localConversations.get(localKey(userId, conversationId)));
+        }
+    }
+
+    private List<StoredConversation> localStored(String userId) {
+        return localConversations.values().stream()
+                .filter(value -> value.userId().equals(userId))
+                .toList();
+    }
+
+    private String localKey(String userId, String conversationId) {
+        return userId + "\u0000" + conversationId;
+    }
+
+    private void trimLocal(String userId) {
+        localStored(userId).stream()
+                .sorted(Comparator.comparing(StoredConversation::updatedAt).reversed())
+                .skip(maxConversations())
+                .forEach(value -> localConversations.remove(localKey(userId, value.conversationId()), value));
     }
 
     private void save(StoredConversation conversation) {
@@ -161,7 +209,7 @@ public class ChatConversationMemoryService {
     private void ensureRedisAttemptAllowed() {
         if (!properties.redisEnabled()) {
             redisAvailable = false;
-            redisDetail = "Redis 会话记忆未启用";
+            redisDetail = "Redis 未启用，当前使用进程内临时会话";
             throw new ChatMemoryUnavailableException(redisDetail);
         }
         if (Instant.now().isBefore(redisRetryAfter)) {
@@ -177,7 +225,7 @@ public class ChatConversationMemoryService {
 
     private ChatMemoryUnavailableException unavailable(Exception cause) {
         redisAvailable = false;
-        redisDetail = "连接失败，历史会话暂不可用";
+        redisDetail = "Redis 连接失败，已切换到进程内临时会话";
         redisRetryAfter = Instant.now().plus(REDIS_RETRY_DELAY);
         return new ChatMemoryUnavailableException(redisDetail, cause);
     }
@@ -185,7 +233,7 @@ public class ChatConversationMemoryService {
     private void checkRedisWhenDue() {
         if (!properties.redisEnabled()) {
             redisAvailable = false;
-            redisDetail = "Redis 会话记忆未启用";
+            redisDetail = "Redis 未启用，当前使用进程内临时会话";
             return;
         }
         if (Instant.now().isBefore(redisRetryAfter)) {

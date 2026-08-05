@@ -85,8 +85,31 @@ CHAT_MEMORY_REDIS_ENABLED=true
 CHAT_MEMORY_TTL_DAYS=30
 ```
 
-Redis 不可用时应用不会在 JVM 内保存历史，历史列表和刷新恢复会暂时停用；
-当前页面仍可继续查数。页面顶部会用红色状态点提示 Redis 故障。
+Redis 不可用或 `CHAT_MEMORY_REDIS_ENABLED=false` 时，应用自动使用 JVM 进程内临时会话；
+基本对话、当前上下文和历史列表仍可使用，但应用重启后历史会丢失，多实例之间也不共享。
+
+### 本机 Redis 命令
+
+项目启动脚本 `run.ps1` 会自动启动 Redis；需要单独控制时可使用：
+
+```powershell
+# 启动（已安装 redis-server 并已加入 PATH 时）
+redis-server --bind 127.0.0.1 --port 6379 --appendonly yes
+
+# 检查
+Test-NetConnection 127.0.0.1 -Port 6379
+
+# 停止当前本机 6379 端口上的 Redis
+Get-NetTCPConnection -LocalPort 6379 -State Listen |
+  Select-Object -ExpandProperty OwningProcess |
+  ForEach-Object { Stop-Process -Id $_ -Force }
+```
+
+若要模拟 Redis 不可用，先执行停止命令，再设置：
+
+```powershell
+$env:CHAT_MEMORY_REDIS_ENABLED = "false"
+```
 
 ## 前后端分开开发
 

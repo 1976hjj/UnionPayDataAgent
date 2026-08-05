@@ -167,7 +167,8 @@ $redisPath = if ($redisCommand) { $redisCommand.Source } else {
         Select-Object -First 1 -ExpandProperty FullName
 }
 $redisProcess = $null
-if (-not (Test-RedisPort)) {
+$redisMemoryEnabled = -not (@("false", "0", "no", "off") -contains ([string]$env:CHAT_MEMORY_REDIS_ENABLED).ToLowerInvariant())
+if ($redisMemoryEnabled -and -not (Test-RedisPort)) {
     if (-not $redisPath) {
         throw "Redis is not available. Install it with: winget install taizod1024.redis-windows-fork"
     }
@@ -191,8 +192,10 @@ if (-not (Test-RedisPort)) {
         throw "Redis failed to start on port 6379."
     }
     Write-Host "Local Redis started, PID: $($redisProcess.Id)"
-} else {
+} elseif ($redisMemoryEnabled) {
     Write-Host "Redis is already available on port 6379."
+} else {
+    Write-Warning "Redis memory is disabled. The application will use temporary in-process conversations."
 }
 
 $appProcess = $null
