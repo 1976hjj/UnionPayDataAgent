@@ -137,6 +137,25 @@ Vite 开发服务器为 `http://localhost:5173`，并将 `/api` 代理到 Spring
 - `SMARTBI_BASE_URL=http://localhost:8080`：`SmartBiClient` 暂时调用本应用的 Mock 路由。
 - Mock SmartBI 路由：`POST /api/mock/smartbi/query`。
 
+### 归因开发用 Mock 数据
+
+应用内置一套确定性的归因测试数据，通过同一个 Mock SmartBI 路由查询：
+
+- 时间范围为 2025-01 至 2026-12，包含 16 个交叉业务分群，覆盖生产元数据中的 71 个维度和 24 个度量。
+- 所有非时间维度都映射到同一批事实数据，因此一级成员过滤后再按二级维度查询，数据口径保持一致且仍有多个成员可分析。
+- 2026-07 预设为交易量环比下降场景：`收单机构A` 是最大负向驱动；在机构 A 内继续下钻时，`英国` 是最大负向发卡市场。
+- 2026-03 预设为商户数下降场景，主因是 `收单机构C`；2026-08 是 7 月下降后的恢复场景，最大正向变化来自 `收单机构A`。
+- `_m`、`_hb`、`_tb` 都是 Mock SmartBI 事实中的实际度量字段。归因服务直接读取同比、环比字段，不再自行推导。
+- Mock 支持分组、排序及 `EQUALS`、`IN`、范围和 AND/OR 过滤，可用于验证主因排名、贡献方向和条件下钻。
+
+归因计算职责固定如下：SmartBI 提供基础及同比、环比等衍生度量；Java 根据查询证据计算变化额、贡献度、方向、排名和 TopN，并执行查询次数、深度及一致性限制；LLM 不计算这些数值，只选择探索方向、形成假设和解释程序产出的 Evidence。
+
+覆盖性测试位于 `MockAttributionSmartBiDataServiceTest`。修改 mock 场景后应运行：
+
+```powershell
+mvn --% test -Dskip.frontend=true
+```
+
 切换为真实 OpenAI-compatible LLM 时设置：
 
 ```text

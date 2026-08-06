@@ -19,7 +19,6 @@ import org.springframework.stereotype.Service;
 @Service
 public class MockChatSmartBiDataService {
 
-    private static final Set<String> METRICS = QueryMetadataCatalog.metricIds();
     private static final Set<String> LEGACY_METRICS =
             Set.of("acpt_trans_rmb_amt_m", "trans_amt", "trans_cnt", "success_rate");
     private static final Map<String, List<String>> MEMBERS = Map.ofEntries(
@@ -37,19 +36,26 @@ public class MockChatSmartBiDataService {
             Map.entry("merchant_type", List.of("零售", "餐饮", "交通", "生活服务")),
             Map.entry("payment_method", List.of("银行卡", "云闪付", "二维码", "其他")));
 
+    private final MockAttributionSmartBiDataService attributionDataService;
+
+    public MockChatSmartBiDataService(MockAttributionSmartBiDataService attributionDataService) {
+        this.attributionDataService = attributionDataService;
+    }
+
     public boolean supports(QueryRequest request) {
         if (request == null || request.columns() == null || request.columns().isEmpty()) {
             return false;
         }
         boolean legacy = request.columns().stream().allMatch(LEGACY_METRICS::contains)
                 && request.rows().stream().allMatch(MEMBERS::containsKey);
-        boolean production = request.columns().stream().allMatch(METRICS::contains)
-                && request.rows().stream().allMatch(QueryMetadataCatalog::isDimension)
-                && request.filters().stream().allMatch(filter -> QueryMetadataCatalog.isDimension(filter.name()));
+        boolean production = attributionDataService.supports(request);
         return legacy || production;
     }
 
     public QueryResponse query(QueryRequest request) {
+        if (attributionDataService.supports(request)) {
+            return attributionDataService.query(request);
+        }
         List<Map<String, Object>> rows = request.rows().isEmpty()
                 ? List.of(aggregateRow(request))
                 : groupedRows(request);
