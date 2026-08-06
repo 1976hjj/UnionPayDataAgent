@@ -41,6 +41,16 @@
             <version>${langgraph4j.version}</version>
         </dependency>
         <dependency>
+            <groupId>com.smartbi</groupId>
+            <artifactId>smartbi-SDK</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.smartbi</groupId>
+            <artifactId>smartbi-Common</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>

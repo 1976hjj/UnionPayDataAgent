@@ -22,11 +22,9 @@ chat:
     max-conversations: ${CHAT_MEMORY_MAX_CONVERSATIONS:50}
 
 smartbi:
-  base-url: ${SMARTBI_BASE_URL:http://localhost:${server.port}}
-  query-path: ${SMARTBI_QUERY_PATH:/api/mock/smartbi/query}
   dataset-id: ${SMARTBI_DATASET_ID:Iff8080810196b306b3067b2a0196b3067b2a0000}
-  session-cookie: ${SMARTBI_SESSION_COOKIE:}
-  authorization: ${SMARTBI_AUTHORIZATION:}
+  mock-enabled: ${SMARTBI_MOCK_ENABLED:false}
+  mock-base-url: ${SMARTBI_MOCK_BASE_URL:http://localhost:${server.port}}
 
 llm:
   mock-enabled: ${LLM_MOCK_ENABLED:false}
