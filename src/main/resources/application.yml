@@ -23,7 +23,8 @@ chat:
 
 smartbi:
   dataset-id: ${SMARTBI_DATASET_ID:Iff8080810196b306b3067b2a0196b3067b2a0000}
-  mock-enabled: ${SMARTBI_MOCK_ENABLED:false}
+  # 外网/本地开发默认完全走应用内 Mock；公司内网连接真实 SmartBI 时显式设为 false。
+  mock-enabled: ${SMARTBI_MOCK_ENABLED:true}
   mock-base-url: ${SMARTBI_MOCK_BASE_URL:http://localhost:${server.port}}
 
 llm:

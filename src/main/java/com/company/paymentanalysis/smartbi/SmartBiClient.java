@@ -75,7 +75,8 @@ public class SmartBiClient {
 
     public SmartBiHealth health() {
         if (properties.mockEnabled()) {
-            return new SmartBiHealth("MOCK", "Mock SmartBI", "当前使用应用内 Mock 查询", null);
+            return new SmartBiHealth(
+                    "MOCK", "Mock SmartBI", "使用应用内 Mock 数据，不会连接或登录真实 SmartBI", null);
         }
         if (lastFailureAt != null && (lastSuccessAt == null || lastFailureAt.isAfter(lastSuccessAt))) {
             return new SmartBiHealth("DOWN", "SmartBI", "最近一次查询失败", lastFailureAt.toString());

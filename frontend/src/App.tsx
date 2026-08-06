@@ -101,7 +101,7 @@ export default function App() {
         <header>
           <div><strong>支付数据智能分析平台</strong><span>测试环境</span></div>
           <div className="header-actions">
-            {location.pathname.startsWith('/query') && (
+            {(location.pathname.startsWith('/query') || location.pathname.startsWith('/attribution')) && (
               <div className="model-selector">
                 <label htmlFor="llm-model">模型</label>
                 <select
@@ -133,7 +133,7 @@ export default function App() {
         <div className="content">
           <Routes>
             <Route path="/query" element={<QueryChatPage selectedModel={selectedModel} />} />
-            <Route path="/attribution" element={<AttributionPage />} />
+            <Route path="/attribution" element={<AttributionPage selectedModel={selectedModel} />} />
             <Route path="*" element={<Navigate to="/query" replace />} />
           </Routes>
         </div>

@@ -10,7 +10,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.web.servlet.MockMvc;
 
-@SpringBootTest(properties = "llm.model=glm-4.7-flash")
+@SpringBootTest(properties = {"llm.model=glm-4.7-flash", "smartbi.mock-enabled=true"})
 @AutoConfigureMockMvc
 class HealthControllerTest {
 
@@ -41,6 +41,9 @@ class HealthControllerTest {
         mockMvc.perform(get("/api/system/dependencies").param("model", "glm-4.7"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dependencies[1].code").value("llm"))
-                .andExpect(jsonPath("$.dependencies[1].name").value("GLM-4.7"));
+                .andExpect(jsonPath("$.dependencies[1].name").value("GLM-4.7"))
+                .andExpect(jsonPath("$.dependencies[2].code").value("smartbi"))
+                .andExpect(jsonPath("$.dependencies[2].status").value("MOCK"))
+                .andExpect(jsonPath("$.dependencies[2].name").value("Mock SmartBI"));
     }
 }

@@ -134,7 +134,8 @@ Vite 开发服务器为 `http://localhost:5173`，并将 `/api` 代理到 Spring
 当前默认使用真实 LLM，SmartBI 在正式地址提供前仍使用应用内 Mock 路由：
 
 - `LLM_MOCK_ENABLED=false`：中文查询由真实大模型解析。
-- `SMARTBI_BASE_URL=http://localhost:8080`：`SmartBiClient` 暂时调用本应用的 Mock 路由。
+- `SMARTBI_MOCK_ENABLED=true`：所有 SmartBI 查询和健康检查只走应用内 Mock，不会连接或登录真实 SmartBI。
+- 仅在公司内网连接真实 SmartBI 时显式设置 `SMARTBI_MOCK_ENABLED=false`。
 - Mock SmartBI 路由：`POST /api/mock/smartbi/query`。
 
 ### 归因开发用 Mock 数据
@@ -149,6 +150,30 @@ Vite 开发服务器为 `http://localhost:5173`，并将 `/api` 代理到 Spring
 - Mock 支持分组、排序及 `EQUALS`、`IN`、范围和 AND/OR 过滤，可用于验证主因排名、贡献方向和条件下钻。
 
 归因计算职责固定如下：SmartBI 提供基础及同比、环比等衍生度量；Java 根据查询证据计算变化额、贡献度、方向、排名和 TopN，并执行查询次数、深度及一致性限制；LLM 不计算这些数值，只选择探索方向、形成假设和解释程序产出的 Evidence。
+
+### 智能归因后端 API
+
+- `GET /api/attribution/metadata`：返回允许归因的基础度量、维度白名单及限制。
+- `POST /api/attribution/analyze`：执行 LangGraph4j 动态归因循环。
+
+请求示例：
+
+```json
+{
+  "metricId": "trans_rmb_amt_m",
+  "currentPeriod": "2026-07",
+  "comparisonPeriod": "2026-06",
+  "dimensionFilters": [],
+  "maxDepth": 2,
+  "maxQueries": 8,
+  "topN": 5,
+  "model": "glm-4.7-flash"
+}
+```
+
+前端 `/attribution` 页面直接使用上述元数据和分析接口。用户配置度量、当前/对比周期、深度、查询次数、TopN 以及可选维度过滤后，由 Agent 自行决定探索维度。结果页分为最终报告、证据明细和 Agent 过程三个视图，支持查看主归因路径、Java 计算的贡献度、LangGraph4j 节点、SmartBI 查询轨迹，以及复制或导出 Markdown 报告。
+
+流程先查询整体变化，再由 LLM 从白名单中选择最多三个首轮维度。每轮 SmartBI 结果由 Java 形成 Evidence；LLM 只能从真实 Evidence、成员和剩余维度中选择下一步。响应包含 `overall`、`evidence`、`primaryPath`、`reasoning`、`stop`、`report`、`workflowSteps` 和完整 `smartBiQueries`，可用于审计每个结论。
 
 覆盖性测试位于 `MockAttributionSmartBiDataServiceTest`。修改 mock 场景后应运行：
 

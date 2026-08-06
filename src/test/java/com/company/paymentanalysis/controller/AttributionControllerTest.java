@@ -1,10 +1,10 @@
 package com.company.paymentanalysis.controller;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -14,7 +14,12 @@ import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT,
-        properties = {"server.port=18080", "smartbi.base-url=http://localhost:18080", "llm.mock-enabled=true"})
+        properties = {
+            "server.port=18080",
+            "smartbi.mock-enabled=true",
+            "smartbi.mock-base-url=http://localhost:18080",
+            "llm.mock-enabled=true"
+        })
 @AutoConfigureMockMvc
 class AttributionControllerTest {
 
@@ -22,110 +27,149 @@ class AttributionControllerTest {
     private MockMvc mockMvc;
 
     @Test
-    @Disabled("Requires SmartBI SDK runtime dependencies supplied by the company environment")
-    void returnsThreeParallelLevel2ResultsWithFiveQueries() throws Exception {
+    void dynamicallyFindsInstitutionAThenUnitedKingdomForJulyDecline() throws Exception {
         mockMvc.perform(post("/api/attribution/analyze")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "metricCode": "rmbAmount",
-                                  "currentPeriod": "2026-07",
-                                  "comparisonType": "monthOnMonth",
-                                  "level1DimensionCode": "acquiringRegion",
-                                  "level2DimensionCodes": [
-                                    "issuingRegion",
-                                    "acquiringInstitution",
-                                    "transactionMedia"
-                                  ],
-                                  "businessScope": "foreignCardDomestic"
+                                  "metricId":"trans_rmb_amt_m",
+                                  "currentPeriod":"2026-07",
+                                  "comparisonPeriod":"2026-06",
+                                  "dimensionFilters":[],
+                                  "maxDepth":2,
+                                  "maxQueries":8,
+                                  "topN":4
                                 }
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.totalQueryCount").value(5))
-                .andExpect(jsonPath("$.periodsCombinedInSingleQuery").value(true))
-                .andExpect(jsonPath("$.executionEngine").value("LangGraph4j → Mock LLM → Mock SmartBI"))
-                .andExpect(jsonPath("$.workflowSteps.length()").value(6))
-                .andExpect(jsonPath("$.workflowSteps[0].node").value("translateChineseValues"))
-                .andExpect(jsonPath("$.workflowSteps[4].node").value("executeParallelLevel2Queries"))
-                .andExpect(jsonPath("$.workflowSteps[5].status").value("COMPLETED"))
-                .andExpect(jsonPath("$.llmMessage.role").value("assistant"))
-                .andExpect(jsonPath("$.llmMessage.content").isNotEmpty())
-                .andExpect(jsonPath("$.llmMessage.requestMessages.length()").value(2))
-                .andExpect(jsonPath("$.llmMessage.requestMessages[0].role").value("system"))
-                .andExpect(jsonPath("$.llmMessage.requestMessages[1].role").value("user"))
-                .andExpect(jsonPath("$.level1Driver.memberName").value("华东地区"))
-                .andExpect(jsonPath("$.level2Results.length()").value(3))
-                .andExpect(jsonPath("$.level2Results.issuingRegion.dimensionName").value("发卡地区"))
-                .andExpect(jsonPath("$.level2Results.issuingRegion.members[0].currentValue").value("¥52,640,000"))
-                .andExpect(jsonPath("$.level2Results.issuingRegion.members[0].comparisonValue").value("¥46,130,000"))
-                .andExpect(jsonPath("$.level2Results.issuingRegion.members[2].direction").value("DOWN"))
-                .andExpect(jsonPath("$.level2Results.issuingRegion.members[2].contributionRate").value(-9.9))
+                .andExpect(jsonPath("$.status").value("completed"))
+                .andExpect(jsonPath("$.overall.direction").value("DOWN"))
+                .andExpect(jsonPath("$.overall.smartBiComparisonRate").isNumber())
+                .andExpect(jsonPath("$.queryCount").value(5))
+                .andExpect(jsonPath("$.evidence.length()").value(4))
+                .andExpect(jsonPath("$.primaryPath.length()").value(2))
+                .andExpect(jsonPath("$.primaryPath[0].dimensionId").value("acq_ins_ch"))
+                .andExpect(jsonPath("$.primaryPath[0].memberValue").value("收单机构A"))
+                .andExpect(jsonPath("$.primaryPath[1].dimensionId").value("iss_sc_ch"))
+                .andExpect(jsonPath("$.primaryPath[1].memberValue").value("英国"))
+                .andExpect(jsonPath("$.stop.code").value("MAX_DEPTH"))
                 .andExpect(jsonPath("$.smartBiQueries.length()").value(5))
-                .andExpect(jsonPath("$.smartBiQueries[0].stage").value("overall"))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.dataSetId")
-                        .value("Iff8080810196b306b3067b2a0196b3067b2a0000"))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.columns[0]").value("acpt_trans_rmb_amt_m"))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.columns[1]").value("acpt_trans_rmb_amt_hb"))
-                .andExpect(jsonPath("$.smartBiQueries[0].sqlPreview")
-                        .value(org.hamcrest.Matchers.containsString("SUM(acpt_trans_rmb_amt_m)")))
-                .andExpect(jsonPath("$.smartBiQueries[2].request.rows[1]").value("iss_mkt_ch"))
-                .andExpect(jsonPath("$.smartBiQueries[2].request.relationNode.relation").value("AND"))
-                .andExpect(jsonPath("$.reportNotice").value("多个二级维度是同一批数据的不同观察角度，各维度贡献不能相互累加。"));
+                .andExpect(jsonPath("$.reasoning[0].phase").value("PLAN"))
+                .andExpect(jsonPath("$.reasoning[1].phase").value("REASON"))
+                .andExpect(jsonPath("$.reasoning[2].phase").value("REPORT"));
     }
 
     @Test
-    void rejectsLevel1DimensionRepeatedAtLevel2() throws Exception {
+    void maxDepthOneStopsAfterParallelFirstRound() throws Exception {
         mockMvc.perform(post("/api/attribution/analyze")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "metricCode": "rmbAmount",
-                                  "currentPeriod": "2026-07",
-                                  "comparisonType": "monthOnMonth",
-                                  "level1DimensionCode": "acquiringRegion",
-                                  "level2DimensionCodes": ["acquiringRegion"],
-                                  "businessScope": ""
-                                }
-                                """))
-                .andExpect(status().isBadRequest());
-    }
-
-    @Test
-    void rejectsEmptyLevel2Dimensions() throws Exception {
-        mockMvc.perform(post("/api/attribution/analyze")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "metricCode": "rmbAmount",
-                                  "currentPeriod": "2026-07",
-                                  "comparisonType": "monthOnMonth",
-                                  "level1DimensionCode": "acquiringRegion",
-                                  "level2DimensionCodes": [],
-                                  "businessScope": ""
-                                }
-                                """))
-                .andExpect(status().isBadRequest());
-    }
-
-    @Test
-    @Disabled("Requires SmartBI SDK runtime dependencies supplied by the company environment")
-    void buildsYearOnYearSmartBiMetricAndPeriodFilters() throws Exception {
-        mockMvc.perform(post("/api/attribution/analyze")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "metricCode": "transactionCount",
-                                  "currentPeriod": "2026-07",
-                                  "comparisonType": "yearOnYear",
-                                  "level1DimensionCode": "acquiringRegion",
-                                  "level2DimensionCodes": ["transactionMedia"],
-                                  "businessScope": ""
+                                  "metricId":"sh_jy_num_m",
+                                  "currentPeriod":"2026-03",
+                                  "comparisonPeriod":"2026-02",
+                                  "maxDepth":1,
+                                  "maxQueries":8,
+                                  "topN":4
                                 }
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.comparisonPeriod").value("2025年7月"))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.columns[0]").value("acpt_trans_cnt_m"))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.columns[1]").value("acpt_trans_cnt_tb"))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.filters[1].values[0]").value("2025-07"));
+                .andExpect(jsonPath("$.queryCount").value(4))
+                .andExpect(jsonPath("$.primaryPath[0].memberValue").value("收单机构C"))
+                .andExpect(jsonPath("$.stop.code").value("MAX_DEPTH"));
+    }
+
+    @Test
+    void findsInstitutionAAsThePrimaryDriverForAugustRecovery() throws Exception {
+        mockMvc.perform(post("/api/attribution/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "metricId":"trans_rmb_amt_m",
+                                  "currentPeriod":"2026-08",
+                                  "comparisonPeriod":"2026-07",
+                                  "maxDepth":1,
+                                  "maxQueries":8,
+                                  "topN":4
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.overall.direction").value("UP"))
+                .andExpect(jsonPath("$.primaryPath[0].dimensionId").value("acq_ins_ch"))
+                .andExpect(jsonPath("$.primaryPath[0].memberValue").value("收单机构A"))
+                .andExpect(jsonPath("$.stop.code").value("MAX_DEPTH"));
+    }
+
+    @Test
+    void maxQueryLimitIsEnforcedByTheWorkflow() throws Exception {
+        mockMvc.perform(post("/api/attribution/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "metricId":"trans_rmb_amt_m",
+                                  "currentPeriod":"2026-07",
+                                  "comparisonPeriod":"2026-06",
+                                  "maxDepth":3,
+                                  "maxQueries":2,
+                                  "topN":4
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.queryCount").value(2))
+                .andExpect(jsonPath("$.evidence.length()").value(1))
+                .andExpect(jsonPath("$.stop.code").value("MAX_QUERIES"));
+    }
+
+    @Test
+    void readsYearOnYearDerivedMetricDirectlyFromSmartBi() throws Exception {
+        mockMvc.perform(post("/api/attribution/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "metricId":"trans_rmb_amt_m",
+                                  "currentPeriod":"2026-07",
+                                  "comparisonPeriod":"2025-07",
+                                  "dimensionFilters":[
+                                    {"dimensionId":"acq_mkt_ch","operator":"EQUALS","values":["欧洲市场"]}
+                                  ],
+                                  "maxDepth":1,
+                                  "maxQueries":4,
+                                  "topN":4
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.overall.smartBiComparisonRate").isNumber())
+                .andExpect(jsonPath("$.smartBiQueries[0].request.columns[0]").value("trans_rmb_amt_m"))
+                .andExpect(jsonPath("$.smartBiQueries[0].request.columns[1]").value("trans_rmb_amt_tb"))
+                .andExpect(jsonPath("$.smartBiQueries[0].request.filters[2].name").value("acq_mkt_ch"));
+    }
+
+    @Test
+    void exposesAttributionOnlyMetadataAndLimits() throws Exception {
+        mockMvc.perform(get("/api/attribution/metadata"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.metrics.length()").value(8))
+                .andExpect(jsonPath("$.dimensions.length()").value(15))
+                .andExpect(jsonPath("$.dimensions[0].attributionEnabled").value(true))
+                .andExpect(jsonPath("$.limits.defaultMaxDepth").value(2))
+                .andExpect(jsonPath("$.limits.hardMaxQueries").value(12));
+    }
+
+    @Test
+    void rejectsInvalidMetricPeriodFilterAndLimits() throws Exception {
+        mockMvc.perform(post("/api/attribution/analyze")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "metricId":"trans_cnt_hb",
+                                  "currentPeriod":"2026-06",
+                                  "comparisonPeriod":"2026-07",
+                                  "dimensionFilters":[
+                                    {"dimensionId":"invented","operator":"EQUALS","values":["x"]}
+                                  ],
+                                  "maxDepth":9
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
     }
 }

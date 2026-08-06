@@ -40,7 +40,12 @@ if (-not $javaPath) {
 }
 $env:JAVA_HOME = Split-Path -Parent (Split-Path -Parent $javaPath)
 
-$env:LLM_MOCK_ENABLED = "false"
+if ([string]::IsNullOrWhiteSpace($env:LLM_MOCK_ENABLED)) {
+    $env:LLM_MOCK_ENABLED = "false"
+}
+if ([string]::IsNullOrWhiteSpace($env:SMARTBI_MOCK_ENABLED)) {
+    $env:SMARTBI_MOCK_ENABLED = "true"
+}
 $env:DEBUG = "false"
 if ([string]::IsNullOrWhiteSpace($env:LLM_API_KEY)) {
     $savedApiKey = [Environment]::GetEnvironmentVariable("LLM_API_KEY", "User")
@@ -48,7 +53,8 @@ if ([string]::IsNullOrWhiteSpace($env:LLM_API_KEY)) {
         $env:LLM_API_KEY = $savedApiKey
     }
 }
-if ([string]::IsNullOrWhiteSpace($env:LLM_API_KEY)) {
+$llmMockEnabled = @("true", "1", "yes", "on") -contains ([string]$env:LLM_MOCK_ENABLED).ToLowerInvariant()
+if (-not $llmMockEnabled -and [string]::IsNullOrWhiteSpace($env:LLM_API_KEY)) {
     throw "LLM_API_KEY is not configured in the Windows user environment."
 }
 

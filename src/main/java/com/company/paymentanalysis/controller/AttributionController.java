@@ -1,18 +1,19 @@
 package com.company.paymentanalysis.controller;
 
-import static com.company.paymentanalysis.attribution.AttributionCatalog.DIMENSION_NAMES;
-import static com.company.paymentanalysis.attribution.AttributionCatalog.METRIC_NAMES;
-
+import com.company.paymentanalysis.attribution.AttributionCatalog;
+import com.company.paymentanalysis.attribution.AttributionCatalog.AttributionDimension;
+import com.company.paymentanalysis.attribution.AttributionModels.AttributionRequest;
+import com.company.paymentanalysis.attribution.AttributionModels.AttributionResponse;
+import com.company.paymentanalysis.attribution.AttributionModels.DimensionFilter;
+import com.company.paymentanalysis.attribution.AttributionModels.EffectiveRequest;
 import com.company.paymentanalysis.attribution.AttributionWorkflowService;
-import com.company.paymentanalysis.smartbi.SmartBiModels.QueryTrace;
-import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
-import java.io.Serializable;
+import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
+import com.company.paymentanalysis.query.QueryMetadataCatalog;
 import java.time.YearMonth;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -23,110 +24,122 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/attribution")
 public class AttributionController {
 
-    private final AttributionWorkflowService workflowService;
+    private static final Set<String> FILTER_OPERATORS = Set.of(
+            "EQUALS", "IN", "NOT_EQUALS", "NOT_IN", "GREATER", "GREATER_EQUALS",
+            "LESS", "LESS_EQUALS", "BETWEEN", "CONTAINS");
 
-    public AttributionController(AttributionWorkflowService workflowService) {
+    private final AttributionWorkflowService workflowService;
+    private final OpenAiCompatibleLlmClient llmClient;
+
+    public AttributionController(
+            AttributionWorkflowService workflowService, OpenAiCompatibleLlmClient llmClient) {
         this.workflowService = workflowService;
+        this.llmClient = llmClient;
     }
 
     @PostMapping("/analyze")
     public AttributionResponse analyze(@RequestBody AttributionRequest request) {
-        validate(request);
-        return workflowService.analyze(request);
+        return workflowService.analyze(validate(request));
     }
 
-    private void validate(AttributionRequest request) {
+    @GetMapping("/metadata")
+    public AttributionMetadata metadata() {
+        return new AttributionMetadata(
+                AttributionCatalog.metricIds().stream()
+                        .map(id -> new AttributionMetric(id, AttributionCatalog.metricName(id)))
+                        .toList(),
+                AttributionCatalog.dimensions(),
+                new AttributionLimits(2, 3, 8, 12, 5, 10));
+    }
+
+    private EffectiveRequest validate(AttributionRequest request) {
         if (request == null) {
             throw badRequest("请求不能为空");
         }
-        if (!METRIC_NAMES.containsKey(request.metricCode())) {
-            throw badRequest("分析度量无效");
+        if (!AttributionCatalog.isMetric(request.metricId())) {
+            throw badRequest("分析度量必须是允许归因的基础度量");
         }
+        YearMonth current = period(request.currentPeriod(), "当前周期");
+        YearMonth comparison = period(request.comparisonPeriod(), "对比周期");
+        if (!current.isAfter(comparison)) {
+            throw badRequest("当前周期必须晚于对比周期");
+        }
+        for (DimensionFilter filter : request.dimensionFilters()) {
+            if (filter == null || !QueryMetadataCatalog.isDimension(filter.dimensionId())) {
+                throw badRequest("维度过滤包含非法字段");
+            }
+            String operator = filter.operator() == null ? "" : filter.operator().toUpperCase();
+            if (!FILTER_OPERATORS.contains(operator) || filter.values().isEmpty()) {
+                throw badRequest("维度过滤包含非法操作或空值");
+            }
+            if ("BETWEEN".equals(operator) && filter.values().size() != 2) {
+                throw badRequest("BETWEEN 过滤必须提供两个边界值");
+            }
+        }
+        int maxDepth = value(request.maxDepth(), 2);
+        int maxQueries = value(request.maxQueries(), 8);
+        int topN = value(request.topN(), 5);
+        if (maxDepth < 1 || maxDepth > 3) {
+            throw badRequest("maxDepth 必须在1至3之间");
+        }
+        if (maxQueries < 2 || maxQueries > 12) {
+            throw badRequest("maxQueries 必须在2至12之间");
+        }
+        if (topN < 1 || topN > 10) {
+            throw badRequest("topN 必须在1至10之间");
+        }
+        List<DimensionFilter> filters = request.dimensionFilters().stream()
+                .map(filter -> new DimensionFilter(
+                        filter.dimensionId(), filter.operator().toUpperCase(), filter.values()))
+                .toList();
+        String model;
         try {
-            YearMonth.parse(request.currentPeriod());
+            model = llmClient.resolveSelection(request.model());
+        } catch (IllegalArgumentException exception) {
+            throw badRequest(exception.getMessage());
+        }
+        return new EffectiveRequest(
+                request.metricId(),
+                current.toString(),
+                comparison.toString(),
+                filters,
+                maxDepth,
+                maxQueries,
+                topN,
+                model);
+    }
+
+    private YearMonth period(String value, String name) {
+        try {
+            return YearMonth.parse(value);
         } catch (Exception exception) {
-            throw badRequest("当前周期格式无效");
+            throw badRequest(name + "格式必须为 yyyy-MM");
         }
-        if (!Set.of("monthOnMonth", "yearOnYear").contains(request.comparisonType())) {
-            throw badRequest("对比方式无效");
-        }
-        if (!DIMENSION_NAMES.containsKey(request.level1DimensionCode())) {
-            throw badRequest("一级维度无效");
-        }
-        List<String> level2Codes = request.level2DimensionCodes();
-        if (level2Codes == null || level2Codes.isEmpty() || level2Codes.size() > 3) {
-            throw badRequest("二级维度必须选择1至3个");
-        }
-        if (new LinkedHashSet<>(level2Codes).size() != level2Codes.size()) {
-            throw badRequest("二级维度不允许重复");
-        }
-        if (level2Codes.contains(request.level1DimensionCode())) {
-            throw badRequest("二级维度不能包含一级维度");
-        }
-        if (level2Codes.stream().anyMatch(code -> !DIMENSION_NAMES.containsKey(code))) {
-            throw badRequest("二级维度无效");
-        }
+    }
+
+    private int value(Integer value, int fallback) {
+        return value == null ? fallback : value;
     }
 
     private ResponseStatusException badRequest(String message) {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
     }
 
-    public record AttributionRequest(
-            String metricCode,
-            String currentPeriod,
-            String comparisonType,
-            String level1DimensionCode,
-            List<String> level2DimensionCodes,
-            String businessScope) implements Serializable {
+    public record AttributionMetric(String id, String name) {
     }
 
-    public record AttributionResponse(
-            String metricName,
-            String currentPeriod,
-            String comparisonPeriod,
-            String overallChange,
-            String level1DimensionCode,
-            String level1DimensionName,
-            DriverMember level1Driver,
-            Map<String, ContributionResult> level2Results,
-            int totalQueryCount,
-            boolean periodsCombinedInSingleQuery,
-            String reportNotice,
-            String executionEngine,
-            List<WorkflowStep> workflowSteps,
-            List<QueryTrace> smartBiQueries,
-            LlmResultMessage llmMessage) implements Serializable {
+    public record AttributionLimits(
+            int defaultMaxDepth,
+            int hardMaxDepth,
+            int defaultMaxQueries,
+            int hardMaxQueries,
+            int defaultTopN,
+            int hardTopN) {
     }
 
-    public record WorkflowStep(
-            String node,
-            String name,
-            String status,
-            String detail) implements Serializable {
-    }
-
-    public record DriverMember(
-            String memberCode,
-            String memberName,
-            String absoluteChangeAmount,
-            String direction,
-            String selectionReason) implements Serializable {
-    }
-
-    public record ContributionResult(
-            String dimensionCode,
-            String dimensionName,
-            List<MemberContribution> members) implements Serializable {
-    }
-
-    public record MemberContribution(
-            String memberName,
-            String currentValue,
-            String comparisonValue,
-            String changeAmount,
-            String changeRate,
-            double contributionRate,
-            String direction) implements Serializable {
+    public record AttributionMetadata(
+            List<AttributionMetric> metrics,
+            List<AttributionDimension> dimensions,
+            AttributionLimits limits) {
     }
 }

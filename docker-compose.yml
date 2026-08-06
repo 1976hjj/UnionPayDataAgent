@@ -28,7 +28,7 @@ services:
         -XX:MaxRAMPercentage=75.0
         -Dfile.encoding=UTF-8
       SMARTBI_DATASET_ID: ${SMARTBI_DATASET_ID:-Iff8080810196b306b3067b2a0196b3067b2a0000}
-      SMARTBI_MOCK_ENABLED: ${SMARTBI_MOCK_ENABLED:-false}
+      SMARTBI_MOCK_ENABLED: ${SMARTBI_MOCK_ENABLED:-true}
       SMARTBI_MOCK_BASE_URL: ${SMARTBI_MOCK_BASE_URL:-http://localhost:8080}
       LLM_MOCK_ENABLED: ${LLM_MOCK_ENABLED:-false}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://open.bigmodel.cn}

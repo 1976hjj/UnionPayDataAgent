@@ -3072,6 +3072,259 @@ td { color: #3b5069; }
   }
 }
 
+/* Intelligent attribution MVP */
+.attribution-mvp-config input,
+.attribution-filter-row input,
+.attribution-limit-grid input {
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid #d9e1ea;
+  border-radius: 6px;
+  color: #354a64;
+  background: #fff;
+  font: inherit;
+}
+
+.attribution-limit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.attribution-limit-grid label {
+  display: grid;
+  grid-template-columns: 1fr 70px;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 11px 12px;
+  border: 1px solid #e1e8ef;
+  border-radius: 7px;
+  color: #445c75;
+  background: #f8fafc;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.attribution-limit-grid input { width: 70px; }
+.attribution-limit-grid small { grid-column: 1 / -1; color: #91a0af; font-size: 9px; font-weight: 400; }
+
+.filter-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.filter-heading strong,
+.filter-heading span { display: block; }
+.filter-heading strong { color: #3d536c; font-size: 11px; }
+.filter-heading span { margin-top: 3px; color: #92a0af; font-size: 9px; }
+.filter-heading button,
+.attribution-report-panel header button {
+  padding: 6px 10px;
+  border: 1px solid #cfe0f1;
+  border-radius: 5px;
+  color: #3274b4;
+  background: #f4f9fe;
+  font-size: 10px;
+}
+
+.attribution-filter-row {
+  display: grid;
+  grid-template-columns: 1fr 140px 1fr 34px;
+  gap: 8px;
+}
+
+.attribution-filter-row select { width: 100%; }
+.attribution-filter-row > button {
+  border: 1px solid #edced0;
+  border-radius: 5px;
+  color: #c65158;
+  background: #fff7f7;
+}
+
+.attribution-running {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border: 1px solid #d9e8f7;
+  border-radius: 7px;
+  background: #f5faff;
+}
+
+.attribution-running i {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #c6def5;
+  border-top-color: #2d80cf;
+  border-radius: 50%;
+  animation: attribution-spin .8s linear infinite;
+}
+
+.attribution-running strong,
+.attribution-running span { display: block; }
+.attribution-running strong { color: #315c83; font-size: 11px; }
+.attribution-running span { margin-top: 3px; color: #8294a6; font-size: 9px; }
+@keyframes attribution-spin { to { transform: rotate(360deg); } }
+
+.attribution-agent-result { padding-bottom: 28px; }
+.change-value span { display: block; margin-top: 2px; color: #72869a; font-size: 10px; text-align: right; }
+.change-value.up strong { color: #21865d; }
+.change-value.down strong { color: #d05259; }
+
+.attribution-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(180px, 1.4fr);
+  gap: 1px;
+  margin-top: 16px;
+  overflow: hidden;
+  border: 1px solid #e0e8f0;
+  border-radius: 8px;
+  background: #e0e8f0;
+}
+
+.attribution-kpis > div { min-height: 70px; padding: 13px; background: #f9fbfd; }
+.attribution-kpis span,
+.attribution-kpis strong,
+.attribution-kpis small { display: block; }
+.attribution-kpis span { color: #8b9aa9; font-size: 9px; }
+.attribution-kpis strong { margin-top: 6px; color: #355a7a; font-size: 14px; }
+.attribution-kpis small { margin-top: 3px; color: #8b9aa9; font-size: 8px; }
+
+.primary-path-panel {
+  margin-top: 14px;
+  padding: 15px;
+  border: 1px solid #d8e6f3;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f7fbff, #f2f8fe);
+}
+
+.primary-path-panel > header,
+.attribution-report-panel > header,
+.attribution-evidence-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.primary-path-panel header small,
+.primary-path-panel header h3 { display: block; margin: 0; }
+.primary-path-panel header small { color: #8a9bad; font-size: 8px; }
+.primary-path-panel header h3 { margin-top: 3px; color: #2e577b; font-size: 13px; }
+.primary-path-panel header > span { padding: 4px 8px; border-radius: 10px; color: #2f76b9; background: #e5f1fc; font-size: 9px; }
+
+.attribution-path { display: flex; align-items: stretch; gap: 10px; margin-top: 13px; overflow-x: auto; }
+.path-start,
+.path-arrow-node article {
+  min-width: 145px;
+  padding: 11px 12px;
+  border: 1px solid #dbe6f0;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.path-start small,
+.path-start strong,
+.path-arrow-node small,
+.path-arrow-node strong,
+.path-arrow-node span { display: block; }
+.path-start small,
+.path-arrow-node small { color: #91a0af; font-size: 8px; }
+.path-start strong,
+.path-arrow-node strong { margin-top: 4px; color: #2d5e8a; font-size: 12px; }
+.path-arrow-node { display: flex; align-items: center; gap: 10px; }
+.path-arrow-node > i { color: #73a0c9; font-style: normal; }
+.path-arrow-node span { margin-top: 4px; color: #74899e; font-size: 8px; }
+.empty-path { align-self: center; color: #8294a6; font-size: 10px; }
+
+.attribution-result-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 17px;
+  border-bottom: 1px solid #dfe7ef;
+}
+
+.attribution-result-tabs button {
+  padding: 9px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: #7b8da0;
+  background: transparent;
+  font-size: 11px;
+}
+
+.attribution-result-tabs button.active { border-bottom-color: #2e81d2; color: #226db5; font-weight: 700; }
+.attribution-result-tabs em { padding: 2px 5px; border-radius: 8px; background: #eaf2fa; font-size: 8px; font-style: normal; }
+
+.attribution-report-panel,
+.attribution-process-panel,
+.attribution-evidence-list { margin-top: 14px; }
+.attribution-report-panel { padding: 17px; border: 1px solid #e0e7ef; border-radius: 8px; }
+.attribution-report-panel header small { color: #91a0af; font-size: 8px; }
+.attribution-report-panel header h3 { margin: 4px 0 0; color: #304f6b; font-size: 14px; }
+.attribution-report-panel header > div:last-child { display: flex; gap: 6px; }
+
+.report-summary { display: grid; grid-template-columns: 55px 1fr; gap: 12px; margin-top: 15px; padding: 14px; border-left: 3px solid #3383d2; border-radius: 4px; background: #f3f8fd; }
+.report-summary span { color: #276fac; font-size: 10px; font-weight: 700; }
+.report-summary p { margin: 0; color: #526a80; font-size: 11px; line-height: 1.75; }
+.report-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; margin-top: 13px; }
+.report-columns article { padding: 14px; border: 1px solid #e5ebf1; border-radius: 7px; background: #fbfcfd; }
+.report-columns h4 { margin: 0 0 9px; color: #3b5871; font-size: 11px; }
+.report-columns ol,
+.report-columns ul { display: grid; gap: 7px; margin: 0; padding-left: 18px; color: #60768a; font-size: 10px; line-height: 1.55; }
+
+.attribution-evidence-list { display: grid; gap: 13px; }
+.attribution-evidence-card { padding: 15px; border: 1px solid #dfe7ef; border-radius: 8px; background: #fff; }
+.attribution-evidence-card header small { color: #8c9bab; font-size: 8px; }
+.attribution-evidence-card header h3 { margin: 3px 0; color: #335675; font-size: 13px; }
+.attribution-evidence-card header p { margin: 0; color: #75889b; font-size: 9px; }
+.evidence-badges { display: flex; gap: 5px; }
+.evidence-badges span { padding: 4px 7px; border-radius: 9px; color: #46708f; background: #edf4fa; font-size: 8px; }
+.evidence-badges span.verified { color: #277554; background: #e9f7f0; }
+.evidence-badges span.warning { color: #a16a20; background: #fff4df; }
+.evidence-scope { margin-top: 10px; padding: 7px 9px; border-radius: 5px; color: #6e8194; background: #f7f9fb; font-size: 8px; }
+
+.attribution-evidence-chart { display: grid; gap: 8px; margin: 14px 0; padding: 12px; border: 1px solid #e8edf2; border-radius: 7px; background: #fafcfd; }
+.attribution-evidence-bar { display: grid; grid-template-columns: 130px 1fr 55px; align-items: center; gap: 9px; }
+.attribution-evidence-bar > span { overflow: hidden; color: #536d84; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.attribution-bar-track { height: 8px; overflow: hidden; border-radius: 4px; background: #edf1f5; }
+.attribution-bar-track i { display: block; min-width: 2px; height: 100%; border-radius: 4px; }
+.attribution-bar-track i.positive { background: linear-gradient(90deg, #438cdb, #71b1ed); }
+.attribution-bar-track i.negative { background: linear-gradient(90deg, #dc6b72, #eb9499); }
+.attribution-evidence-bar b { font-size: 8px; text-align: right; }
+.attribution-evidence-bar b.positive { color: #287bc6; }
+.attribution-evidence-bar b.negative { color: #cf535a; }
+.attribution-evidence-table .primary-driver-row { background: #f4f9fe; }
+.attribution-evidence-table td em { margin-left: 6px; padding: 2px 5px; border-radius: 7px; color: #2879c2; background: #e4f1fc; font-size: 7px; font-style: normal; }
+.change-cell.flat { color: #76889a; }
+
+.reasoning-timeline { display: grid; gap: 0; padding: 4px 0; }
+.reasoning-timeline > article { display: grid; grid-template-columns: 26px 1fr; gap: 10px; position: relative; padding-bottom: 14px; }
+.reasoning-timeline > article:not(:last-child)::before { content: ''; position: absolute; top: 24px; bottom: 0; left: 11px; width: 1px; background: #d9e5f0; }
+.reasoning-timeline > article > i { z-index: 1; display: grid; width: 23px; height: 23px; place-items: center; border-radius: 50%; color: #fff; background: #3b86ce; font-size: 8px; font-style: normal; }
+.reasoning-timeline article > div { padding: 11px 13px; border: 1px solid #e0e7ef; border-radius: 7px; background: #fbfcfe; }
+.reasoning-timeline header { display: flex; justify-content: space-between; gap: 10px; }
+.reasoning-timeline header strong { color: #385773; font-size: 10px; }
+.reasoning-timeline header span { color: #7e94a8; font-size: 8px; }
+.reasoning-timeline p { margin: 7px 0 0; color: #5d7388; font-size: 10px; }
+.reasoning-timeline small { display: block; margin-top: 6px; color: #8796a6; font-size: 8px; }
+.reasoning-timeline em { display: inline-block; margin-top: 7px; padding: 4px 7px; border-radius: 9px; color: #2c72b3; background: #e8f2fb; font-size: 8px; font-style: normal; }
+.attribution-process-panel .workflow-trace { margin-top: 5px; }
+.attribution-process-panel .attribution-sql-preview { margin-top: 12px; }
+
+@media (max-width: 900px) {
+  .attribution-limit-grid,
+  .report-columns { grid-template-columns: 1fr; }
+  .attribution-filter-row { grid-template-columns: 1fr 1fr; }
+  .attribution-filter-row > button { min-height: 34px; }
+  .attribution-kpis { grid-template-columns: repeat(2, 1fr); }
+  .attribution-path { align-items: flex-start; flex-direction: column; }
+  .path-arrow-node > i { transform: rotate(90deg); }
+  .attribution-evidence-bar { grid-template-columns: 90px 1fr 48px; }
+}
+
 @media (max-width: 520px) {
   header {
     padding-inline: 12px;
