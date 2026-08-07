@@ -1,6 +1,10 @@
 spring:
   application:
     name: payment-analysis
+  mvc:
+    async:
+      # Keep the stream alive while a real LLM completes several reasoning rounds.
+      request-timeout: ${SPRING_MVC_ASYNC_REQUEST_TIMEOUT:300000}
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -26,6 +30,15 @@ smartbi:
   # 外网/本地开发默认完全走应用内 Mock；公司内网连接真实 SmartBI 时显式设为 false。
   mock-enabled: ${SMARTBI_MOCK_ENABLED:true}
   mock-base-url: ${SMARTBI_MOCK_BASE_URL:http://localhost:${server.port}}
+
+attribution:
+  policy:
+    max-initial-dimensions: ${ATTRIBUTION_MAX_INITIAL_DIMENSIONS:3}
+    default-max-branches: ${ATTRIBUTION_DEFAULT_MAX_BRANCHES:2}
+    hard-max-branches: ${ATTRIBUTION_HARD_MAX_BRANCHES:3}
+    reserved-queries: ${ATTRIBUTION_RESERVED_QUERIES:1}
+    min-aligned-contribution-rate: ${ATTRIBUTION_MIN_ALIGNED_CONTRIBUTION_RATE:10}
+    minimum-distinct-members: ${ATTRIBUTION_MIN_DISTINCT_MEMBERS:2}
 
 llm:
   mock-enabled: ${LLM_MOCK_ENABLED:false}

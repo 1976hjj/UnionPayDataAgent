@@ -16,6 +16,8 @@ type Limits = {
   hardMaxQueries: number
   defaultTopN: number
   hardTopN: number
+  defaultMaxBranches: number
+  hardMaxBranches: number
 }
 type AttributionMetadata = { metrics: Metric[]; dimensions: Dimension[]; limits: Limits }
 type FilterDraft = { key: number; dimensionId: string; operator: 'EQUALS' | 'IN'; value: string }
@@ -41,6 +43,7 @@ type MemberEvidence = {
 }
 type Evidence = {
   id: string
+  branchId: string
   depth: number
   hypothesis: string
   dimensionId: string
@@ -61,15 +64,74 @@ type PathNode = {
 }
 type ReasoningStep = {
   depth: number
-  phase: 'PLAN' | 'REASON' | 'REPORT'
+  phase: 'PLAN' | 'REFLECT' | 'REPORT'
   hypothesis: string | null
   proposedDimensions: string[]
   selectedEvidenceId: string | null
   selectedMember: string | null
   nextDimension: string | null
   reason: string
+  branchActions: BranchAction[]
+  llmMessage: LlmMessage | null
+}
+type LlmMessage = {
+  model: string
+  role: string
+  content: string
+  rawResponse: string | null
+  requestMessages: { role: string; content: string }[]
+}
+type BranchAction = {
+  action: 'EXPAND' | 'HOLD' | 'STOP'
+  role: 'MAIN' | 'SECONDARY' | 'OFFSET' | 'UNRESOLVED'
+  selectedEvidenceId: string | null
+  selectedMember: string | null
+  nextDimension: string | null
+  priority: 'HIGH' | 'MEDIUM' | 'LOW' | null
+  hypothesis: string | null
+  reason: string | null
+}
+type AnalysisBranch = {
+  id: string
+  parentBranchId: string | null
+  role: BranchAction['role']
+  status: string
+  depth: number
+  path: PathNode[]
+  hypothesis: string | null
+  stopReason: string | null
+  queryCount: number
 }
 type WorkflowStep = { node: string; name: string; status: string; detail: string }
+type WorkflowEvent = WorkflowStep & { reasoningStep: ReasoningStep | null }
+type AttributionStreamItem = {
+  type: 'event' | 'result' | 'error'
+  event: WorkflowEvent | null
+  result: AttributionResponse | null
+  message: string | null
+}
+
+function mergeStreamEvent(events: WorkflowEvent[], incoming: WorkflowEvent): WorkflowEvent[] {
+  let runningIndex = -1
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const candidate = events[index]
+    const matches = incoming.status === 'FAILED'
+      ? candidate.status === 'RUNNING'
+      : candidate.node === incoming.node && candidate.status === 'RUNNING'
+    if (matches) {
+      runningIndex = index
+      break
+    }
+  }
+  if (incoming.status === 'RUNNING' || runningIndex < 0) return [...events, incoming]
+
+  // A controller-level failure belongs to the last active node, not a duplicate card.
+  const previous = events[runningIndex]
+  const replacement = incoming.status === 'FAILED' && incoming.node === 'workflow'
+    ? { ...incoming, node: previous.node, name: previous.name }
+    : incoming
+  return events.map((event, index) => index === runningIndex ? replacement : event)
+}
 type QueryTrace = {
   stage: string
   dimensionCode: string | null
@@ -85,6 +147,7 @@ type AttributionResponse = {
   overall: OverallEvidence
   evidence: Evidence[]
   primaryPath: PathNode[]
+  branches: AnalysisBranch[]
   reasoning: ReasoningStep[]
   stop: { code: string; detail: string }
   report: { summary: string; findings: string[]; recommendations: string[] }
@@ -101,6 +164,8 @@ const EMPTY_LIMITS: Limits = {
   hardMaxQueries: 12,
   defaultTopN: 5,
   hardTopN: 10,
+  defaultMaxBranches: 2,
+  hardMaxBranches: 3,
 }
 
 const numberFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 })
@@ -117,6 +182,15 @@ function formatSigned(value: number | null | undefined) {
 function formatPercent(value: number | null | undefined) {
   if (value == null) return '—'
   return `${value > 0 ? '+' : ''}${formatNumber(value)}%`
+}
+
+function formatLogContent(value: string | null | undefined) {
+  if (!value) return '—'
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2)
+  } catch {
+    return value
+  }
 }
 
 function directionLabel(direction: Direction) {
@@ -197,6 +271,40 @@ function EvidenceCard({ evidence, periods }: { evidence: Evidence; periods: [str
   )
 }
 
+function AgentProcessLog({
+  events,
+  dimensionMap,
+}: {
+  events: WorkflowEvent[]
+  dimensionMap: Map<string, Dimension>
+}) {
+  const reasoning = events.flatMap((event) => event.reasoningStep ? [event.reasoningStep] : [])
+  return (
+    <>
+      <section className="attribution-log-panel">
+        <header><div><small>实时输入输出</small><h3>LLM 调用日志</h3></div><span>{reasoning.length} 次调用</span></header>
+        {!reasoning.length && <p className="process-empty">等待首个 LLM 节点完成后显示提示词和模型返回。</p>}
+        {reasoning.map((step, index) => <details className="attribution-log-entry" key={`${step.phase}-${index}`} open={index === reasoning.length - 1}>
+          <summary><span>{index + 1}</span><div><strong>{step.phase === 'PLAN' ? '制定探索计划' : step.phase === 'REFLECT' ? `第 ${step.depth} 层分支反思` : '生成最终报告'}</strong><small>{step.llmMessage?.model ?? '未调用模型'} · {step.reason}</small></div></summary>
+          <div className="attribution-log-body">
+            {step.hypothesis && <p><b>本轮假设：</b>{step.hypothesis}</p>}
+            {step.branchActions.length > 0 && <p><b>Java 待审核动作：</b>{step.branchActions.map((action) => `${action.role} ${action.action} ${action.selectedMember ?? ''}${action.nextDimension ? ` → ${dimensionMap.get(action.nextDimension)?.name ?? action.nextDimension}` : ''}`).join('；')}</p>}
+            {step.llmMessage ? <>
+              <h4>发送给 LLM</h4>
+              {step.llmMessage.requestMessages.map((message, messageIndex) => <details className="llm-message" key={`${message.role}-${messageIndex}`}>
+                <summary>{message.role === 'system' ? 'System Prompt' : 'User Payload'}</summary><pre>{formatLogContent(message.content)}</pre>
+              </details>)}
+              <h4>LLM 返回</h4><pre>{formatLogContent(step.llmMessage.content)}</pre>
+              {step.llmMessage.rawResponse && <details className="llm-message"><summary>原始 Provider 响应</summary><pre>{formatLogContent(step.llmMessage.rawResponse)}</pre></details>}
+            </> : <p>本步骤没有 LLM 消息。</p>}
+          </div>
+        </details>)}
+      </section>
+      <details className="workflow-trace" open><summary><div><strong>Java / LangGraph 关键节点日志</strong><span>确定性计算、预算控制、分支审批与停止原因</span></div><small>{events.length} 条事件</small></summary><div className="workflow-step-list">{events.map((event, index) => <div className={`workflow-step ${event.status.toLowerCase()}`} key={`${event.node}-${event.status}-${index}`}><div className="workflow-step-index">{index + 1}</div><div><strong>{event.name}</strong><code>{event.node}</code><p>{event.detail}</p></div><span>{event.status === 'RUNNING' ? '● RUNNING' : event.status === 'FAILED' ? '✕ FAILED' : '✓ COMPLETED'}</span></div>)}</div></details>
+    </>
+  )
+}
+
 function reportMarkdown(result: AttributionResponse) {
   const path = result.primaryPath.map((node) => `${node.dimensionName}：${node.memberValue}`).join(' → ') || '未形成下钻路径'
   return [
@@ -223,8 +331,11 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
   const [maxDepth, setMaxDepth] = useState(2)
   const [maxQueries, setMaxQueries] = useState(8)
   const [topN, setTopN] = useState(5)
+  const [maxBranches, setMaxBranches] = useState(2)
   const [filters, setFilters] = useState<FilterDraft[]>([])
   const [pending, setPending] = useState(false)
+  const [streamEvents, setStreamEvents] = useState<WorkflowEvent[]>([])
+  const [streamFailure, setStreamFailure] = useState('')
   const [error, setError] = useState('')
   const [result, setResult] = useState<AttributionResponse | null>(null)
   const [tab, setTab] = useState<'report' | 'evidence' | 'process'>('report')
@@ -247,6 +358,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
         setMaxDepth(value.limits.defaultMaxDepth)
         setMaxQueries(value.limits.defaultMaxQueries)
         setTopN(value.limits.defaultTopN)
+        setMaxBranches(value.limits.defaultMaxBranches)
       })
       .catch((reason) => active && setError(reason instanceof Error ? reason.message : '归因元数据加载失败'))
     return () => { active = false }
@@ -270,10 +382,12 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
     const emptyFilter = filters.find((filter) => !filter.value.trim())
     if (emptyFilter) return setError('维度过滤值不能为空')
     setError('')
+    setStreamFailure('')
+    setStreamEvents([])
     setPending(true)
     setResult(null)
     try {
-      const response = await fetch('/api/attribution/analyze', {
+      const response = await fetch('/api/attribution/analyze/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -283,6 +397,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
           maxDepth,
           maxQueries,
           topN,
+          maxBranches,
           model: selectedModel,
           dimensionFilters: filters.map((filter) => ({
             dimensionId: filter.dimensionId,
@@ -292,11 +407,44 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
         }),
       })
       if (!response.ok) throw new Error(await responseError(response))
-      setResult(await response.json() as AttributionResponse)
+      if (!response.body) throw new Error('浏览器不支持归因过程流式响应')
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let completed = false
+      const handleItem = (item: AttributionStreamItem) => {
+        if (item.type === 'event' && item.event) {
+          setStreamEvents((events) => mergeStreamEvent(events, item.event!))
+          return
+        }
+        if (item.type === 'result' && item.result) {
+          completed = true
+          setResult(item.result)
+          return
+        }
+        if (item.type === 'error') {
+          if (item.event) setStreamEvents((events) => mergeStreamEvent(events, item.event!))
+          throw new Error(item.message || '归因分析执行失败')
+        }
+      }
+      while (true) {
+        const { value, done } = await reader.read()
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (line.trim()) handleItem(JSON.parse(line) as AttributionStreamItem)
+        }
+        if (done) break
+      }
+      if (buffer.trim()) handleItem(JSON.parse(buffer) as AttributionStreamItem)
+      if (!completed) throw new Error('归因过程未返回最终结果')
       setTab('report')
       window.dispatchEvent(new Event('model-health-changed'))
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '归因分析请求失败')
+      const message = reason instanceof Error ? reason.message : '归因分析请求失败'
+      setError(message)
+      setStreamFailure(message)
     } finally {
       setPending(false)
     }
@@ -338,6 +486,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
           <div className="config-row"><label htmlFor="comparison-period">对比周期 <b>*</b></label><input id="comparison-period" type="month" value={comparisonPeriod} onChange={(event) => setComparisonPeriod(event.target.value)} /></div>
           <div className="config-divider" />
           <div className="attribution-limit-grid">
+            <label>每轮最大分支 <input type="number" min="1" max={limits.hardMaxBranches} value={maxBranches} onChange={(event) => setMaxBranches(Number(event.target.value))} /><small>最多 {limits.hardMaxBranches} 个分支</small></label>
             <label>最大下钻深度 <input type="number" min="1" max={limits.hardMaxDepth} value={maxDepth} onChange={(event) => setMaxDepth(Number(event.target.value))} /><small>最多 {limits.hardMaxDepth} 层</small></label>
             <label>最大查询次数 <input type="number" min="2" max={limits.hardMaxQueries} value={maxQueries} onChange={(event) => setMaxQueries(Number(event.target.value))} /><small>最多 {limits.hardMaxQueries} 次</small></label>
             <label>每维展示 TopN <input type="number" min="1" max={limits.hardTopN} value={topN} onChange={(event) => setTopN(Number(event.target.value))} /><small>最多 {limits.hardTopN} 项</small></label>
@@ -358,6 +507,11 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
         {pending && <div className="attribution-running" aria-live="polite"><i /><div><strong>正在执行智能归因</strong><span>总体查询 → 维度假设 → 并行取证 → 动态下钻 → 生成报告</span></div></div>}
       </form>
 
+      {(pending || streamFailure) && <section className="workspace-card live-agent-process" aria-live="polite">
+        <header><div><small>{streamFailure ? '执行失败' : '实时执行中'}</small><h2>Agent 过程</h2><p>{streamFailure || '节点完成后会立即标记为 COMPLETED；LLM 输入和返回会在调用完成后显示。'}</p></div><span className={streamFailure ? 'failed' : 'running'}>{streamFailure ? 'FAILED' : 'RUNNING'}</span></header>
+        {streamEvents.length > 0 ? <AgentProcessLog events={streamEvents} dimensionMap={dimensionMap} /> : <p className="process-empty">正在初始化归因任务…</p>}
+      </section>}
+
       {result && (
         <div className="result-card attribution-agent-result" aria-live="polite">
           <div className="result-heading">
@@ -372,15 +526,6 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
             <div><span>实际查询</span><strong>{result.queryCount} 次</strong></div>
             <div><span>停止原因</span><strong>{result.stop.code}</strong><small>{result.stop.detail}</small></div>
           </div>
-
-          <section className="primary-path-panel">
-            <header><div><small>Agent 收敛结果</small><h3>主归因路径</h3></div><span>{result.primaryPath.length} 层下钻</span></header>
-            <div className="attribution-path">
-              <div className="path-start"><small>整体变化</small><strong>{formatSigned(result.overall.changeAmount)}</strong></div>
-              {result.primaryPath.map((node) => <div className="path-arrow-node" key={`${node.depth}-${node.dimensionId}`}><i>→</i><article><small>第 {node.depth} 层 · {node.dimensionName}</small><strong>{node.memberValue}</strong><span>贡献度 {formatPercent(node.contributionRate)} · 变化 {formatSigned(node.changeAmount)}</span></article></div>)}
-              {!result.primaryPath.length && <div className="empty-path">当前证据未形成有效下钻路径</div>}
-            </div>
-          </section>
 
           <div className="attribution-result-tabs" role="tablist">
             <button type="button" role="tab" aria-selected={tab === 'report'} className={tab === 'report' ? 'active' : ''} onClick={() => setTab('report')}>最终报告</button>
@@ -397,10 +542,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
           {tab === 'evidence' && <div className="attribution-evidence-list">{result.evidence.map((evidence) => <EvidenceCard evidence={evidence} periods={[result.currentPeriod, result.comparisonPeriod]} key={evidence.id} />)}</div>}
 
           {tab === 'process' && <section className="attribution-process-panel">
-            <div className="reasoning-timeline">
-              {result.reasoning.map((step, index) => <article key={`${step.phase}-${index}`}><i>{index + 1}</i><div><header><strong>{step.phase === 'PLAN' ? '制定探索计划' : step.phase === 'REASON' ? `第 ${step.depth} 层证据推理` : '生成最终报告'}</strong><span>{step.proposedDimensions.map((id) => dimensionMap.get(id)?.name ?? id).join(' · ')}</span></header>{step.hypothesis && <p>{step.hypothesis}</p>}<small>{step.reason}</small>{step.selectedMember && <em>选择：{step.selectedMember}{step.nextDimension ? ` → ${dimensionMap.get(step.nextDimension)?.name ?? step.nextDimension}` : ''}</em>}</div></article>)}
-            </div>
-            <details className="workflow-trace"><summary><div><strong>LangGraph4j 节点轨迹</strong><span>查看每个工作流节点的状态与结果</span></div><small>{result.workflowSteps.length} 个节点</small></summary><div className="workflow-step-list">{result.workflowSteps.map((step, index) => <div className="workflow-step" key={`${step.node}-${index}`}><div className="workflow-step-index">{index + 1}</div><div><strong>{step.name}</strong><code>{step.node}</code><p>{step.detail}</p></div><span>✓ {step.status}</span></div>)}</div></details>
+            <AgentProcessLog events={streamEvents.length ? streamEvents : result.workflowSteps.map((step) => ({ ...step, reasoningStep: null }))} dimensionMap={dimensionMap} />
             <details className="sql-preview attribution-sql-preview"><summary>查看 {result.smartBiQueries.length} 次 SmartBI 查询</summary><div className="sql-preview-list">{result.smartBiQueries.map((query, index) => <section key={`${query.stage}-${index}`}><strong>{index + 1}. {query.stage}{query.dimensionCode ? ` · ${dimensionMap.get(query.dimensionCode)?.name ?? query.dimensionCode}` : ''}</strong><pre><code>{query.sqlPreview}</code></pre><small>rows: {query.request.rows.join(', ')} · columns: {query.request.columns.join(', ')}</small></section>)}</div></details>
           </section>}
         </div>

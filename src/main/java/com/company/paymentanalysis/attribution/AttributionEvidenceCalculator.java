@@ -119,6 +119,7 @@ public class AttributionEvidenceCalculator {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         return new Evidence(
                 "evidence-" + UUID.randomUUID(),
+                null,
                 depth,
                 hypothesis,
                 dimensionId,

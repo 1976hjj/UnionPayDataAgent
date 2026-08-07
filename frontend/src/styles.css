@@ -894,20 +894,23 @@ td { color: #3b5069; }
 }
 
 .workflow-step strong {
-  color: #344f68;
+  color: #203f5d;
   font-size: 10px;
+  font-weight: 750;
 }
 
 .workflow-step code {
   margin-top: 3px;
-  color: #6a91b5;
+  color: #356b9d;
   font-size: 8px;
+  font-weight: 650;
 }
 
 .workflow-step p {
   margin: 7px 0 0;
-  color: #8493a3;
+  color: #4d657b;
   font-size: 9px;
+  font-weight: 600;
   line-height: 1.5;
 }
 
@@ -916,6 +919,10 @@ td { color: #3b5069; }
   color: #31906a;
   font-size: 8px;
 }
+.workflow-step.running { background: #f2f8fd; }
+.workflow-step.running > span { color: #216aa6; font-weight: 800; }
+.workflow-step.failed { background: #fff5f5; }
+.workflow-step.failed > span { color: #b7434b; font-weight: 800; }
 
 .driver-card {
   display: grid;
@@ -3261,6 +3268,15 @@ td { color: #3b5069; }
 .attribution-report-panel,
 .attribution-process-panel,
 .attribution-evidence-list { margin-top: 14px; }
+.live-agent-process { display: grid; gap: 14px; margin-top: 18px; padding: 18px; border-color: #cfe0ef; }
+.live-agent-process > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.live-agent-process header small { color: #2c6598; font-size: 9px; font-weight: 750; }
+.live-agent-process header h2 { margin: 3px 0; color: #214e75; font-size: 17px; }
+.live-agent-process header p { margin: 0; color: #48647d; font-size: 10px; font-weight: 600; }
+.live-agent-process > header > span { padding: 5px 9px; border-radius: 10px; font-size: 9px; font-weight: 800; }
+.live-agent-process > header > span.running { color: #1e659f; background: #dceefa; }
+.live-agent-process > header > span.failed { color: #a8363e; background: #fde8ea; }
+.process-empty { margin: 0; padding: 16px; border: 1px dashed #cbdbe9; border-radius: 7px; color: #48647d; background: #f6faff; font-size: 10px; font-weight: 600; }
 .attribution-report-panel { padding: 17px; border: 1px solid #e0e7ef; border-radius: 8px; }
 .attribution-report-panel header small { color: #91a0af; font-size: 8px; }
 .attribution-report-panel header h3 { margin: 4px 0 0; color: #304f6b; font-size: 14px; }
@@ -3311,6 +3327,24 @@ td { color: #3b5069; }
 .reasoning-timeline p { margin: 7px 0 0; color: #5d7388; font-size: 10px; }
 .reasoning-timeline small { display: block; margin-top: 6px; color: #8796a6; font-size: 8px; }
 .reasoning-timeline em { display: inline-block; margin-top: 7px; padding: 4px 7px; border-radius: 9px; color: #2c72b3; background: #e8f2fb; font-size: 8px; font-style: normal; }
+.attribution-log-panel { display: grid; gap: 9px; padding: 15px; border: 1px solid #dfe7ef; border-radius: 8px; background: #fff; }
+.attribution-log-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.attribution-log-panel > header small { color: #587188; font-size: 8px; font-weight: 650; }
+.attribution-log-panel > header h3 { margin: 3px 0 0; color: #203f5d; font-size: 13px; font-weight: 800; }
+.attribution-log-panel > header > span { padding: 4px 8px; border-radius: 10px; color: #1e649f; background: #dfeefa; font-size: 8px; font-weight: 700; }
+.attribution-log-entry { overflow: hidden; border: 1px solid #e1e9f1; border-radius: 7px; background: #fbfcfe; }
+.attribution-log-entry > summary { display: flex; align-items: center; gap: 9px; padding: 10px 11px; cursor: pointer; list-style: none; }
+.attribution-log-entry > summary::-webkit-details-marker { display: none; }
+.attribution-log-entry > summary > span { display: grid; width: 21px; height: 21px; place-items: center; border-radius: 50%; color: #fff; background: #3b86ce; font-size: 8px; font-weight: 700; }
+.attribution-log-entry > summary strong { display: block; color: #244867; font-size: 10px; font-weight: 800; }
+.attribution-log-entry > summary small { display: block; max-width: 720px; overflow: hidden; margin-top: 3px; color: #45627b; font-size: 8px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.attribution-log-body { display: grid; gap: 8px; padding: 0 11px 12px 41px; }
+.attribution-log-body p { margin: 0; color: #334f67; font-size: 10px; font-weight: 600; line-height: 1.65; }
+.attribution-log-body h4 { margin: 4px 0 -2px; color: #214e75; font-size: 9px; font-weight: 800; }
+.attribution-log-body pre { max-height: 280px; overflow: auto; margin: 0; padding: 9px; border: 1px solid #d9e4ee; border-radius: 5px; color: #263f56; background: #f1f6fa; font: 600 8px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+.llm-message { border: 1px solid #e3eaf1; border-radius: 5px; background: #fff; }
+.llm-message > summary { padding: 7px 9px; color: #2c5b80; cursor: pointer; font-size: 8px; font-weight: 750; }
+.llm-message > pre { margin: 0 8px 8px; }
 .attribution-process-panel .workflow-trace { margin-top: 5px; }
 .attribution-process-panel .attribution-sql-preview { margin-top: 12px; }
 

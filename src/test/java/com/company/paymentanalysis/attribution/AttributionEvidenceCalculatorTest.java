@@ -78,7 +78,7 @@ class AttributionEvidenceCalculatorTest {
 
     private EffectiveRequest request() {
         return new EffectiveRequest(
-                "trans_cnt_m", "2026-07", "2026-06", List.of(), 2, 8, 5, null);
+                "trans_cnt_m", "2026-07", "2026-06", List.of(), 2, 8, 5, 2, null);
     }
 
     private QueryResponse response(List<Map<String, Object>> rows) {

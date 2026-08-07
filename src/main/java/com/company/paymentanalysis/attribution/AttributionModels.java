@@ -19,6 +19,7 @@ public final class AttributionModels {
             Integer maxDepth,
             Integer maxQueries,
             Integer topN,
+            Integer maxBranches,
             String model) implements Serializable {
 
         public AttributionRequest {
@@ -34,6 +35,7 @@ public final class AttributionModels {
             int maxDepth,
             int maxQueries,
             int topN,
+            int maxBranches,
             String model) implements Serializable {
     }
 
@@ -68,6 +70,7 @@ public final class AttributionModels {
 
     public record Evidence(
             String id,
+            String branchId,
             int depth,
             String hypothesis,
             String dimensionId,
@@ -88,6 +91,35 @@ public final class AttributionModels {
             BigDecimal contributionRate) implements Serializable {
     }
 
+    public record AnalysisBranch(
+            String id,
+            String parentBranchId,
+            String role,
+            String status,
+            int depth,
+            List<DimensionFilter> pathFilters,
+            List<PathNode> path,
+            String hypothesis,
+            String stopReason,
+            int queryCount) implements Serializable {
+
+        public AnalysisBranch {
+            pathFilters = pathFilters == null ? List.of() : List.copyOf(pathFilters);
+            path = path == null ? List.of() : List.copyOf(path);
+        }
+    }
+
+    public record BranchAction(
+            String action,
+            String role,
+            String selectedEvidenceId,
+            String selectedMember,
+            String nextDimension,
+            String priority,
+            String hypothesis,
+            String reason) implements Serializable {
+    }
+
     public record ReasoningStep(
             int depth,
             String phase,
@@ -97,7 +129,13 @@ public final class AttributionModels {
             String selectedMember,
             String nextDimension,
             String reason,
+            List<BranchAction> branchActions,
             LlmResultMessage llmMessage) implements Serializable {
+
+        public ReasoningStep {
+            proposedDimensions = proposedDimensions == null ? List.of() : List.copyOf(proposedDimensions);
+            branchActions = branchActions == null ? List.of() : List.copyOf(branchActions);
+        }
     }
 
     public record StopInfo(String code, String detail) implements Serializable {
@@ -120,6 +158,7 @@ public final class AttributionModels {
             OverallEvidence overall,
             List<Evidence> evidence,
             List<PathNode> primaryPath,
+            List<AnalysisBranch> branches,
             List<ReasoningStep> reasoning,
             StopInfo stop,
             AttributionReport report,
