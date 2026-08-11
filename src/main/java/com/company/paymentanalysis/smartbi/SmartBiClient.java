@@ -56,6 +56,9 @@ public class SmartBiClient {
 
             JSONObject queryJson = toSmartBiJson(request);
             InvokeResult invokeResult = conn.remoteInvoke(MODULE, METHOD, new Object[]{queryJson});
+            if (!invokeResult.isSucceed()) {
+                throw new IllegalStateException("SmartBI 远程调用失败: " + invokeResult.getOriginalResult());
+            }
             Object result = invokeResult.getResult();
             if (result == null) {
                 throw new IllegalStateException("SmartBI 返回为空");

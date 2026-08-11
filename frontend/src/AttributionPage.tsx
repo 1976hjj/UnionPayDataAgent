@@ -103,7 +103,17 @@ type AnalysisBranch = {
   queryCount: number
 }
 type WorkflowStep = { node: string; name: string; status: string; detail: string }
-type WorkflowEvent = WorkflowStep & { reasoningStep: ReasoningStep | null }
+type SmartBiCall = {
+  callId: string
+  stage: string
+  dimensionCode: string | null
+  period: string
+  status: string
+  request: Record<string, unknown>
+  response: { requestId: string; data: Record<string, unknown>[]; metadata: Record<string, unknown> } | null
+  error: string | null
+}
+type WorkflowEvent = WorkflowStep & { reasoningStep: ReasoningStep | null; smartBiCall?: SmartBiCall | null }
 type AttributionStreamItem = {
   type: 'event' | 'result' | 'error'
   event: WorkflowEvent | null
@@ -279,6 +289,13 @@ function AgentProcessLog({
   dimensionMap: Map<string, Dimension>
 }) {
   const reasoning = events.flatMap((event) => event.reasoningStep ? [event.reasoningStep] : [])
+  const [expandedCallId, setExpandedCallId] = useState<string | null>(null)
+  const eventRows = useMemo(() => {
+    const rows: WorkflowEvent[][] = []
+    for (let index = 0; index < events.length; index += 3) rows.push(events.slice(index, index + 3))
+    return rows
+  }, [events])
+  const statusLabel = (status: string) => status === 'RUNNING' ? '● RUNNING' : status === 'FAILED' ? '✕ FAILED' : '✓ COMPLETED'
   return (
     <>
       <section className="attribution-log-panel">
@@ -300,7 +317,38 @@ function AgentProcessLog({
           </div>
         </details>)}
       </section>
-      <details className="workflow-trace" open><summary><div><strong>Java / LangGraph 关键节点日志</strong><span>确定性计算、预算控制、分支审批与停止原因</span></div><small>{events.length} 条事件</small></summary><div className="workflow-step-list">{events.map((event, index) => <div className={`workflow-step ${event.status.toLowerCase()}`} key={`${event.node}-${event.status}-${index}`}><div className="workflow-step-index">{index + 1}</div><div><strong>{event.name}</strong><code>{event.node}</code><p>{event.detail}</p></div><span>{event.status === 'RUNNING' ? '● RUNNING' : event.status === 'FAILED' ? '✕ FAILED' : '✓ COMPLETED'}</span></div>)}</div></details>
+      <details className="workflow-trace" open>
+        <summary><div><strong>Java / LangGraph 关键节点日志</strong><span>确定性计算、SmartBI 请求响应、分支审批与停止原因</span></div><small>{events.length} 条事件</small></summary>
+        <div className="workflow-step-list">{eventRows.map((row, rowIndex) => {
+          const expanded = row.find((event) => event.smartBiCall?.callId === expandedCallId)
+          return <div className="workflow-event-row" key={`workflow-row-${rowIndex}`}>
+            <div className="workflow-step-row">{row.map((event, columnIndex) => {
+              const index = rowIndex * 3 + columnIndex
+              if (event.smartBiCall) {
+                const isExpanded = event.smartBiCall.callId === expandedCallId
+                return <button
+                  type="button"
+                  className={`workflow-step smartbi-step ${event.status.toLowerCase()} ${isExpanded ? 'expanded' : ''}`}
+                  key={event.smartBiCall.callId}
+                  aria-expanded={isExpanded}
+                  onClick={() => setExpandedCallId(isExpanded ? null : event.smartBiCall!.callId)}
+                >
+                  <div className="workflow-step-index">{index + 1}</div>
+                  <div><strong>{event.name}</strong><code>{event.smartBiCall.stage} · {event.smartBiCall.period}</code><p>{event.detail}</p></div>
+                  <span>{statusLabel(event.status)}</span>
+                </button>
+              }
+              return <div className={`workflow-step ${event.status.toLowerCase()}`} key={`${event.node}-${event.status}-${index}`}><div className="workflow-step-index">{index + 1}</div><div><strong>{event.name}</strong><code>{event.node}</code><p>{event.detail}</p></div><span>{statusLabel(event.status)}</span></div>
+            })}</div>
+            {expanded?.smartBiCall && <div className="smartbi-exchange">
+              <section><h4>发送给 SmartBI 的请求 JSON</h4><pre>{JSON.stringify(expanded.smartBiCall.request, null, 2)}</pre></section>
+              {expanded.smartBiCall.response && <section><h4>SmartBI 返回 JSON</h4><pre>{JSON.stringify(expanded.smartBiCall.response, null, 2)}</pre></section>}
+              {expanded.status === 'RUNNING' && <p className="smartbi-waiting">SmartBI 正在执行，返回后会在此处补齐响应 JSON。</p>}
+              {expanded.smartBiCall.error && <section className="smartbi-error"><h4>调用失败</h4><pre>{expanded.smartBiCall.error}</pre></section>}
+            </div>}
+          </div>
+        })}</div>
+      </details>
     </>
   )
 }

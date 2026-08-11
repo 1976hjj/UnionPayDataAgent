@@ -72,7 +72,7 @@ public class AttributionController {
             String message = rootMessage(exception);
             writeStreamItem(output, writeLock, new AttributionStreamItem(
                     "error",
-                    new WorkflowEvent("workflow", "归因分析", "FAILED", message, null),
+                    new WorkflowEvent("workflow", "归因分析", "FAILED", message, null, null),
                     null,
                     message));
         }

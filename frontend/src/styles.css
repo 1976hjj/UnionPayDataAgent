@@ -821,7 +821,7 @@ td { color: #3b5069; }
   background: #fbfdff;
 }
 
-.workflow-trace summary {
+.workflow-trace > summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -831,40 +831,49 @@ td { color: #3b5069; }
   background: #f5f9fd;
 }
 
-.workflow-trace summary::-webkit-details-marker {
+.workflow-trace > summary::-webkit-details-marker {
   display: none;
 }
 
-.workflow-trace summary strong,
-.workflow-trace summary span {
+.workflow-trace > summary strong,
+.workflow-trace > summary span {
   display: block;
 }
 
-.workflow-trace summary strong {
+.workflow-trace > summary strong {
   color: #2c5276;
   font-size: 11px;
 }
 
-.workflow-trace summary span {
+.workflow-trace > summary span {
   margin-top: 3px;
   color: #91a0b0;
-  font-size: 9px;
+  font-size: 10px;
 }
 
-.workflow-trace summary small {
+.workflow-trace > summary small {
   padding: 4px 8px;
   border-radius: 10px;
   color: #277553;
   background: #e7f6ee;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .workflow-step-list {
+  display: block;
+  background: #fff;
+}
+
+.workflow-step-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
-  background: #e8eef4;
+  gap: 0;
+  background: #fff;
 }
+
+.workflow-event-row + .workflow-event-row { border-top: 1px solid #e8eef4; }
+.workflow-step-row > .workflow-step { border-right: 1px solid #e8eef4; }
+.workflow-step-row > .workflow-step:last-child { border-right: 0; }
 
 .workflow-step {
   display: grid;
@@ -923,6 +932,63 @@ td { color: #3b5069; }
 .workflow-step.running > span { color: #216aa6; font-weight: 800; }
 .workflow-step.failed { background: #fff5f5; }
 .workflow-step.failed > span { color: #b7434b; font-weight: 800; }
+
+.workflow-step.smartbi-step {
+  display: grid;
+  width: 100%;
+  min-height: 92px;
+  border: 0;
+  border-radius: 0;
+  font: inherit;
+  text-align: left;
+  appearance: none;
+  cursor: pointer;
+}
+
+.workflow-step-row > .smartbi-step { border-right: 1px solid #e8eef4; }
+.workflow-step-row > .smartbi-step:last-child { border-right: 0; }
+
+.smartbi-step:hover,
+.smartbi-step.expanded {
+  background: #eef6fd;
+}
+
+.smartbi-step.expanded {
+  box-shadow: inset 0 -3px #3986cf;
+}
+
+.smartbi-step > span { color: #31906a; font-size: 8px; font-weight: 800; }
+.smartbi-step.running > span { color: #216aa6; }
+.smartbi-step.failed > span { color: #b7434b; }
+
+.smartbi-exchange {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  padding: 14px;
+  border-top: 1px solid #d8e5f0;
+  background: #f8fbfe;
+}
+
+.smartbi-exchange section { min-width: 0; }
+.smartbi-exchange h4 { margin: 0 0 6px; color: #294f72; font-size: 9px; }
+.smartbi-exchange pre {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #d8e4ee;
+  border-radius: 5px;
+  color: #263f56;
+  background: #f4f8fb;
+  font: 600 9px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.smartbi-waiting { grid-column: 1 / -1; margin: 0; color: #53718b; font-size: 9px; }
+.smartbi-error { grid-column: 1 / -1; }
+.smartbi-error pre { border-color: #efcfd2; color: #9a3038; background: #fff7f7; }
 
 .driver-card {
   display: grid;
@@ -2554,10 +2620,13 @@ td { color: #3b5069; }
 }
 
 /* Responsive application shell and chat workspace */
-.content:has(.query-chat-page) {
+.content.query-content {
   width: 100%;
   max-width: 1920px;
 }
+
+.persistent-page { display: contents; }
+.persistent-page.is-hidden { display: none; }
 
 .chat-toolbar-actions,
 .side-panel-actions {
@@ -3596,4 +3665,47 @@ nav a small,
   .context-item strong {
     font-size: 12px;
   }
+}
+
+/* Keep attribution execution logs readable at the same scale as the hypothesis text. */
+.workflow-step-index,
+.attribution-log-entry > summary > span {
+  font-size: 10px;
+}
+
+.workflow-step strong,
+.attribution-log-entry > summary strong {
+  font-size: 11px;
+}
+
+.workflow-step code,
+.workflow-step p,
+.workflow-step > span,
+.smartbi-step > span,
+.smartbi-exchange h4,
+.smartbi-exchange pre,
+.smartbi-waiting,
+.attribution-log-panel > header small,
+.attribution-log-panel > header > span,
+.attribution-log-entry > summary small,
+.attribution-log-body h4,
+.attribution-log-body pre,
+.llm-message > summary,
+.reasoning-timeline header span,
+.reasoning-timeline small,
+.reasoning-timeline em {
+  font-size: 10px;
+}
+
+.attribution-log-body pre,
+.smartbi-exchange pre {
+  line-height: 1.65;
+}
+
+.attribution-log-body pre {
+  padding: 10px;
+}
+
+.llm-message > summary {
+  padding: 8px 10px;
 }

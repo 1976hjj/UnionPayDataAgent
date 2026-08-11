@@ -34,6 +34,8 @@ const MODEL_STORAGE_KEY = 'payment-analysis:selected-model'
 
 export default function App() {
   const location = useLocation()
+  const queryActive = location.pathname.startsWith('/query')
+  const attributionActive = location.pathname.startsWith('/attribution')
   const [dependencies, setDependencies] = useState<DependencyStatus[]>(INITIAL_DEPENDENCIES)
   const [models, setModels] = useState<ModelOption[]>(FALLBACK_MODELS)
   const [selectedModel, setSelectedModel] = useState(
@@ -101,7 +103,7 @@ export default function App() {
         <header>
           <div><strong>支付数据智能分析平台</strong><span>测试环境</span></div>
           <div className="header-actions">
-            {(location.pathname.startsWith('/query') || location.pathname.startsWith('/attribution')) && (
+            {(queryActive || attributionActive) && (
               <div className="model-selector">
                 <label htmlFor="llm-model">模型</label>
                 <select
@@ -130,12 +132,18 @@ export default function App() {
             <div className="user">演示用户<small>数据分析员</small></div>
           </div>
         </header>
-        <div className="content">
+        <div className={`content ${queryActive ? 'query-content' : ''}`}>
           <Routes>
-            <Route path="/query" element={<QueryChatPage selectedModel={selectedModel} />} />
-            <Route path="/attribution" element={<AttributionPage selectedModel={selectedModel} />} />
+            <Route path="/query" element={null} />
+            <Route path="/attribution" element={null} />
             <Route path="*" element={<Navigate to="/query" replace />} />
           </Routes>
+          <div className={`persistent-page ${queryActive ? '' : 'is-hidden'}`} aria-hidden={!queryActive}>
+            <QueryChatPage selectedModel={selectedModel} />
+          </div>
+          <div className={`persistent-page ${attributionActive ? '' : 'is-hidden'}`} aria-hidden={!attributionActive}>
+            <AttributionPage selectedModel={selectedModel} />
+          </div>
         </div>
       </main>
     </div>

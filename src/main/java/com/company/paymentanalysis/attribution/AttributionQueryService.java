@@ -11,9 +11,12 @@ import com.company.paymentanalysis.smartbi.SmartBiModels.QueryTrace;
 import com.company.paymentanalysis.smartbi.SmartBiModels.RelationNode;
 import com.company.paymentanalysis.smartbi.SmartBiProperties;
 import java.io.Serializable;
-import java.time.YearMonth;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -23,6 +26,7 @@ public class AttributionQueryService {
 
     private final SmartBiClient smartBiClient;
     private final SmartBiProperties properties;
+    private final AtomicLong callSequence = new AtomicLong();
 
     public AttributionQueryService(SmartBiClient smartBiClient, SmartBiProperties properties) {
         this.smartBiClient = smartBiClient;
@@ -30,41 +34,101 @@ public class AttributionQueryService {
     }
 
     public QueryExecution queryOverall(EffectiveRequest request) {
-        return execute("overall", null, build(request, null, List.of()));
+        return queryOverall(request, ignored -> { });
+    }
+
+    public QueryExecution queryOverall(EffectiveRequest request, Consumer<SmartBiCall> observer) {
+        return executePeriods("overall", null, request, List.of(), observer);
     }
 
     public QueryExecution queryDimension(
             EffectiveRequest request, String dimensionId, List<DimensionFilter> pathFilters, int depth) {
+        return queryDimension(request, dimensionId, pathFilters, depth, ignored -> { });
+    }
+
+    public QueryExecution queryDimension(
+            EffectiveRequest request,
+            String dimensionId,
+            List<DimensionFilter> pathFilters,
+            int depth,
+            Consumer<SmartBiCall> observer) {
         if (!AttributionCatalog.isDimension(dimensionId)) {
             throw new IllegalArgumentException("归因查询包含非法维度：" + dimensionId);
         }
-        return execute("depth" + depth, dimensionId, build(request, dimensionId, pathFilters));
+        return executePeriods("depth" + depth, dimensionId, request, pathFilters, observer);
     }
 
-    private QueryExecution execute(String stage, String dimensionId, QueryRequest query) {
-        return new QueryExecution(smartBiClient.query(query), new QueryTrace(stage, dimensionId, query));
+    private QueryExecution executePeriods(
+            String stage,
+            String dimensionId,
+            EffectiveRequest request,
+            List<DimensionFilter> pathFilters,
+            Consumer<SmartBiCall> observer) {
+        QueryRequest currentQuery = build(
+                request, dimensionId, pathFilters, request.currentPeriod());
+        QueryRequest comparisonQuery = build(
+                request, dimensionId, pathFilters, request.comparisonPeriod());
+        QueryResponse current = executeCall(stage + "-current", dimensionId, request.currentPeriod(), currentQuery, observer);
+        QueryResponse comparison = executeCall(
+                stage + "-comparison", dimensionId, request.comparisonPeriod(), comparisonQuery, observer);
+
+        List<Map<String, Object>> rows = new ArrayList<>(current.data());
+        rows.addAll(comparison.data());
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("source", "two-period SmartBI queries");
+        metadata.put("current", current.metadata());
+        metadata.put("comparison", comparison.metadata());
+        QueryResponse merged = new QueryResponse(
+                current.requestId() + "+" + comparison.requestId(), List.copyOf(rows), Map.copyOf(metadata));
+        return new QueryExecution(
+                merged,
+                List.of(
+                        new QueryTrace(stage + "-current", dimensionId, currentQuery),
+                        new QueryTrace(stage + "-comparison", dimensionId, comparisonQuery)));
+    }
+
+    private QueryResponse executeCall(
+            String stage,
+            String dimensionId,
+            String period,
+            QueryRequest query,
+            Consumer<SmartBiCall> observer) {
+        String callId = "smartbi-call-" + callSequence.incrementAndGet();
+        observer.accept(new SmartBiCall(callId, stage, dimensionId, period, "RUNNING", query, null, null));
+        try {
+            QueryResponse response = smartBiClient.query(query);
+            observer.accept(new SmartBiCall(callId, stage, dimensionId, period, "COMPLETED", query, response, null));
+            return response;
+        } catch (RuntimeException exception) {
+            observer.accept(new SmartBiCall(
+                    callId, stage, dimensionId, period, "FAILED", query, null, rootMessage(exception)));
+            throw exception;
+        }
+    }
+
+    private String rootMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
     }
 
     private QueryRequest build(
-            EffectiveRequest request, String dimensionId, List<DimensionFilter> pathFilters) {
-        YearMonth current = YearMonth.parse(request.currentPeriod());
-        YearMonth comparison = YearMonth.parse(request.comparisonPeriod());
-        List<String> columns = new ArrayList<>();
-        columns.add(request.metricId());
-        AttributionCatalog.comparisonMetric(request.metricId(), current, comparison).ifPresent(columns::add);
+            EffectiveRequest request,
+            String dimensionId,
+            List<DimensionFilter> pathFilters,
+            String period) {
+        List<String> columns = List.of(request.metricId());
 
-        Filter currentFilter = new Filter("period-current", PERIOD_FIELD, "EQUALS", List.of(current.toString()));
-        Filter comparisonFilter =
-                new Filter("period-comparison", PERIOD_FIELD, "EQUALS", List.of(comparison.toString()));
-        List<Filter> filters = new ArrayList<>(List.of(currentFilter, comparisonFilter));
-        List<RelationNode> conditions = new ArrayList<>();
-        conditions.add(RelationNode.group(
-                "OR", List.of(RelationNode.leaf(currentFilter), RelationNode.leaf(comparisonFilter))));
+        Filter periodFilter = new Filter("1", PERIOD_FIELD, "EQUALS", List.of(period));
+        List<Filter> filters = new ArrayList<>(List.of(periodFilter));
+        List<RelationNode> conditions = new ArrayList<>(List.of(RelationNode.leaf(periodFilter)));
 
-        int index = 1;
+        int index = 2;
         for (DimensionFilter filter : concat(request.dimensionFilters(), pathFilters)) {
             Filter smartBiFilter = new Filter(
-                    "dimension-" + index++,
+                    String.valueOf(index++),
                     QueryMetadataCatalog.smartBiFilterField(filter.dimensionId()),
                     filter.operator(),
                     filter.values());
@@ -91,6 +155,21 @@ public class AttributionQueryService {
         return result;
     }
 
-    public record QueryExecution(QueryResponse response, QueryTrace trace) implements Serializable {
+    public record QueryExecution(QueryResponse response, List<QueryTrace> traces) implements Serializable {
+
+        public QueryExecution(QueryResponse response, QueryTrace trace) {
+            this(response, List.of(trace));
+        }
+    }
+
+    public record SmartBiCall(
+            String callId,
+            String stage,
+            String dimensionCode,
+            String period,
+            String status,
+            QueryRequest request,
+            QueryResponse response,
+            String error) implements Serializable {
     }
 }

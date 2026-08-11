@@ -38,19 +38,27 @@ public final class SmartBiModels {
             List<String> columns,
             List<Filter> filters,
             RelationNode relationNode,
-            List<Sort> orderBys) implements Serializable {
+            List<Sort> orderBys,
+            int rowsPerPage) implements Serializable {
 
         public QueryRequest {
             rows = rows == null ? List.of() : List.copyOf(rows);
             columns = columns == null ? List.of() : List.copyOf(columns);
             filters = filters == null ? List.of() : List.copyOf(filters);
             orderBys = orderBys == null ? List.of() : List.copyOf(orderBys);
+            rowsPerPage = rowsPerPage <= 0 ? 9_999_999 : rowsPerPage;
+        }
+
+        public QueryRequest(
+                String dataSetId, List<String> rows, List<String> columns,
+                List<Filter> filters, RelationNode relationNode, List<Sort> orderBys) {
+            this(dataSetId, rows, columns, filters, relationNode, orderBys, 9_999_999);
         }
 
         public QueryRequest(
                 String dataSetId, List<String> rows, List<String> columns,
                 List<Filter> filters, RelationNode relationNode) {
-            this(dataSetId, rows, columns, filters, relationNode, List.of());
+            this(dataSetId, rows, columns, filters, relationNode, List.of(), 9_999_999);
         }
 
         @JsonIgnore

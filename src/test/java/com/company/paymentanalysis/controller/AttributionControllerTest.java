@@ -29,13 +29,13 @@ class AttributionControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("completed"))
                 .andExpect(jsonPath("$.overall.direction").value("DOWN"))
-                .andExpect(jsonPath("$.overall.smartBiComparisonRate").isNumber())
+                .andExpect(jsonPath("$.overall.smartBiComparisonRate").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$.queryCount").value(org.hamcrest.Matchers.lessThanOrEqualTo(8)))
                 .andExpect(jsonPath("$.evidence.length()").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)))
                 .andExpect(jsonPath("$.branches").isArray())
                 .andExpect(jsonPath("$.branches.length()").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)))
                 .andExpect(jsonPath("$.branches.length()").value(org.hamcrest.Matchers.lessThanOrEqualTo(2)))
-                .andExpect(jsonPath("$.smartBiQueries.length()").value(org.hamcrest.Matchers.lessThanOrEqualTo(8)))
+                .andExpect(jsonPath("$.smartBiQueries.length()").value(org.hamcrest.Matchers.lessThanOrEqualTo(16)))
                 .andExpect(jsonPath("$.reasoning[0].phase").value("PLAN"))
                 .andExpect(jsonPath("$.reasoning[1].phase").value("REFLECT"))
                 .andExpect(jsonPath("$.reasoning[1].branchActions").isArray());
@@ -84,10 +84,10 @@ class AttributionControllerTest {
                  "maxDepth":1,"maxQueries":4,"topN":4}
                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.overall.smartBiComparisonRate").isNumber())
+                .andExpect(jsonPath("$.overall.smartBiComparisonRate").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$.smartBiQueries[0].request.columns[0]").value("trans_rmb_amt_m"))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.columns[1]").value("trans_rmb_amt_tb"))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.filters[2].name").value("acq_mkt_ch"));
+                .andExpect(jsonPath("$.smartBiQueries[0].request.columns.length()").value(1))
+                .andExpect(jsonPath("$.smartBiQueries[0].request.filters[1].name").value("acq_mkt_ch"));
     }
 
     @Test

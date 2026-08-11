@@ -36,7 +36,7 @@ class AttributionWorkflowValidationTest {
         AttributionQueryService queries = mock(AttributionQueryService.class);
         AttributionEvidenceCalculator calculator = mock(AttributionEvidenceCalculator.class);
         AttributionReasoner reasoner = mock(AttributionReasoner.class);
-        when(queries.queryOverall(any())).thenReturn(execution("overall", null));
+        when(queries.queryOverall(any(), any())).thenReturn(execution("overall", null));
         when(calculator.overall(any(), any())).thenReturn(overall());
         when(reasoner.plan(any(), anyList(), anyInt()))
                 .thenReturn(new PlanDecision("非法计划", List.of("invented_dimension"), "测试", null));
@@ -53,8 +53,8 @@ class AttributionWorkflowValidationTest {
         AttributionEvidenceCalculator calculator = mock(AttributionEvidenceCalculator.class);
         AttributionReasoner reasoner = mock(AttributionReasoner.class);
         Evidence evidence = evidence();
-        when(queries.queryOverall(any())).thenReturn(execution("overall", null));
-        when(queries.queryDimension(any(), eq("acq_ins_ch"), anyList(), eq(1)))
+        when(queries.queryOverall(any(), any())).thenReturn(execution("overall", null));
+        when(queries.queryDimension(any(), eq("acq_ins_ch"), anyList(), eq(1), any()))
                 .thenReturn(execution("depth1", "acq_ins_ch"));
         when(calculator.overall(any(), any())).thenReturn(overall());
         when(calculator.evidence(any(), any(), any(), eq("acq_ins_ch"), eq(1), anyList(), any()))
@@ -83,10 +83,10 @@ class AttributionWorkflowValidationTest {
         Evidence first = evidence("evidence-1", "acq_ins_ch", 1, "收单机构A");
         Evidence second = evidence("evidence-2", "iss_sc_ch", 2, "英国");
         Evidence third = evidence("evidence-3", "acq_mkt_ch", 3, "欧洲市场");
-        when(queries.queryOverall(any())).thenReturn(execution("overall", null));
-        when(queries.queryDimension(any(), eq("acq_ins_ch"), anyList(), eq(1))).thenReturn(execution("depth1", "acq_ins_ch"));
-        when(queries.queryDimension(any(), eq("iss_sc_ch"), anyList(), eq(2))).thenReturn(execution("depth2", "iss_sc_ch"));
-        when(queries.queryDimension(any(), eq("acq_mkt_ch"), anyList(), eq(3))).thenReturn(execution("depth3", "acq_mkt_ch"));
+        when(queries.queryOverall(any(), any())).thenReturn(execution("overall", null));
+        when(queries.queryDimension(any(), eq("acq_ins_ch"), anyList(), eq(1), any())).thenReturn(execution("depth1", "acq_ins_ch"));
+        when(queries.queryDimension(any(), eq("iss_sc_ch"), anyList(), eq(2), any())).thenReturn(execution("depth2", "iss_sc_ch"));
+        when(queries.queryDimension(any(), eq("acq_mkt_ch"), anyList(), eq(3), any())).thenReturn(execution("depth3", "acq_mkt_ch"));
         when(calculator.overall(any(), any())).thenReturn(overall());
         when(calculator.evidence(any(), any(), any(), eq("acq_ins_ch"), eq(1), anyList(), any())).thenReturn(first);
         when(calculator.evidence(any(), any(), any(), eq("iss_sc_ch"), eq(2), anyList(), any())).thenReturn(second);
@@ -136,7 +136,11 @@ class AttributionWorkflowValidationTest {
 
     private QueryExecution execution(String stage, String dimension) {
         QueryRequest request = new QueryRequest("test", List.of(), List.of("trans_rmb_amt_m"), List.of(), null);
-        return new QueryExecution(new QueryResponse("test", List.of(), Map.of()), new QueryTrace(stage, dimension, request));
+        return new QueryExecution(
+                new QueryResponse("test", List.of(), Map.of()),
+                List.of(
+                        new QueryTrace(stage + "-current", dimension, request),
+                        new QueryTrace(stage + "-comparison", dimension, request)));
     }
 
     private BigDecimal decimal(String value) {

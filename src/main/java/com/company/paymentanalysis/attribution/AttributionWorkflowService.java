@@ -19,6 +19,7 @@ import com.company.paymentanalysis.attribution.AttributionModels.ReasoningStep;
 import com.company.paymentanalysis.attribution.AttributionModels.StopInfo;
 import com.company.paymentanalysis.attribution.AttributionModels.WorkflowStep;
 import com.company.paymentanalysis.attribution.AttributionQueryService.QueryExecution;
+import com.company.paymentanalysis.attribution.AttributionQueryService.SmartBiCall;
 import com.company.paymentanalysis.attribution.AttributionReasoner.PlanDecision;
 import com.company.paymentanalysis.attribution.AttributionReasoner.ReflectionDecision;
 import com.company.paymentanalysis.attribution.AttributionReasoner.ReportDecision;
@@ -140,14 +141,14 @@ public class AttributionWorkflowService {
     private Map<String, Object> initialize(AttributionState state) {
         emit(state, "initialize", "初始化整体变化", "RUNNING", "正在查询整体当前周期和对比周期", null);
         EffectiveRequest request = required(state, REQUEST);
-        QueryExecution execution = queryService.queryOverall(request);
+        QueryExecution execution = queryService.queryOverall(request, call -> emitSmartBi(state, call));
         OverallEvidence overall = calculator.overall(request, execution.response());
         String detail = "已查询当前周期和对比周期";
         emit(state, "initialize", "初始化整体变化", "COMPLETED", detail, null);
         return Map.of(
                 OVERALL, overall,
                 QUERY_COUNT, 1,
-                TRACES, List.of(execution.trace()),
+                TRACES, execution.traces(),
                 STEPS, appendStep(state, step("initialize", "初始化整体变化", detail)));
     }
 
@@ -191,9 +192,10 @@ public class AttributionWorkflowService {
             if (queryCount >= request.maxQueries()) {
                 break;
             }
-            QueryExecution execution = queryService.queryDimension(request, work.dimensionId(), work.pathFilters(), work.depth());
+            QueryExecution execution = queryService.queryDimension(
+                    request, work.dimensionId(), work.pathFilters(), work.depth(), call -> emitSmartBi(state, call));
             pending.add(new WorkExecution(work, execution));
-            traces.add(execution.trace());
+            traces.addAll(execution.traces());
             queryCount++;
         }
         if (pending.isEmpty()) {
@@ -483,7 +485,26 @@ public class AttributionWorkflowService {
         String observerId = state.<String>value(OBSERVER_ID).orElse("");
         WorkflowObserver observer = OBSERVERS.get(observerId);
         if (observer != null) {
-            observer.accept(new WorkflowEvent(node, name, status, detail, reasoningStep));
+            observer.accept(new WorkflowEvent(node, name, status, detail, reasoningStep, null));
+        }
+    }
+
+    private void emitSmartBi(AttributionState state, SmartBiCall call) {
+        String periodLabel = call.stage().endsWith("-current") ? "当前期" : "对比期";
+        String scope = call.dimensionCode() == null
+                ? "整体"
+                : AttributionCatalog.dimension(call.dimensionCode()).name();
+        String detail = switch (call.status()) {
+            case "RUNNING" -> "已发送 " + call.period() + " 请求，等待 SmartBI 返回";
+            case "COMPLETED" -> "SmartBI 已返回 " + call.response().data().size() + " 行数据";
+            default -> "SmartBI 调用失败：" + call.error();
+        };
+        String observerId = state.<String>value(OBSERVER_ID).orElse("");
+        WorkflowObserver observer = OBSERVERS.get(observerId);
+        if (observer != null) {
+            observer.accept(new WorkflowEvent(
+                    call.callId(), "SmartBI " + scope + "查询 · " + periodLabel,
+                    call.status(), detail, null, call));
         }
     }
 
@@ -561,7 +582,12 @@ public class AttributionWorkflowService {
     }
 
     public record WorkflowEvent(
-            String node, String name, String status, String detail, ReasoningStep reasoningStep) implements Serializable {
+            String node,
+            String name,
+            String status,
+            String detail,
+            ReasoningStep reasoningStep,
+            SmartBiCall smartBiCall) implements Serializable {
     }
 
     static final class AttributionState extends AgentState {
