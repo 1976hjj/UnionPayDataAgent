@@ -15,13 +15,8 @@ import smartbi.sdk.InvokeResult;
 @Component
 public class SmartBiClient {
 
-    private static final String USER = "admin";
-    private static final String PASSWORD = "bi15*Sm31tH";
-
     // 测试和本地环境
-    private static final String URL = "http://172.19.216.143:8080/smartbi";
     // 生产环境
-    // private static final String URL = "http://172.19.208.144:8080/smartbi";
 
     private static final String MODULE = "AugmentedDataSetForVModule";
     private static final String METHOD = "getData";
@@ -48,10 +43,10 @@ public class SmartBiClient {
         if (properties.mockEnabled()) {
             return mockQuery(request);
         }
-        ClientConnector conn = new ClientConnector(URL);
+        ClientConnector conn = new ClientConnector(properties.baseUrl());
         try {
-            if (!conn.open(USER, PASSWORD)) {
-                throw new IllegalStateException("SmartBI admin 账号登录失败");
+            if (!conn.open(properties.username(), properties.password())) {
+                throw new IllegalStateException("SmartBI 账号登录失败");
             }
 
             JSONObject queryJson = toSmartBiJson(request);

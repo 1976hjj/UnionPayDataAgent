@@ -6,5 +6,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public record SmartBiProperties(
         String datasetId,
         boolean mockEnabled,
-        String mockBaseUrl) {
+        String mockBaseUrl,
+        String baseUrl,
+        String username,
+        String password) {
 }

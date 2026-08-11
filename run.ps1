@@ -46,6 +46,13 @@ if ([string]::IsNullOrWhiteSpace($env:LLM_MOCK_ENABLED)) {
 if ([string]::IsNullOrWhiteSpace($env:SMARTBI_MOCK_ENABLED)) {
     $env:SMARTBI_MOCK_ENABLED = "true"
 }
+$allowedModels = @("deepseek-v4-flash", "glm-4.7", "glm-4.6-fp8")
+if ([string]::IsNullOrWhiteSpace($env:LLM_MODEL) -or $env:LLM_MODEL -notin $allowedModels) {
+    if (-not [string]::IsNullOrWhiteSpace($env:LLM_MODEL)) {
+        Write-Warning "LLM_MODEL '$($env:LLM_MODEL)' is no longer available; using deepseek-v4-flash."
+    }
+    $env:LLM_MODEL = "deepseek-v4-flash"
+}
 $env:DEBUG = "false"
 if ([string]::IsNullOrWhiteSpace($env:LLM_API_KEY)) {
     $savedApiKey = [Environment]::GetEnvironmentVariable("LLM_API_KEY", "User")

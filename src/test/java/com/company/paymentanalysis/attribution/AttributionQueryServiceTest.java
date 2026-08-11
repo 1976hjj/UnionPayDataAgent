@@ -28,7 +28,8 @@ class AttributionQueryServiceTest {
         SmartBiClient client = mock(SmartBiClient.class);
         when(client.query(any())).thenAnswer(invocation -> response(invocation.getArgument(0)));
         AttributionQueryService service = new AttributionQueryService(
-                client, new SmartBiProperties("dataset", false, "http://localhost"));
+                client, new SmartBiProperties(
+                        "dataset", false, "http://localhost", "http://smartbi", "user", "password"));
         EffectiveRequest request = new EffectiveRequest(
                 "trans_rmb_amt_m", "2026-07", "2026-06",
                 List.of(new DimensionFilter("acq_mkt_ch", "EQUALS", List.of("欧洲市场"))),
@@ -65,7 +66,8 @@ class AttributionQueryServiceTest {
         SmartBiClient client = mock(SmartBiClient.class);
         when(client.query(any())).thenThrow(new IllegalStateException("SmartBI timeout"));
         AttributionQueryService service = new AttributionQueryService(
-                client, new SmartBiProperties("dataset", false, "http://localhost"));
+                client, new SmartBiProperties(
+                        "dataset", false, "http://localhost", "http://smartbi", "user", "password"));
         EffectiveRequest request = new EffectiveRequest(
                 "trans_rmb_amt_m", "2026-07", "2026-06", List.of(),
                 2, 8, 4, 2, null);

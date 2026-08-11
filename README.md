@@ -167,7 +167,7 @@ Vite 开发服务器为 `http://localhost:5173`，并将 `/api` 代理到 Spring
   "maxDepth": 2,
   "maxQueries": 8,
   "topN": 5,
-  "model": "glm-4.7-flash"
+  "model": "deepseek-v4-flash"
 }
 ```
 
@@ -200,7 +200,7 @@ LLM_API_KEY=可选密钥
 ```text
 LLM_BASE_URL=https://open.bigmodel.cn
 LLM_CHAT_PATH=/api/paas/v4/chat/completions
-LLM_MODEL=glm-4-flash-250414
+LLM_MODEL=deepseek-v4-flash
 LLM_JSON_MODE=true
 LLM_THINKING_SUPPORTED=false
 LLM_THINKING_ENABLED=false

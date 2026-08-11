@@ -23,11 +23,8 @@ const INITIAL_DEPENDENCIES: DependencyStatus[] = [
 ]
 
 const FALLBACK_MODELS: ModelOption[] = [
-  { id: 'glm-4.7', displayName: 'GLM-4.7' },
-  { id: 'glm-4.7-flashx', displayName: 'GLM-4.7-FlashX' },
-  { id: 'glm-4.7-flash', displayName: 'GLM-4.7-Flash' },
-  { id: 'glm-4-flash-250414', displayName: 'GLM-4-Flash-250414' },
-  { id: 'deepseek-v3', displayName: 'DeepSeek-V3（公司）' },
+  { id: 'deepseek-v4-flash', displayName: 'DeepSeek-V4-Flash（公司）' },
+  { id: 'glm-4.7', displayName: 'GLM-4.7（本机）' },
   { id: 'glm-4.6-fp8', displayName: 'GLM-4.6-FP8（公司）' },
 ]
 const MODEL_STORAGE_KEY = 'payment-analysis:selected-model'
@@ -41,7 +38,7 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState(
     () => {
       const saved = localStorage.getItem(MODEL_STORAGE_KEY)
-      return saved && FALLBACK_MODELS.some((model) => model.id === saved) ? saved : 'glm-4.7-flash'
+      return saved && FALLBACK_MODELS.some((model) => model.id === saved) ? saved : 'deepseek-v4-flash'
     },
   )
 
