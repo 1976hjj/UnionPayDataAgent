@@ -79,7 +79,11 @@ public final class AttributionModels {
             List<MemberEvidence> members,
             MemberEvidence primaryDriver,
             BigDecimal topNCoverageRate,
-            boolean dataConsistent) implements Serializable {
+            boolean dataConsistent,
+            String dataStatus,
+            String dataNote,
+            BigDecimal currentScopeCoverageRate,
+            BigDecimal comparisonScopeCoverageRate) implements Serializable {
     }
 
     public record PathNode(

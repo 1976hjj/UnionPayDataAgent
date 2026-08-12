@@ -76,7 +76,8 @@ public class LlmAttributionReasoner implements AttributionReasoner {
                 输出字段必须且只能为 reflection、actions。actions 中每项必须且只能为 action、role、selectedEvidenceId、selectedMember、nextDimension、priority、hypothesis、reason。
                 """.formatted(maxActions, remainingQueryBudget),
                 Map.of("overall", overall, "currentEvidence", currentEvidence, "branches", branches,
-                        "candidateNextDimensions", remainingDimensions, "remainingQueryBudget", remainingQueryBudget), fallback);
+                        "candidateNextDimensions", remainingDimensions, "remainingQueryBudget", remainingQueryBudget,
+                        "dataPolicy", "NO_DATA 表示没有可用证据，不等于金额或贡献为零，禁止继续下钻；PARTIAL_DATA 只能基于已返回成员分析且必须披露覆盖限制"), fallback);
         RawReflection parsed = parse(message.content(), RawReflection.class);
         return new ReflectionDecision(requiredText(parsed.reflection(), "分支反思"),
                 parsed.actions() == null ? List.of() : parsed.actions(), message);
@@ -100,7 +101,8 @@ public class LlmAttributionReasoner implements AttributionReasoner {
                 将主因、次因、抵消因素和未决项区分表达，并说明停止原因。
                 输出字段必须且只能为 summary、findings、recommendations，后两者为字符串数组。
                 """, Map.of("overall", overall, "evidence", evidence, "primaryPath", primaryPath,
-                "branches", branches, "stop", stop), fallback);
+                "branches", branches, "stop", stop,
+                "dataPolicy", "报告必须披露 NO_DATA 和 PARTIAL_DATA；NO_DATA 不得解释为零贡献，PARTIAL_DATA 结论仅适用于 SmartBI 已返回数据"), fallback);
         AttributionReport parsed = parse(message.content(), AttributionReport.class);
         return new ReportDecision(new AttributionReport(requiredText(parsed.summary(), "归因报告摘要"),
                 parsed.findings() == null ? List.of() : List.copyOf(parsed.findings()),

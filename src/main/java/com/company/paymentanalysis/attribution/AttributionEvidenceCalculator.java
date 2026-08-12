@@ -52,6 +52,17 @@ public class AttributionEvidenceCalculator {
             int depth,
             List<DimensionFilter> pathFilters,
             QueryResponse response) {
+        boolean hasCurrentPeriod = response.data().stream()
+                .anyMatch(row -> request.currentPeriod().equals(text(row.get(PERIOD_FIELD))));
+        boolean hasComparisonPeriod = response.data().stream()
+                .anyMatch(row -> request.comparisonPeriod().equals(text(row.get(PERIOD_FIELD))));
+        if (!hasCurrentPeriod || !hasComparisonPeriod) {
+            String status = !hasCurrentPeriod && !hasComparisonPeriod ? "NO_DATA" : "PARTIAL_DATA";
+            String note = !hasCurrentPeriod && !hasComparisonPeriod
+                    ? "当前期和对比期均未返回数据，未进行该分支归因"
+                    : (!hasCurrentPeriod ? "当前期未返回数据" : "对比期未返回数据") + "，未将缺失数据推断为零";
+            return unavailableEvidence(hypothesis, dimensionId, depth, pathFilters, status, note);
+        }
         Map<String, Map<String, Map<String, Object>>> members = new LinkedHashMap<>();
         for (Map<String, Object> row : response.data()) {
             String member = text(row.get(dimensionId));
@@ -61,8 +72,10 @@ public class AttributionEvidenceCalculator {
 
         List<MemberEvidence> calculated = new ArrayList<>();
         for (Map.Entry<String, Map<String, Map<String, Object>>> entry : members.entrySet()) {
-            BigDecimal current = metric(entry.getValue(), request.currentPeriod(), request.metricId());
-            BigDecimal comparison = metric(entry.getValue(), request.comparisonPeriod(), request.metricId());
+            BigDecimal current = optionalMetric(entry.getValue(), request.currentPeriod(), request.metricId());
+            BigDecimal comparison = optionalMetric(entry.getValue(), request.comparisonPeriod(), request.metricId());
+            current = current == null ? BigDecimal.ZERO : current;
+            comparison = comparison == null ? BigDecimal.ZERO : comparison;
             BigDecimal change = current.subtract(comparison);
             BigDecimal contribution = overall.changeAmount().signum() == 0
                     ? BigDecimal.ZERO
@@ -110,9 +123,12 @@ public class AttributionEvidenceCalculator {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         boolean consistent = close(groupedCurrent, overall.currentValue())
                 && close(groupedComparison, overall.comparisonValue());
-        if (!consistent) {
-            throw new IllegalStateException("维度“" + dimensionId + "”汇总与整体口径不一致");
-        }
+        BigDecimal currentCoverage = coverage(groupedCurrent, overall.currentValue());
+        BigDecimal comparisonCoverage = coverage(groupedComparison, overall.comparisonValue());
+        String status = consistent ? "VALID" : "PARTIAL_DATA";
+        String note = consistent
+                ? "维度成员汇总与当前分析范围一致"
+                : "维度成员汇总未完全覆盖当前分析范围；仅基于 SmartBI 已返回数据分析";
         BigDecimal coverage = top.stream()
                 .filter(MemberEvidence::alignedWithOverall)
                 .map(MemberEvidence::contributionRate)
@@ -128,7 +144,24 @@ public class AttributionEvidenceCalculator {
                 top,
                 driver,
                 coverage,
-                true);
+                consistent,
+                status,
+                note,
+                currentCoverage,
+                comparisonCoverage);
+    }
+
+    private Evidence unavailableEvidence(
+            String hypothesis,
+            String dimensionId,
+            int depth,
+            List<DimensionFilter> pathFilters,
+            String status,
+            String note) {
+        return new Evidence(
+                "evidence-" + UUID.randomUUID(), null, depth, hypothesis, dimensionId,
+                AttributionCatalog.dimension(dimensionId).name(), List.copyOf(pathFilters), List.of(), null,
+                BigDecimal.ZERO, false, status, note, null, null);
     }
 
     private Map<String, Map<String, Object>> indexBy(List<Map<String, Object>> rows, String key) {
@@ -166,6 +199,13 @@ public class AttributionEvidenceCalculator {
         return comparison.signum() == 0
                 ? null
                 : change.multiply(HUNDRED).divide(comparison, 4, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal coverage(BigDecimal grouped, BigDecimal scope) {
+        if (scope.signum() == 0) {
+            return grouped.signum() == 0 ? HUNDRED : null;
+        }
+        return grouped.multiply(HUNDRED).divide(scope, 4, RoundingMode.HALF_UP);
     }
 
     private boolean aligned(BigDecimal memberChange, BigDecimal overallChange) {

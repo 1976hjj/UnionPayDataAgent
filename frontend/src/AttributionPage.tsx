@@ -50,9 +50,13 @@ type Evidence = {
   dimensionName: string
   pathFilters: { dimensionId: string; operator: string; values: string[] }[]
   members: MemberEvidence[]
-  primaryDriver: MemberEvidence
+  primaryDriver: MemberEvidence | null
   topNCoverageRate: number
   dataConsistent: boolean
+  dataStatus: 'VALID' | 'PARTIAL_DATA' | 'NO_DATA'
+  dataNote: string
+  currentScopeCoverageRate: number | null
+  comparisonScopeCoverageRate: number | null
 }
 type PathNode = {
   depth: number
@@ -255,19 +259,24 @@ function EvidenceCard({ evidence, periods }: { evidence: Evidence; periods: [str
         </div>
         <div className="evidence-badges">
           <span>TopN覆盖 {formatPercent(evidence.topNCoverageRate)}</span>
-          <span className={evidence.dataConsistent ? 'verified' : 'warning'}>{evidence.dataConsistent ? '数据一致' : '数据异常'}</span>
+          {evidence.currentScopeCoverageRate !== null && <span>当前期范围覆盖 {formatPercent(evidence.currentScopeCoverageRate)}</span>}
+          {evidence.comparisonScopeCoverageRate !== null && <span>对比期范围覆盖 {formatPercent(evidence.comparisonScopeCoverageRate)}</span>}
+          <span className={evidence.dataConsistent ? 'verified' : 'warning'}>
+            {evidence.dataStatus === 'NO_DATA' ? '无可用数据' : evidence.dataConsistent ? '数据一致' : '部分覆盖'}
+          </span>
         </div>
       </header>
       {evidence.pathFilters.length > 0 && (
         <div className="evidence-scope">分析范围：{evidence.pathFilters.map((filter) => `${filter.dimensionId}=${filter.values.join('/')}`).join(' · ')}</div>
       )}
+      {!evidence.dataConsistent && <div className="evidence-scope">数据说明：{evidence.dataNote}</div>}
       <EvidenceChart evidence={evidence} />
       <div className="comparison-table-wrap">
         <table className="comparison-table attribution-evidence-table">
           <thead><tr><th>排名 / 成员</th><th className="numeric">{comparisonPeriod}</th><th className="numeric">{currentPeriod}</th><th className="numeric">变化量</th><th className="numeric">变化率</th><th className="numeric">贡献度</th></tr></thead>
           <tbody>{evidence.members.map((member) => (
-            <tr className={member.memberValue === evidence.primaryDriver.memberValue ? 'primary-driver-row' : ''} key={member.memberValue}>
-              <td><b>#{member.rank}</b> {member.memberValue}{member.memberValue === evidence.primaryDriver.memberValue && <em>主驱动</em>}</td>
+            <tr className={member.memberValue === evidence.primaryDriver?.memberValue ? 'primary-driver-row' : ''} key={member.memberValue}>
+              <td><b>#{member.rank}</b> {member.memberValue}{member.memberValue === evidence.primaryDriver?.memberValue && <em>主驱动</em>}</td>
               <td className="numeric muted-value">{formatNumber(member.comparisonValue)}</td>
               <td className="numeric">{formatNumber(member.currentValue)}</td>
               <td className={`numeric change-cell ${member.direction.toLowerCase()}`}>{formatSigned(member.changeAmount)}</td>

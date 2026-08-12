@@ -124,14 +124,16 @@ class AttributionWorkflowValidationTest {
         MemberEvidence driver = new MemberEvidence(1, "收单机构A", decimal("40"), decimal("60"), decimal("-20"),
                 decimal("-33.3333"), decimal("100"), "DOWN", true);
         return new Evidence("evidence-1", "root", 1, "探索机构", "acq_ins_ch", "收单机构名称",
-                List.of(), List.of(driver), driver, decimal("100"), true);
+                List.of(), List.of(driver), driver, decimal("100"), true,
+                "VALID", "维度成员汇总与当前分析范围一致", decimal("100"), decimal("100"));
     }
 
     private Evidence evidence(String id, String dimension, int depth, String member) {
         MemberEvidence driver = new MemberEvidence(1, member, decimal("40"), decimal("60"), decimal("-20"),
                 decimal("-33.3333"), decimal("100"), "DOWN", true);
         return new Evidence(id, "root", depth, "test", dimension, dimension,
-                List.of(), List.of(driver), driver, decimal("100"), true);
+                List.of(), List.of(driver), driver, decimal("100"), true,
+                "VALID", "维度成员汇总与当前分析范围一致", decimal("100"), decimal("100"));
     }
 
     private QueryExecution execution(String stage, String dimension) {

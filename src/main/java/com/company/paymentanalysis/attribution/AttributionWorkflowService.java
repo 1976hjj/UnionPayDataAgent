@@ -7,6 +7,7 @@ import static org.bsc.langgraph4j.action.AsyncNodeAction.node_async;
 
 import com.company.paymentanalysis.attribution.AttributionCatalog.AttributionDimension;
 import com.company.paymentanalysis.attribution.AttributionModels.AnalysisBranch;
+import com.company.paymentanalysis.attribution.AttributionModels.AttributionReport;
 import com.company.paymentanalysis.attribution.AttributionModels.AttributionResponse;
 import com.company.paymentanalysis.attribution.AttributionModels.BranchAction;
 import com.company.paymentanalysis.attribution.AttributionModels.DimensionFilter;
@@ -223,14 +224,21 @@ public class AttributionWorkflowService {
                     work.pathFilters(), pending.execution().response());
             Evidence evidence = new Evidence(
                     raw.id(), work.branchId(), raw.depth(), raw.hypothesis(), raw.dimensionId(), raw.dimensionName(),
-                    raw.pathFilters(), raw.members(), raw.primaryDriver(), raw.topNCoverageRate(), raw.dataConsistent());
+                    raw.pathFilters(), raw.members(), raw.primaryDriver(), raw.topNCoverageRate(), raw.dataConsistent(),
+                    raw.dataStatus(), raw.dataNote(), raw.currentScopeCoverageRate(), raw.comparisonScopeCoverageRate());
             allEvidence.add(evidence);
             currentEvidence.add(evidence);
             if (!"root".equals(work.branchId())) {
-                branches = changeBranch(branches, work.branchId(), "ANALYZED", null, 1);
+                String branchStatus = "NO_DATA".equals(evidence.dataStatus()) ? "NO_DATA" : "ANALYZED";
+                String stopReason = "NO_DATA".equals(evidence.dataStatus()) ? evidence.dataNote() : null;
+                branches = changeBranch(branches, work.branchId(), branchStatus, stopReason, 1);
             }
         }
-        String detail = "Java 已完成变化额、贡献度、排序和一致性校验";
+        long unavailable = currentEvidence.stream().filter(item -> "NO_DATA".equals(item.dataStatus())).count();
+        long partial = currentEvidence.stream().filter(item -> "PARTIAL_DATA".equals(item.dataStatus())).count();
+        String detail = "Java 已完成变化额、贡献度、排序和范围覆盖校验"
+                + (unavailable > 0 ? "；" + unavailable + " 个分支无数据，已停止该分支" : "")
+                + (partial > 0 ? "；" + partial + " 个分支仅按已返回数据分析" : "");
         emit(state, "computeEvidence", "计算归因证据", "COMPLETED", detail, null);
         return Map.of(
                 EVIDENCE, List.copyOf(allEvidence),
@@ -355,7 +363,7 @@ public class AttributionWorkflowService {
             return Optional.empty();
         }
         Evidence evidence = evidenceById.get(action.selectedEvidenceId());
-        if (evidence == null || evidence.depth() >= request.maxDepth()) {
+        if (evidence == null || !"VALID".equals(evidence.dataStatus()) || evidence.depth() >= request.maxDepth()) {
             return Optional.empty();
         }
         MemberEvidence member = evidence.members().stream()
@@ -400,21 +408,37 @@ public class AttributionWorkflowService {
         List<AnalysisBranch> branches = list(state, BRANCHES);
         List<PathNode> path = primaryPath(branches, list(state, EVIDENCE));
         ReportDecision report = reasoner.report(request, required(state, OVERALL), list(state, EVIDENCE), path, branches, stop);
+        List<String> dataLimitations = this.<Evidence>list(state, EVIDENCE).stream()
+                .filter(item -> !"VALID".equals(item.dataStatus()))
+                .map(item -> item.dimensionName() + "（第 " + item.depth() + " 层）：" + item.dataNote())
+                .distinct()
+                .toList();
+        AttributionReport finalReport = appendDataLimitations(report.report(), dataLimitations);
         List<ReasoningStep> reasoning = new ArrayList<>(list(state, REASONING));
-        reasoning.add(new ReasoningStep(0, "REPORT", report.report().summary(), List.of(), null, null, null,
+        reasoning.add(new ReasoningStep(0, "REPORT", finalReport.summary(), List.of(), null, null, null,
                 "根据已验证 Evidence 组织报告", List.of(), report.llmMessage()));
         List<WorkflowStep> steps = appendStep(state, step("generateReport", "生成归因报告", stop.detail()));
         AttributionResponse response = new AttributionResponse(
                 "completed", request.metricId(), AttributionCatalog.metricName(request.metricId()), request.currentPeriod(),
                 request.comparisonPeriod(), required(state, OVERALL), list(state, EVIDENCE), path, branches,
-                List.copyOf(reasoning), stop, report.report(), number(state, QUERY_COUNT),
+                List.copyOf(reasoning), stop, finalReport, number(state, QUERY_COUNT),
                 "LangGraph4j → " + reasoner.engineLabel(request.model()) + " → SmartBI Client", steps, list(state, TRACES));
         emit(state, "generateReport", "生成归因报告", "COMPLETED", stop.detail(), reasoning.get(reasoning.size() - 1));
         return Map.of(RESULT, response, REASONING, List.copyOf(reasoning), STEPS, steps);
     }
 
+    private AttributionReport appendDataLimitations(AttributionReport report, List<String> limitations) {
+        if (limitations.isEmpty()) {
+            return report;
+        }
+        List<String> findings = new ArrayList<>(report.findings());
+        limitations.forEach(item -> findings.add("数据限制：" + item));
+        return new AttributionReport(report.summary(), List.copyOf(findings), report.recommendations());
+    }
+
     private boolean hasInformationGain(Evidence evidence) {
-        return evidence.members().size() >= policy.minimumDistinctMembers()
+        return "VALID".equals(evidence.dataStatus())
+                && evidence.members().size() >= policy.minimumDistinctMembers()
                 && evidence.primaryDriver() != null
                 && evidence.primaryDriver().alignedWithOverall()
                 && evidence.primaryDriver().contributionRate().abs().compareTo(policy.minAlignedContributionRate()) >= 0;
