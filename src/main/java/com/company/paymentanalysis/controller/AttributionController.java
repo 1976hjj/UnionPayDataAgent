@@ -5,6 +5,8 @@ import com.company.paymentanalysis.attribution.AttributionCatalog.AttributionDim
 import com.company.paymentanalysis.attribution.AttributionPolicyProperties;
 import com.company.paymentanalysis.attribution.AttributionModels.AttributionRequest;
 import com.company.paymentanalysis.attribution.AttributionModels.AttributionResponse;
+import com.company.paymentanalysis.attribution.AttributionModels.AnalysisLevel;
+import com.company.paymentanalysis.attribution.AttributionModels.AnalysisPlan;
 import com.company.paymentanalysis.attribution.AttributionModels.DimensionFilter;
 import com.company.paymentanalysis.attribution.AttributionModels.EffectiveRequest;
 import com.company.paymentanalysis.attribution.AttributionWorkflowService;
@@ -17,6 +19,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.YearMonth;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -154,6 +157,7 @@ public class AttributionController {
                 .map(filter -> new DimensionFilter(
                         filter.dimensionId(), filter.operator().toUpperCase(), filter.values()))
                 .toList();
+        AnalysisPlan analysisPlan = validateAnalysisPlan(request.analysisPlan(), filters, maxDepth, maxQueries);
         String model;
         try {
             model = llmClient.resolveSelection(request.model());
@@ -165,11 +169,44 @@ public class AttributionController {
                 current.toString(),
                 comparison.toString(),
                 filters,
+                analysisPlan,
                 maxDepth,
                 maxQueries,
                 topN,
                 maxBranches,
                 model);
+    }
+
+    private AnalysisPlan validateAnalysisPlan(
+            AnalysisPlan plan, List<DimensionFilter> filters, int maxDepth, int maxQueries) {
+        if (plan == null || plan.levels().isEmpty()) return null;
+        if (plan.levels().size() > maxDepth) {
+            throw badRequest("最大下钻深度不能小于模板层数");
+        }
+        if (plan.levels().get(0).dimensionIds().size() + 1 > maxQueries) {
+            throw badRequest("查询次数不足以执行模板第一层全部并行维度");
+        }
+        Set<String> filterIds = filters.stream().map(DimensionFilter::dimensionId)
+                .collect(java.util.stream.Collectors.toSet());
+        LinkedHashSet<String> used = new LinkedHashSet<>();
+        java.util.ArrayList<AnalysisLevel> levels = new java.util.ArrayList<>();
+        for (int index = 0; index < plan.levels().size(); index++) {
+            AnalysisLevel level = plan.levels().get(index);
+            if (level == null || level.level() != index + 1 || level.dimensionIds().isEmpty()
+                    || level.dimensionIds().size() > 5) {
+                throw badRequest("模板层级必须连续且每层包含1至5个维度");
+            }
+            for (String dimensionId : level.dimensionIds()) {
+                if (!AttributionCatalog.isDimension(dimensionId) || !used.add(dimensionId)) {
+                    throw badRequest("模板包含非法或重复维度");
+                }
+                if (filterIds.contains(dimensionId)) {
+                    throw badRequest("过滤维度不能同时作为模板下钻维度");
+                }
+            }
+            levels.add(new AnalysisLevel(level.level(), level.dimensionIds()));
+        }
+        return new AnalysisPlan(List.copyOf(levels), plan.continueExploration());
     }
 
     private YearMonth period(String value, String name) {

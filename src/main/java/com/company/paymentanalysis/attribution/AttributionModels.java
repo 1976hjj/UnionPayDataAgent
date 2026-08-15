@@ -16,6 +16,7 @@ public final class AttributionModels {
             String currentPeriod,
             String comparisonPeriod,
             List<DimensionFilter> dimensionFilters,
+            AnalysisPlan analysisPlan,
             Integer maxDepth,
             Integer maxQueries,
             Integer topN,
@@ -25,6 +26,14 @@ public final class AttributionModels {
         public AttributionRequest {
             dimensionFilters = dimensionFilters == null ? List.of() : List.copyOf(dimensionFilters);
         }
+
+        public AttributionRequest(
+                String metricId, String currentPeriod, String comparisonPeriod,
+                List<DimensionFilter> dimensionFilters, Integer maxDepth, Integer maxQueries,
+                Integer topN, Integer maxBranches, String model) {
+            this(metricId, currentPeriod, comparisonPeriod, dimensionFilters, null,
+                    maxDepth, maxQueries, topN, maxBranches, model);
+        }
     }
 
     public record EffectiveRequest(
@@ -32,11 +41,32 @@ public final class AttributionModels {
             String currentPeriod,
             String comparisonPeriod,
             List<DimensionFilter> dimensionFilters,
+            AnalysisPlan analysisPlan,
             int maxDepth,
             int maxQueries,
             int topN,
             int maxBranches,
             String model) implements Serializable {
+
+        public EffectiveRequest(
+                String metricId, String currentPeriod, String comparisonPeriod,
+                List<DimensionFilter> dimensionFilters, int maxDepth, int maxQueries,
+                int topN, int maxBranches, String model) {
+            this(metricId, currentPeriod, comparisonPeriod, dimensionFilters, null,
+                    maxDepth, maxQueries, topN, maxBranches, model);
+        }
+    }
+
+    public record AnalysisPlan(List<AnalysisLevel> levels, boolean continueExploration) implements Serializable {
+        public AnalysisPlan {
+            levels = levels == null ? List.of() : List.copyOf(levels);
+        }
+    }
+
+    public record AnalysisLevel(int level, List<String> dimensionIds) implements Serializable {
+        public AnalysisLevel {
+            dimensionIds = dimensionIds == null ? List.of() : List.copyOf(dimensionIds);
+        }
     }
 
     public record DimensionFilter(

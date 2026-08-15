@@ -7,9 +7,13 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.company.paymentanalysis.attribution.AttributionModels.BranchAction;
+import com.company.paymentanalysis.attribution.AttributionModels.AnalysisLevel;
+import com.company.paymentanalysis.attribution.AttributionModels.AnalysisPlan;
 import com.company.paymentanalysis.attribution.AttributionModels.EffectiveRequest;
 import com.company.paymentanalysis.attribution.AttributionModels.Evidence;
 import com.company.paymentanalysis.attribution.AttributionModels.MemberEvidence;
@@ -30,6 +34,96 @@ class AttributionWorkflowValidationTest {
 
     private static final AttributionPolicyProperties POLICY = new AttributionPolicyProperties(
             3, 2, 3, 0, new BigDecimal("10"), 1);
+
+    @Test
+    void executesConfirmedTemplateFirstLayerAndStopsWithoutAutonomousPlanning() throws Exception {
+        AttributionQueryService queries = mock(AttributionQueryService.class);
+        AttributionEvidenceCalculator calculator = mock(AttributionEvidenceCalculator.class);
+        AttributionReasoner reasoner = mock(AttributionReasoner.class);
+        Evidence first = evidence("template-1", "kpi_ind", 1, "成功");
+        Evidence second = evidence("template-2", "acq_mkt_ch", 1, "境内");
+        when(queries.queryOverall(any(), any())).thenReturn(execution("overall", null));
+        when(queries.queryDimension(any(), eq("kpi_ind"), anyList(), eq(1), any())).thenReturn(execution("depth1", "kpi_ind"));
+        when(queries.queryDimension(any(), eq("acq_mkt_ch"), anyList(), eq(1), any())).thenReturn(execution("depth1", "acq_mkt_ch"));
+        when(calculator.overall(any(), any())).thenReturn(overall());
+        when(calculator.evidence(any(), any(), any(), eq("kpi_ind"), eq(1), anyList(), any())).thenReturn(first);
+        when(calculator.evidence(any(), any(), any(), eq("acq_mkt_ch"), eq(1), anyList(), any())).thenReturn(second);
+        when(reasoner.report(any(), any(), anyList(), anyList(), anyList(), any()))
+                .thenReturn(new ReportDecision(new AttributionModels.AttributionReport("模板报告", List.of(), List.of()), null));
+
+        AttributionWorkflowService workflow = new AttributionWorkflowService(queries, calculator, reasoner, POLICY);
+        var response = workflow.analyze(templateRequest(List.of(
+                new AnalysisLevel(1, List.of("kpi_ind", "acq_mkt_ch"))), false, 3));
+
+        assertThat(response.queryCount()).isEqualTo(3);
+        assertThat(response.evidence()).extracting(Evidence::dimensionId)
+                .containsExactly("kpi_ind", "acq_mkt_ch");
+        assertThat(response.stop().code()).isEqualTo("TEMPLATE_COMPLETED");
+        verify(reasoner, never()).plan(any(), anyList(), anyInt());
+        verify(reasoner, never()).reflect(any(), any(), anyList(), anyList(), anyList(), anyInt(), anyInt());
+    }
+
+    @Test
+    void constrainsTheNextBranchToTheConfiguredTemplateLevel() throws Exception {
+        AttributionQueryService queries = mock(AttributionQueryService.class);
+        AttributionEvidenceCalculator calculator = mock(AttributionEvidenceCalculator.class);
+        AttributionReasoner reasoner = mock(AttributionReasoner.class);
+        Evidence first = evidence("template-depth-1", "acq_ins_ch", 1, "收单机构A");
+        Evidence second = evidence("template-depth-2", "iss_sc_ch", 2, "英国");
+        when(queries.queryOverall(any(), any())).thenReturn(execution("overall", null));
+        when(queries.queryDimension(any(), eq("acq_ins_ch"), anyList(), eq(1), any())).thenReturn(execution("depth1", "acq_ins_ch"));
+        when(queries.queryDimension(any(), eq("iss_sc_ch"), anyList(), eq(2), any())).thenReturn(execution("depth2", "iss_sc_ch"));
+        when(calculator.overall(any(), any())).thenReturn(overall());
+        when(calculator.evidence(any(), any(), any(), eq("acq_ins_ch"), eq(1), anyList(), any())).thenReturn(first);
+        when(calculator.evidence(any(), any(), any(), eq("iss_sc_ch"), eq(2), anyList(), any())).thenReturn(second);
+        when(reasoner.reflect(any(), any(), anyList(), anyList(),
+                org.mockito.ArgumentMatchers.argThat(items -> items.size() == 1 && "iss_sc_ch".equals(items.get(0).id())),
+                anyInt(), anyInt())).thenReturn(new ReflectionDecision("按模板进入第二层", List.of(new BranchAction(
+                        "EXPAND", "MAIN", first.id(), "收单机构A", "iss_sc_ch", "HIGH", "模板第二层", "测试")), null));
+        when(reasoner.report(any(), any(), anyList(), anyList(), anyList(), any()))
+                .thenReturn(new ReportDecision(new AttributionModels.AttributionReport("模板报告", List.of(), List.of()), null));
+
+        AttributionWorkflowService workflow = new AttributionWorkflowService(queries, calculator, reasoner, POLICY);
+        var response = workflow.analyze(templateRequest(List.of(
+                new AnalysisLevel(1, List.of("acq_ins_ch")),
+                new AnalysisLevel(2, List.of("iss_sc_ch"))), false, 3));
+
+        assertThat(response.queryCount()).isEqualTo(3);
+        assertThat(response.evidence()).extracting(Evidence::dimensionId)
+                .containsExactly("acq_ins_ch", "iss_sc_ch");
+        assertThat(response.stop().code()).isEqualTo("TEMPLATE_COMPLETED");
+        verify(reasoner, never()).plan(any(), anyList(), anyInt());
+    }
+
+    @Test
+    void returnsToAutonomousExplorationAfterTheConfiguredLevels() throws Exception {
+        AttributionQueryService queries = mock(AttributionQueryService.class);
+        AttributionEvidenceCalculator calculator = mock(AttributionEvidenceCalculator.class);
+        AttributionReasoner reasoner = mock(AttributionReasoner.class);
+        Evidence first = evidence("hybrid-depth-1", "acq_ins_ch", 1, "收单机构A");
+        Evidence second = evidence("hybrid-depth-2", "iss_sc_ch", 2, "英国");
+        when(queries.queryOverall(any(), any())).thenReturn(execution("overall", null));
+        when(queries.queryDimension(any(), eq("acq_ins_ch"), anyList(), eq(1), any())).thenReturn(execution("depth1", "acq_ins_ch"));
+        when(queries.queryDimension(any(), eq("iss_sc_ch"), anyList(), eq(2), any())).thenReturn(execution("depth2", "iss_sc_ch"));
+        when(calculator.overall(any(), any())).thenReturn(overall());
+        when(calculator.evidence(any(), any(), any(), eq("acq_ins_ch"), eq(1), anyList(), any())).thenReturn(first);
+        when(calculator.evidence(any(), any(), any(), eq("iss_sc_ch"), eq(2), anyList(), any())).thenReturn(second);
+        when(reasoner.reflect(any(), any(), anyList(), anyList(),
+                org.mockito.ArgumentMatchers.argThat(items -> items.stream().anyMatch(item -> "iss_sc_ch".equals(item.id()))),
+                anyInt(), anyInt())).thenReturn(new ReflectionDecision("模板后自由探索", List.of(new BranchAction(
+                        "EXPAND", "MAIN", first.id(), "收单机构A", "iss_sc_ch", "HIGH", "自由探索", "测试")), null));
+        when(reasoner.report(any(), any(), anyList(), anyList(), anyList(), any()))
+                .thenReturn(new ReportDecision(new AttributionModels.AttributionReport("混合报告", List.of(), List.of()), null));
+
+        AttributionWorkflowService workflow = new AttributionWorkflowService(queries, calculator, reasoner, POLICY);
+        var response = workflow.analyze(templateRequest(
+                List.of(new AnalysisLevel(1, List.of("acq_ins_ch"))), true, 2));
+
+        assertThat(response.evidence()).extracting(Evidence::dimensionId)
+                .containsExactly("acq_ins_ch", "iss_sc_ch");
+        assertThat(response.stop().code()).isEqualTo("MAX_DEPTH");
+        verify(reasoner, never()).plan(any(), anyList(), anyInt());
+    }
 
     @Test
     void rejectsAnInventedDimensionFromThePlanner() throws Exception {
@@ -114,6 +208,11 @@ class AttributionWorkflowValidationTest {
 
     private EffectiveRequest deepRequest() {
         return new EffectiveRequest("trans_rmb_amt_m", "2026-07", "2026-06", List.of(), 3, 8, 5, 2, null);
+    }
+
+    private EffectiveRequest templateRequest(List<AnalysisLevel> levels, boolean continueExploration, int maxDepth) {
+        return new EffectiveRequest("trans_rmb_amt_m", "2026-07", "2026-06", List.of(),
+                new AnalysisPlan(levels, continueExploration), maxDepth, 8, 5, 3, null);
     }
 
     private OverallEvidence overall() {

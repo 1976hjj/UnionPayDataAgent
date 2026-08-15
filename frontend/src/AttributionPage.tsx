@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
+import AttributionTemplateChat from './AttributionTemplateChat'
 
 type Metric = { id: string; name: string }
 type Dimension = {
@@ -20,7 +21,21 @@ type Limits = {
   hardMaxBranches: number
 }
 type AttributionMetadata = { metrics: Metric[]; dimensions: Dimension[]; limits: Limits }
-type FilterDraft = { key: number; dimensionId: string; operator: 'EQUALS' | 'IN'; value: string }
+type FilterOperator = 'EQUALS' | 'IN' | 'NOT_EQUALS' | 'NOT_IN' | 'GREATER' | 'GREATER_EQUALS' | 'LESS' | 'LESS_EQUALS' | 'BETWEEN' | 'CONTAINS'
+type FilterDraft = { key: number; dimensionId: string; operator: FilterOperator; value: string }
+type TemplateInput = {
+  metricId: string
+  currentPeriod: string
+  comparisonPeriod: string
+  status: 'DRAFT' | 'CONFIRMED'
+  filters: { dimensionId: string; operator: FilterOperator; values: string[] }[]
+  levels: { level: number; dimensions: { dimensionId: string }[] }[]
+  continuationMode: 'AUTO' | 'STOP'
+}
+type AnalysisPlan = {
+  levels: { level: number; dimensionIds: string[] }[]
+  continueExploration: boolean
+}
 type OverallEvidence = {
   currentValue: number
   comparisonValue: number
@@ -390,6 +405,8 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
   const [topN, setTopN] = useState(5)
   const [maxBranches, setMaxBranches] = useState(2)
   const [filters, setFilters] = useState<FilterDraft[]>([])
+  const [analysisPlan, setAnalysisPlan] = useState<AnalysisPlan | null>(null)
+  const [templateStatus, setTemplateStatus] = useState<'DRAFT' | 'CONFIRMED' | null>(null)
   const [pending, setPending] = useState(false)
   const [streamEvents, setStreamEvents] = useState<WorkflowEvent[]>([])
   const [streamFailure, setStreamFailure] = useState('')
@@ -431,10 +448,36 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
     setFilters((items) => items.map((item) => item.key === key ? { ...item, ...patch } : item))
   }
 
-  async function submit(event: FormEvent) {
-    event.preventDefault()
+  function applyTemplate(template: TemplateInput) {
+    if (template.metricId) setMetricId(template.metricId)
+    if (template.currentPeriod) setCurrentPeriod(template.currentPeriod)
+    if (template.comparisonPeriod) setComparisonPeriod(template.comparisonPeriod)
+    setFilters((template.filters ?? []).map((filter, index) => ({
+      key: Date.now() + index,
+      dimensionId: filter.dimensionId,
+      operator: filter.operator,
+      value: filter.values.join(','),
+    })))
+    setTemplateStatus(template.status)
+    if (template.status !== 'CONFIRMED' || !template.levels?.length) {
+      setAnalysisPlan(null)
+      return
+    }
+    setAnalysisPlan({
+      levels: template.levels.map((level) => ({
+        level: level.level,
+        dimensionIds: level.dimensions.map((dimension) => dimension.dimensionId),
+      })),
+      continueExploration: template.continuationMode === 'AUTO',
+    })
+    setMaxDepth((value) => Math.max(value, template.levels.length))
+  }
+
+  async function submit(event?: FormEvent) {
+    event?.preventDefault()
     setCopied(false)
     if (!metricId || !currentPeriod || !comparisonPeriod) return setError('请完整填写度量与对比周期')
+    if (templateStatus === 'DRAFT') return setError('请先确认归因模板再开始分析')
     if (currentPeriod <= comparisonPeriod) return setError('当前周期必须晚于对比周期')
     const emptyFilter = filters.find((filter) => !filter.value.trim())
     if (emptyFilter) return setError('维度过滤值不能为空')
@@ -451,6 +494,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
           metricId,
           currentPeriod,
           comparisonPeriod,
+          analysisPlan,
           maxDepth,
           maxQueries,
           topN,
@@ -459,7 +503,9 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
           dimensionFilters: filters.map((filter) => ({
             dimensionId: filter.dimensionId,
             operator: filter.operator,
-            values: filter.operator === 'IN' ? filter.value.split(',').map((value) => value.trim()).filter(Boolean) : [filter.value.trim()],
+            values: ['IN', 'NOT_IN', 'BETWEEN'].includes(filter.operator)
+              ? filter.value.split(/[,，]/).map((value) => value.trim()).filter(Boolean)
+              : [filter.value.trim()],
           })),
         }),
       })
@@ -530,18 +576,8 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
 
   return (
     <section className="attribution-page">
-      <div className="page-heading">
-        <div><p>支付数据智能分析</p><h1>智能归因分析</h1><span>由大模型提出假设并动态选择下钻方向，所有数值由 Java 基于 SmartBI Evidence 确定性计算</span></div>
-        <div className="mock-badge"><i /> LangGraph4j · Mock SmartBI</div>
-      </div>
-
-      <form className="workspace-card attribution-form" onSubmit={submit} noValidate>
-        <div className="card-title"><div><span className="step-number">1</span><div><h2>设置归因任务</h2><p>选择度量与两个周期；维度由 Agent 在白名单内动态探索</p></div></div></div>
-        <div className="attribution-config attribution-mvp-config">
-          <div className="config-row"><label htmlFor="analysis-metric">分析度量 <b>*</b></label><select id="analysis-metric" value={metricId} onChange={(event) => setMetricId(event.target.value)} disabled={!metadata}>{metadata?.metrics.map((metric) => <option value={metric.id} key={metric.id}>{metric.name}</option>) ?? <option>加载中…</option>}</select></div>
-          <div className="config-row"><label htmlFor="current-period">当前周期 <b>*</b></label><input id="current-period" type="month" value={currentPeriod} onChange={(event) => { setCurrentPeriod(event.target.value); setComparisonPeriod(previousMonth(event.target.value)) }} /></div>
-          <div className="config-row"><label htmlFor="comparison-period">对比周期 <b>*</b></label><input id="comparison-period" type="month" value={comparisonPeriod} onChange={(event) => setComparisonPeriod(event.target.value)} /></div>
-          <div className="config-divider" />
+      <AttributionTemplateChat selectedModel={selectedModel} onTemplateChange={applyTemplate} executionControls={
+        <div className="template-execution-controls attribution-mvp-config">
           <div className="attribution-limit-grid">
             <label>每轮最大分支 <input type="number" min="1" max={limits.hardMaxBranches} value={maxBranches} onChange={(event) => setMaxBranches(Number(event.target.value))} /><small>最多 {limits.hardMaxBranches} 个分支</small></label>
             <label>最大下钻深度 <input type="number" min="1" max={limits.hardMaxDepth} value={maxDepth} onChange={(event) => setMaxDepth(Number(event.target.value))} /><small>最多 {limits.hardMaxDepth} 层</small></label>
@@ -549,20 +585,20 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
             <label>每维展示 TopN <input type="number" min="1" max={limits.hardTopN} value={topN} onChange={(event) => setTopN(Number(event.target.value))} /><small>最多 {limits.hardTopN} 项</small></label>
           </div>
           <div className="config-divider" />
-          <div className="filter-heading"><div><strong>业务范围过滤</strong><span>可选；过滤字段不会再被 Agent 用作下钻维度</span></div><button type="button" onClick={addFilter} disabled={!metadata}>+ 添加条件</button></div>
+          <div className="filter-heading"><strong>维度过滤</strong><button type="button" onClick={addFilter} disabled={!metadata}>+ 添加条件</button></div>
           {filters.map((filter) => (
             <div className="attribution-filter-row" key={filter.key}>
               <select aria-label="过滤维度" value={filter.dimensionId} onChange={(event) => updateFilter(filter.key, { dimensionId: event.target.value })}>{metadata?.dimensions.map((dimension) => <option value={dimension.id} key={dimension.id}>{dimension.name}</option>)}</select>
-              <select aria-label="过滤操作" value={filter.operator} onChange={(event) => updateFilter(filter.key, { operator: event.target.value as FilterDraft['operator'] })}><option value="EQUALS">等于</option><option value="IN">属于（逗号分隔）</option></select>
+              <select aria-label="过滤操作" value={filter.operator} onChange={(event) => updateFilter(filter.key, { operator: event.target.value as FilterOperator })}><option value="EQUALS">等于</option><option value="IN">属于</option><option value="NOT_EQUALS">不等于</option><option value="NOT_IN">不属于</option><option value="GREATER">大于</option><option value="GREATER_EQUALS">大于等于</option><option value="LESS">小于</option><option value="LESS_EQUALS">小于等于</option><option value="BETWEEN">介于</option><option value="CONTAINS">包含</option></select>
               <input aria-label="过滤值" value={filter.value} placeholder="输入成员值" onChange={(event) => updateFilter(filter.key, { value: event.target.value })} />
               <button type="button" aria-label="删除过滤条件" onClick={() => setFilters((items) => items.filter((item) => item.key !== filter.key))}>×</button>
             </div>
           ))}
+          {error && <div className="validation-box" role="alert"><span>• {error}</span></div>}
+          <div className="form-actions"><button className="primary-button" disabled={pending || !metadata || templateStatus === 'DRAFT'} type="button" onClick={() => void submit()}>{pending ? 'Agent 分析中…' : templateStatus === 'DRAFT' ? '请先确认模板' : '开始归因分析'}</button></div>
+          {pending && <div className="attribution-running" aria-live="polite"><i /><div><strong>正在执行智能归因</strong><span>总体查询 → 维度假设 → 并行取证 → 动态下钻 → 生成报告</span></div></div>}
         </div>
-        {error && <div className="validation-box" role="alert"><span>• {error}</span></div>}
-        <div className="form-actions"><span>首轮最多并行探索 3 个维度，之后沿证据最强路径继续下钻</span><button className="primary-button" disabled={pending || !metadata} type="submit">{pending ? 'Agent 分析中…' : '开始归因分析'}</button></div>
-        {pending && <div className="attribution-running" aria-live="polite"><i /><div><strong>正在执行智能归因</strong><span>总体查询 → 维度假设 → 并行取证 → 动态下钻 → 生成报告</span></div></div>}
-      </form>
+      } />
 
       {(pending || streamFailure) && <section className="workspace-card live-agent-process" aria-live="polite">
         <header><div><small>{streamFailure ? '执行失败' : '实时执行中'}</small><h2>Agent 过程</h2><p>{streamFailure || '节点完成后会立即标记为 COMPLETED；LLM 输入和返回会在调用完成后显示。'}</p></div><span className={streamFailure ? 'failed' : 'running'}>{streamFailure ? 'FAILED' : 'RUNNING'}</span></header>

@@ -6,7 +6,6 @@ import com.company.paymentanalysis.attribution.AttributionModels.AttributionRepo
 import com.company.paymentanalysis.attribution.AttributionModels.BranchAction;
 import com.company.paymentanalysis.attribution.AttributionModels.EffectiveRequest;
 import com.company.paymentanalysis.attribution.AttributionModels.Evidence;
-import com.company.paymentanalysis.attribution.AttributionModels.MemberEvidence;
 import com.company.paymentanalysis.attribution.AttributionModels.OverallEvidence;
 import com.company.paymentanalysis.attribution.AttributionModels.PathNode;
 import com.company.paymentanalysis.attribution.AttributionModels.StopInfo;

@@ -154,9 +154,11 @@ public class AttributionWorkflowService {
     }
 
     private Map<String, Object> planExploration(AttributionState state) {
-        emit(state, "planExploration", "规划首轮探索", "RUNNING", "正在请求 LLM 选择首轮互补维度", null);
         EffectiveRequest request = required(state, REQUEST);
-        List<AttributionDimension> candidates = remainingDimensions(request, List.of());
+        boolean templateDriven = hasConfiguredLevel(request, 1);
+        emit(state, "planExploration", "规划首轮探索", "RUNNING",
+                templateDriven ? "正在按用户模板准备第一层并行维度" : "正在请求 LLM 选择首轮互补维度", null);
+        List<AttributionDimension> candidates = allowedDimensions(request, 1, List.of());
         int availableQueries = request.maxQueries() - number(state, QUERY_COUNT);
         int maxDimensions = Math.min(policy.maxInitialDimensions(), Math.max(0, availableQueries));
         if (maxDimensions <= 0) {
@@ -165,7 +167,10 @@ public class AttributionWorkflowService {
         if (candidates.isEmpty()) {
             return stop(state, "planExploration", "规划首轮探索", "NO_DIMENSIONS", "请求过滤已占用全部允许归因的维度");
         }
-        PlanDecision plan = reasoner.plan(request, candidates, maxDimensions);
+        PlanDecision plan = templateDriven
+                ? new PlanDecision("按用户定义的第一层分析", candidates.stream()
+                        .map(AttributionDimension::id).toList(), "采用已确认模板的第一层维度", null)
+                : reasoner.plan(request, candidates, maxDimensions);
         validateDimensions(plan.dimensions(), candidates);
         List<WorkItem> work = plan.dimensions().stream()
                 .map(dimension -> WorkItem.root(dimension, plan.hypothesis(), required(state, OVERALL)))
@@ -173,7 +178,7 @@ public class AttributionWorkflowService {
         Set<String> visited = work.stream().map(WorkItem::signature).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
         ReasoningStep reasoning = new ReasoningStep(
                 1, "PLAN", plan.hypothesis(), plan.dimensions(), null, null, null, plan.reason(), List.of(), plan.llmMessage());
-        String detail = "选择维度：" + String.join("、", plan.dimensions());
+        String detail = (templateDriven ? "模板第一层维度：" : "选择维度：") + String.join("、", plan.dimensions());
         emit(state, "planExploration", "规划首轮探索", "COMPLETED", detail, reasoning);
         return Map.of(
                 PLANNED_WORK, work,
@@ -268,7 +273,14 @@ public class AttributionWorkflowService {
         if (eligible.stream().allMatch(item -> item.depth() >= request.maxDepth())) {
             return stop(state, "reasonEvidence", "反思分支", "MAX_DEPTH", "已达到最大下钻深度 " + request.maxDepth());
         }
-        List<AttributionDimension> candidates = AttributionCatalog.dimensions();
+        int nextDepth = eligible.stream().mapToInt(Evidence::depth).max().orElse(0) + 1;
+        if (templateCompletedAndStops(request, nextDepth)) {
+            return stop(state, "reasonEvidence", "反思分支", "TEMPLATE_COMPLETED", "已完成用户定义的全部分析层级");
+        }
+        List<AttributionDimension> candidates = allowedDimensions(request, nextDepth, List.of());
+        if (candidates.isEmpty()) {
+            return stop(state, "reasonEvidence", "反思分支", "NO_DIMENSIONS", "当前层没有可继续分析的模板维度");
+        }
         ReflectionDecision decision = reasoner.reflect(
                 request, required(state, OVERALL), eligible, list(state, BRANCHES), candidates,
                 request.maxQueries() - number(state, QUERY_COUNT), request.maxBranches());
@@ -386,7 +398,7 @@ public class AttributionWorkflowService {
                     branchId, evidence.branchId(), action.role(), "HOLD".equals(action.action()) ? "HELD" : "STOPPED",
                     evidence.depth(), pathFilters, path, action.hypothesis(), action.reason(), 0), evidence.branchId()));
         }
-        List<AttributionDimension> allowed = remainingDimensions(request, pathFilters);
+        List<AttributionDimension> allowed = allowedDimensions(request, evidence.depth() + 1, pathFilters);
         if (allowed.stream().noneMatch(dimension -> dimension.id().equals(action.nextDimension()))) {
             return Optional.empty();
         }
@@ -489,6 +501,28 @@ public class AttributionWorkflowService {
         request.dimensionFilters().forEach(filter -> excluded.add(filter.dimensionId()));
         pathFilters.forEach(filter -> excluded.add(filter.dimensionId()));
         return AttributionCatalog.dimensions().stream().filter(dimension -> !excluded.contains(dimension.id())).toList();
+    }
+
+    private List<AttributionDimension> allowedDimensions(
+            EffectiveRequest request, int depth, List<DimensionFilter> pathFilters) {
+        List<AttributionDimension> remaining = remainingDimensions(request, pathFilters);
+        if (!hasConfiguredLevel(request, depth)) {
+            return templateCompletedAndStops(request, depth) ? List.of() : remaining;
+        }
+        Map<String, AttributionDimension> byId = remaining.stream().collect(java.util.stream.Collectors.toMap(
+                AttributionDimension::id, dimension -> dimension, (left, right) -> left, LinkedHashMap::new));
+        return request.analysisPlan().levels().get(depth - 1).dimensionIds().stream()
+                .map(byId::get).filter(java.util.Objects::nonNull).toList();
+    }
+
+    private boolean hasConfiguredLevel(EffectiveRequest request, int depth) {
+        return request.analysisPlan() != null && depth > 0 && depth <= request.analysisPlan().levels().size();
+    }
+
+    private boolean templateCompletedAndStops(EffectiveRequest request, int nextDepth) {
+        return request.analysisPlan() != null
+                && !request.analysisPlan().continueExploration()
+                && nextDepth > request.analysisPlan().levels().size();
     }
 
     private void validateDimensions(List<String> requested, List<AttributionDimension> candidates) {

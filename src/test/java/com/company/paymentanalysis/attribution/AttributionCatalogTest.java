@@ -10,10 +10,13 @@ class AttributionCatalogTest {
 
     @Test
     void exposesOnlyRealProductionFieldsAndSelectsSmartBiDerivedMetrics() {
-        assertThat(AttributionCatalog.metricIds()).hasSize(8).allMatch(QueryMetadataCatalog::isMetric);
-        assertThat(AttributionCatalog.dimensions()).hasSize(15).allSatisfy(dimension -> {
+        assertThat(AttributionCatalog.metricIds()).hasSize(24).allMatch(QueryMetadataCatalog::isMetric);
+        assertThat(AttributionCatalog.dimensions()).hasSize(71).allSatisfy(dimension -> {
             assertThat(QueryMetadataCatalog.isDimension(dimension.id())).isTrue();
             assertThat(dimension.attributionEnabled()).isTrue();
+            assertThat(dimension.description()).startsWith("按").endsWith("分析");
+            assertThat(dimension.aliases()).isEmpty();
+            assertThat(dimension.mappingHint()).isEmpty();
         });
         assertThat(AttributionCatalog.comparisonMetric(
                         "trans_rmb_amt_m", YearMonth.parse("2026-07"), YearMonth.parse("2026-06")))
@@ -23,6 +26,9 @@ class AttributionCatalogTest {
                 .contains("trans_rmb_amt_tb");
         assertThat(AttributionCatalog.comparisonMetric(
                         "trans_rmb_amt_m", YearMonth.parse("2026-07"), YearMonth.parse("2026-05")))
+                .isEmpty();
+        assertThat(AttributionCatalog.comparisonMetric(
+                        "trans_rmb_amt_hb", YearMonth.parse("2026-07"), YearMonth.parse("2026-06")))
                 .isEmpty();
     }
 }

@@ -42,6 +42,20 @@ class AttributionControllerTest {
     }
 
     @Test
+    void executesTheConfirmedAnalysisPlanInsteadOfAutonomousPlanning() throws Exception {
+        mockMvc.perform(analyze("""
+                {"metricId":"trans_rmb_amt_m","currentPeriod":"2026-07","comparisonPeriod":"2026-06",
+                 "analysisPlan":{"levels":[{"level":1,"dimensionIds":["acq_ins_ch"]}],"continueExploration":false},
+                 "maxDepth":2,"maxQueries":8,"topN":4,"maxBranches":2}
+                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.queryCount").value(2))
+                .andExpect(jsonPath("$.evidence[0].dimensionId").value("acq_ins_ch"))
+                .andExpect(jsonPath("$.reasoning[0].proposedDimensions[0]").value("acq_ins_ch"))
+                .andExpect(jsonPath("$.stop.code").value("TEMPLATE_COMPLETED"));
+    }
+
+    @Test
     void maxDepthOneStopsAfterParallelFirstRound() throws Exception {
         mockMvc.perform(analyze("""
                 {"metricId":"sh_jy_num_m","currentPeriod":"2026-03","comparisonPeriod":"2026-02",
@@ -94,8 +108,8 @@ class AttributionControllerTest {
     void exposesAttributionOnlyMetadataAndLimits() throws Exception {
         mockMvc.perform(get("/api/attribution/metadata"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.metrics.length()").value(8))
-                .andExpect(jsonPath("$.dimensions.length()").value(15))
+                .andExpect(jsonPath("$.metrics.length()").value(24))
+                .andExpect(jsonPath("$.dimensions.length()").value(71))
                 .andExpect(jsonPath("$.dimensions[0].attributionEnabled").value(true))
                 .andExpect(jsonPath("$.limits.defaultMaxDepth").value(2))
                 .andExpect(jsonPath("$.limits.defaultMaxBranches").value(2))
@@ -107,6 +121,13 @@ class AttributionControllerTest {
         mockMvc.perform(analyze("""
                 {"metricId":"trans_cnt_hb","currentPeriod":"2026-06","comparisonPeriod":"2026-07",
                  "dimensionFilters":[{"dimensionId":"invented","operator":"EQUALS","values":["x"]}],"maxDepth":9}
+                """))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(analyze("""
+                {"metricId":"trans_cnt_m","currentPeriod":"2026-07","comparisonPeriod":"2026-06",
+                 "analysisPlan":{"levels":[{"level":1,"dimensionIds":["invented"]}],"continueExploration":false},
+                 "maxDepth":1,"maxQueries":8,"topN":4}
                 """))
                 .andExpect(status().isBadRequest());
     }
