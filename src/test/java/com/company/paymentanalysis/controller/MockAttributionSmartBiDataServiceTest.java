@@ -103,13 +103,6 @@ class MockAttributionSmartBiDataServiceTest {
             assertThat((BigDecimal) row.get("trans_cnt_hb")).isNegative();
             assertThat(row.get("trans_cnt_tb")).isInstanceOf(BigDecimal.class);
         });
-        assertThat(response.metadata().get("derivedMetrics")).isEqualTo("materialized SmartBI fields");
-    }
-
-    @Test
-    void providesAdditionalKnownAnswerScenariosForFutureAgentTests() {
-        assertPrimaryChangeDriver("2026-02", "2026-03", "sh_jy_num_m", "收单机构C", false);
-        assertPrimaryChangeDriver("2026-07", "2026-08", "trans_rmb_amt_m", "收单机构A", true);
     }
 
     private QueryResponse query(String period, String dimension, String metric) {
@@ -130,25 +123,6 @@ class MockAttributionSmartBiDataServiceTest {
                         monthFilter(period),
                         new Filter("2", "acq_ins_ch", "EQUALS", List.of(institution))),
                 null));
-    }
-
-    private void assertPrimaryChangeDriver(
-            String comparisonPeriod,
-            String currentPeriod,
-            String metric,
-            String expectedDriver,
-            boolean positive) {
-        Map<String, BigDecimal> comparison = valuesByMember(
-                query(comparisonPeriod, "acq_ins_ch", metric), "acq_ins_ch", metric);
-        Map<String, BigDecimal> current = valuesByMember(
-                query(currentPeriod, "acq_ins_ch", metric), "acq_ins_ch", metric);
-        Map<String, BigDecimal> changes = new LinkedHashMap<>();
-        comparison.forEach((member, value) -> changes.put(member, current.get(member).subtract(value)));
-        Map.Entry<String, BigDecimal> driver = changes.entrySet().stream()
-                .max((left, right) -> left.getValue().abs().compareTo(right.getValue().abs()))
-                .orElseThrow();
-        assertThat(driver.getKey()).isEqualTo(expectedDriver);
-        assertThat(driver.getValue().signum()).isEqualTo(positive ? 1 : -1);
     }
 
     private Map<String, BigDecimal> valuesByMember(

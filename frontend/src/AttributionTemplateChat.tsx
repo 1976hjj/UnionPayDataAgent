@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent, ReactNode } from 'react'
 
 type DimensionSelection = { dimensionId: string; dimensionName: string; userTerm: string; rationale: string; mappingHint: string; confidence: 'HIGH' | 'MEDIUM' | 'LOW' }
@@ -11,24 +11,26 @@ type DimensionTemplate = {
   continuationMode: 'AUTO' | 'STOP'; status: 'DRAFT' | 'CONFIRMED'; summary: string
 }
 type TemplateResponse = {
-  status: 'READY_TO_CONFIRM' | 'NEEDS_CLARIFICATION'; reply: string; template: DimensionTemplate
+  status: 'READY_TO_CONFIRM' | 'NEEDS_CLARIFICATION' | 'CHAT'; reply: string; template: DimensionTemplate | null
   unmappedTerms: string[]
   mappingIssues: { userTerm: string; reason: string; candidateDimensionIds: string[] }[]
 }
 type ChatMessage = { role: 'user' | 'assistant'; text: string }
-type StoredAttributionConversation = {
-  conversationId: string
-  title: string
-  updatedAt: string
-  messages: ChatMessage[]
+type ConversationSummary = { conversationId: string; title: string; updatedAt: string; messageCount: number }
+type AttributionState = {
+  status: TemplateResponse['status']
   template: DimensionTemplate | null
-  response: TemplateResponse | null
+  unmappedTerms: string[]
+  mappingIssues: TemplateResponse['mappingIssues']
+}
+type ConversationDetail = {
+  conversationId: string
+  messages: ChatMessage[]
+  attributionState: AttributionState | null
 }
 
 const CURRENT_USER_ID = 'demo-user'
-const ATTRIBUTION_HISTORY_KEY = `payment-analysis:attribution-conversations:${CURRENT_USER_ID}`
-const ACTIVE_ATTRIBUTION_KEY = `payment-analysis:active-attribution-conversation:${CURRENT_USER_ID}`
-const MAX_ATTRIBUTION_HISTORY = 30
+const ACTIVE_CONVERSATION_KEY = `payment-analysis:active-conversation:${CURRENT_USER_ID}`
 
 const EXAMPLE = '分析2026年7月对比6月的人民币总金额，只看卡品牌为银联。第一层同时看卡品牌、卡性质和交易渠道，第二层看IP用法和移动支付，第三层看响应码名称；后面自由探索。'
 
@@ -37,25 +39,7 @@ const FILTER_OPERATOR_NAMES: Record<string, string> = {
   GREATER_EQUALS: '大于等于', LESS: '小于', LESS_EQUALS: '小于等于', BETWEEN: '介于', CONTAINS: '包含',
 }
 
-function createConversationId() { return `attr-template-${crypto.randomUUID()}` }
-
-function readConversations(): StoredAttributionConversation[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(ATTRIBUTION_HISTORY_KEY) || '[]') as StoredAttributionConversation[]
-    return Array.isArray(value) ? value.filter((item) => item?.conversationId && Array.isArray(item.messages)) : []
-  } catch { return [] }
-}
-
-function activeConversation() {
-  const history = readConversations()
-  const activeId = localStorage.getItem(ACTIVE_ATTRIBUTION_KEY)
-  return history.find((item) => item.conversationId === activeId) || history[0] || null
-}
-
-function conversationTitle(messages: ChatMessage[]) {
-  const text = messages.find((item) => item.role === 'user')?.text.replace(/\s+/g, ' ').trim() || '新归因分析'
-  return text.length <= 22 ? text : `${text.slice(0, 22)}…`
-}
+function createConversationId() { return `conversation-${crypto.randomUUID()}` }
 
 function formatHistoryTime(value: string) {
   const date = new Date(value)
@@ -111,44 +95,32 @@ function TemplateArtifact({ template, response, pending, onConfirm, onReset, onC
   </section>
 }
 
-export default function AttributionTemplateChat({ selectedModel, executionControls, onTemplateChange }: {
+export default function AttributionTemplateChat({ selectedModel, executionControls, onTemplateChange, onConversationChange }: {
   selectedModel: string
   executionControls?: ReactNode
   onTemplateChange?: (template: DimensionTemplate) => void
+  onConversationChange?: (conversationId: string) => void
 }) {
-  const initialConversation = useMemo(activeConversation, [])
   const [message, setMessage] = useState('')
-  const [messages, setMessages] = useState<ChatMessage[]>(initialConversation?.messages ?? [])
-  const [template, setTemplate] = useState<DimensionTemplate | null>(initialConversation?.template ?? null)
-  const [response, setResponse] = useState<TemplateResponse | null>(initialConversation?.response ?? null)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [template, setTemplate] = useState<DimensionTemplate | null>(null)
+  const [response, setResponse] = useState<TemplateResponse | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
-  const [conversationId, setConversationId] = useState(initialConversation?.conversationId ?? createConversationId)
-  const [conversations, setConversations] = useState<StoredAttributionConversation[]>(readConversations)
+  const [conversationId, setConversationId] = useState(createConversationId)
+  const [conversations, setConversations] = useState<ConversationSummary[]>([])
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
-    if (initialConversation?.template) onTemplateChange?.(initialConversation.template)
+    void initializeMemory()
   }, [])
 
   useEffect(() => {
-    if (!messages.some((item) => item.role === 'user')) return
-    const saved: StoredAttributionConversation = {
-      conversationId,
-      title: conversationTitle(messages),
-      updatedAt: new Date().toISOString(),
-      messages,
-      template,
-      response,
-    }
-    const history = [saved, ...readConversations().filter((item) => item.conversationId !== conversationId)]
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .slice(0, MAX_ATTRIBUTION_HISTORY)
-    localStorage.setItem(ATTRIBUTION_HISTORY_KEY, JSON.stringify(history))
-    localStorage.setItem(ACTIVE_ATTRIBUTION_KEY, conversationId)
-    setConversations(history)
-  }, [conversationId, messages, template, response])
+    onConversationChange?.(conversationId)
+  }, [conversationId, onConversationChange])
 
   function resizeComposer() {
     const input = inputRef.current
@@ -163,11 +135,66 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
 
   useLayoutEffect(() => { resizeComposer() }, [message])
 
+  async function initializeMemory() {
+    setHistoryLoading(true)
+    try {
+      const raw = await fetch(`/api/chat/conversations?userId=${encodeURIComponent(CURRENT_USER_ID)}`)
+      const history = raw.ok ? await raw.json() as ConversationSummary[] : []
+      setConversations(history)
+      const target = localStorage.getItem(ACTIVE_CONVERSATION_KEY) || history[0]?.conversationId
+      if (target) {
+        const restored = await restoreConversation(target, false)
+        if (!restored) startNewConversation()
+      }
+    } catch {
+      setConversations([])
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  async function refreshHistory() {
+    try {
+      const raw = await fetch(`/api/chat/conversations?userId=${encodeURIComponent(CURRENT_USER_ID)}`)
+      if (raw.ok) setConversations(await raw.json() as ConversationSummary[])
+    } catch {
+      // The active conversation remains usable even when history cannot refresh.
+    }
+  }
+
+  async function restoreConversation(id: string, showLoading = true) {
+    if (showLoading) setPending(true)
+    try {
+      const raw = await fetch(`/api/chat/conversations/${encodeURIComponent(id)}?userId=${encodeURIComponent(CURRENT_USER_ID)}`)
+      if (!raw.ok) return false
+      const detail = await raw.json() as ConversationDetail
+      const state = detail.attributionState
+      setConversationId(detail.conversationId)
+      setMessages(detail.messages.map((item) => ({ role: item.role, text: item.text })))
+      setTemplate(state?.template ?? null)
+      setResponse(state ? {
+        status: state.status,
+        reply: '',
+        template: state.template,
+        unmappedTerms: state.unmappedTerms,
+        mappingIssues: state.mappingIssues,
+      } : null)
+      setMessage(''); setError(''); setHistoryOpen(false)
+      localStorage.setItem(ACTIVE_CONVERSATION_KEY, detail.conversationId)
+      if (state?.template) onTemplateChange?.(state.template)
+      return true
+    } catch {
+      return false
+    } finally {
+      if (showLoading) setPending(false)
+    }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault(); const content = message.trim(); if (!content || pending) return
     setPending(true); setError(''); setMessages((items) => [...items, { role: 'user', text: content }]); setMessage('')
     try {
-      const raw = await fetch('/api/attribution/template/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: 'demo-user', conversationId, message: content, conversationHistory: messages, currentTemplate: template, model: selectedModel }) })
+      const raw = await fetch('/api/attribution/template/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: CURRENT_USER_ID, conversationId, message: content, conversationHistory: [], currentTemplate: template, model: selectedModel }) })
       if (!raw.ok) throw new Error(await errorText(raw))
       const result = await raw.json() as TemplateResponse
       const storedResponse: TemplateResponse = {
@@ -175,7 +202,14 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
         unmappedTerms: result.unmappedTerms,
         mappingIssues: result.mappingIssues,
       }
-      setTemplate(result.template); setResponse(storedResponse); onTemplateChange?.(result.template); setMessages((items) => [...items, { role: 'assistant', text: result.reply }])
+      if (result.status !== 'CHAT') {
+        setTemplate(result.template); setResponse(storedResponse)
+        if (result.template) onTemplateChange?.(result.template)
+      }
+      setMessages((items) => [...items, { role: 'assistant', text: result.reply }])
+      localStorage.setItem(ACTIVE_CONVERSATION_KEY, conversationId)
+      window.dispatchEvent(new CustomEvent('unified-conversation-changed', { detail: conversationId }))
+      void refreshHistory()
       window.dispatchEvent(new Event('model-health-changed'))
     } catch (reason) { setError(reason instanceof Error ? reason.message : '分析模板理解失败') }
     finally { setPending(false); window.setTimeout(() => inputRef.current?.focus(), 0) }
@@ -185,12 +219,29 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
     if (!template || response?.status !== 'READY_TO_CONFIRM') return
     setPending(true); setError('')
     try {
-      const raw = await fetch('/api/attribution/template/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(template) })
+      const raw = await fetch('/api/attribution/template/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: CURRENT_USER_ID, conversationId, template }) })
       if (!raw.ok) throw new Error(await errorText(raw))
       const confirmed = await raw.json() as DimensionTemplate
       setTemplate(confirmed); onTemplateChange?.(confirmed); setMessages((items) => [...items, { role: 'assistant', text: '模板已确认，可以开始归因分析。' }])
+      void refreshHistory()
     } catch (reason) { setError(reason instanceof Error ? reason.message : '确认模板失败') }
     finally { setPending(false) }
+  }
+
+  function persistTemplateState(nextTemplate: DimensionTemplate, nextResponse: TemplateResponse) {
+    void fetch('/api/attribution/template/state', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId: CURRENT_USER_ID,
+        conversationId,
+        state: {
+          status: nextResponse.status,
+          template: nextTemplate,
+          unmappedTerms: nextResponse.unmappedTerms,
+          mappingIssues: nextResponse.mappingIssues,
+        },
+      }),
+    })
   }
 
   function changeContinuation(continuationMode: 'AUTO' | 'STOP') {
@@ -204,6 +255,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
     setTemplate(next)
     setResponse((current) => current ? { ...current, template: next } : current)
     onTemplateChange?.(next)
+    if (response) persistTemplateState(next, { ...response, template: next })
   }
 
   function removeDimension(level: number, dimensionId: string) {
@@ -237,31 +289,28 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
     setTemplate(next)
     setResponse(nextResponse)
     onTemplateChange?.(next)
+    persistTemplateState(next, nextResponse)
   }
 
   function startNewConversation() {
     const nextId = createConversationId()
     setConversationId(nextId); setTemplate(null); setResponse(null); setMessages([]); setMessage(''); setError(''); setPending(false); setHistoryOpen(false)
-    localStorage.setItem(ACTIVE_ATTRIBUTION_KEY, nextId)
+    localStorage.setItem(ACTIVE_CONVERSATION_KEY, nextId)
     window.setTimeout(() => inputRef.current?.focus(), 0)
   }
 
-  function restoreConversation(item: StoredAttributionConversation) {
-    setConversationId(item.conversationId); setMessages(item.messages); setTemplate(item.template); setResponse(item.response)
-    setMessage(''); setError(''); setPending(false); setHistoryOpen(false)
-    localStorage.setItem(ACTIVE_ATTRIBUTION_KEY, item.conversationId)
-    if (item.template) onTemplateChange?.(item.template)
-  }
-
-  function deleteConversation(item: StoredAttributionConversation) {
-    if (!window.confirm(`确定删除归因历史“${item.title}”吗？`)) return
-    const next = readConversations().filter((value) => value.conversationId !== item.conversationId)
-    localStorage.setItem(ATTRIBUTION_HISTORY_KEY, JSON.stringify(next))
-    setConversations(next)
-    if (item.conversationId === conversationId) {
-      const replacement = next[0]
-      if (replacement) restoreConversation(replacement)
-      else startNewConversation()
+  async function deleteConversation(item: ConversationSummary) {
+    if (!window.confirm(`确定删除会话“${item.title}”？删除后无法恢复。`)) return
+    setDeletingConversationId(item.conversationId)
+    try {
+      const raw = await fetch(`/api/chat/conversations/${encodeURIComponent(item.conversationId)}?userId=${encodeURIComponent(CURRENT_USER_ID)}`, { method: 'DELETE' })
+      if (!raw.ok) throw new Error('删除会话失败')
+      setConversations((current) => current.filter((value) => value.conversationId !== item.conversationId))
+      if (item.conversationId === conversationId) startNewConversation()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '删除会话失败')
+    } finally {
+      setDeletingConversationId(null)
     }
   }
   function keyboardSubmit(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -275,12 +324,13 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
     <div className="attribution-chat-layout">
       {historyOpen && <button className="attribution-history-backdrop" type="button" aria-label="关闭归因历史" onClick={() => setHistoryOpen(false)} />}
       <aside className={`attribution-history-panel ${historyOpen ? 'is-open' : ''}`}>
-        <div className="history-heading"><div><strong>归因历史</strong></div><button type="button" onClick={startNewConversation} aria-label="新建归因对话">＋</button></div>
+        <div className="history-heading"><div><strong>会话历史</strong></div><button type="button" onClick={startNewConversation} aria-label="新建归因对话">＋</button></div>
         <div className="history-list">
-          {!conversations.length && <p className="history-empty">还没有归因历史</p>}
+          {historyLoading && <p className="history-empty">正在读取会话…</p>}
+          {!historyLoading && !conversations.length && <p className="history-empty">还没有历史会话</p>}
           {conversations.map((item) => <div className={item.conversationId === conversationId ? 'active' : ''} key={item.conversationId}>
-            <button className="history-open-button" type="button" disabled={pending} onClick={() => restoreConversation(item)}><strong>{item.title}</strong><span>{formatHistoryTime(item.updatedAt)} · {Math.ceil(item.messages.length / 2)} 轮</span></button>
-            <button className="history-delete-button" type="button" disabled={pending} aria-label={`删除归因历史：${item.title}`} onClick={() => deleteConversation(item)}>×</button>
+            <button className="history-open-button" type="button" disabled={pending || deletingConversationId !== null} onClick={() => void restoreConversation(item.conversationId)}><strong>{item.title}</strong><span>{formatHistoryTime(item.updatedAt)} · {Math.ceil(item.messageCount / 2)} 轮</span></button>
+            <button className="history-delete-button" type="button" disabled={pending || deletingConversationId !== null} aria-label={`删除会话：${item.title}`} onClick={() => void deleteConversation(item)}>×</button>
           </div>)}
         </div>
       </aside>

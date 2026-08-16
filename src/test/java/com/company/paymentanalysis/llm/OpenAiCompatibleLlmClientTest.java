@@ -53,4 +53,19 @@ class OpenAiCompatibleLlmClientTest {
         assertThat(health.status()).isEqualTo("READY");
         assertThat(health.detail()).contains("尚未调用");
     }
+
+    @Test
+    void acceptsAProviderModelNameAsTheConfiguredDefault() {
+        OpenAiCompatibleLlmClient providerModelDefault = new OpenAiCompatibleLlmClient(
+                new LlmProperties(
+                        false, "https://open.bigmodel.cn", "", "glm-4-flash-250414",
+                        List.of(), "/api/paas/v4/chat/completions", true, false, false, 512, 0, 1, 0,
+                        List.of(new LlmProperties.ModelProfile(
+                                "glm-flash", "GLM Flash", "glm-4-flash-250414",
+                                "https://open.bigmodel.cn", "/api/paas/v4/chat/completions",
+                                true, false, false, 512, 0.0))),
+                RestClient.builder());
+
+        assertThat(providerModelDefault.defaultModel()).isEqualTo("glm-flash");
+    }
 }

@@ -414,6 +414,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
   const [result, setResult] = useState<AttributionResponse | null>(null)
   const [tab, setTab] = useState<'report' | 'evidence' | 'process'>('report')
   const [copied, setCopied] = useState(false)
+  const [conversationId, setConversationId] = useState('')
 
   const limits = metadata?.limits ?? EMPTY_LIMITS
   const dimensionMap = useMemo(() => new Map(metadata?.dimensions.map((dimension) => [dimension.id, dimension]) ?? []), [metadata])
@@ -491,6 +492,8 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          userId: 'demo-user',
+          conversationId,
           metricId,
           currentPeriod,
           comparisonPeriod,
@@ -523,6 +526,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
         if (item.type === 'result' && item.result) {
           completed = true
           setResult(item.result)
+          if (conversationId) window.dispatchEvent(new CustomEvent('unified-conversation-changed', { detail: conversationId }))
           return
         }
         if (item.type === 'error') {
@@ -576,7 +580,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
 
   return (
     <section className="attribution-page">
-      <AttributionTemplateChat selectedModel={selectedModel} onTemplateChange={applyTemplate} executionControls={
+      <AttributionTemplateChat selectedModel={selectedModel} onTemplateChange={applyTemplate} onConversationChange={setConversationId} executionControls={
         <div className="template-execution-controls attribution-mvp-config">
           <div className="attribution-limit-grid">
             <label>每轮最大分支 <input type="number" min="1" max={limits.hardMaxBranches} value={maxBranches} onChange={(event) => setMaxBranches(Number(event.target.value))} /><small>最多 {limits.hardMaxBranches} 个分支</small></label>

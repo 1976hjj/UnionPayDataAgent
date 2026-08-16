@@ -3,7 +3,8 @@ package com.company.paymentanalysis.controller;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService.ChatMemoryUnavailableException;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
-import com.company.paymentanalysis.chat.ChatQueryWorkflowService;
+import com.company.paymentanalysis.chat.ConversationRouterService;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConversationState;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
@@ -29,14 +30,14 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/chat")
 public class ChatQueryController {
 
-    private final ChatQueryWorkflowService workflowService;
+    private final ConversationRouterService conversationRouter;
     private final ChatConversationMemoryService memoryService;
     private final OpenAiCompatibleLlmClient llmClient;
 
     public ChatQueryController(
-            ChatQueryWorkflowService workflowService, ChatConversationMemoryService memoryService,
+            ConversationRouterService conversationRouter, ChatConversationMemoryService memoryService,
             OpenAiCompatibleLlmClient llmClient) {
-        this.workflowService = workflowService;
+        this.conversationRouter = conversationRouter;
         this.memoryService = memoryService;
         this.llmClient = llmClient;
     }
@@ -47,8 +48,8 @@ public class ChatQueryController {
         if (message.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "查询内容不能为空");
         }
-        if (message.length() > 200) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "查询内容不能超过200字");
+        if (message.length() > 2000) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "对话内容不能超过2000字");
         }
         String userId = identifier(request.userId(), "demo-user");
         String conversationId = identifier(request.sessionId(), UUID.randomUUID().toString());
@@ -65,7 +66,7 @@ public class ChatQueryController {
             // Redis 不可用时仍允许当前浏览器继续查数，但不伪造持久化记忆。
         }
         ChatResponse response =
-                workflowService.query(new ChatRequest(
+                conversationRouter.respond(new ChatRequest(
                         userId, conversationId, message, restoredContext, model, request.confirmed()));
         try {
             memoryService.saveTurn(userId, conversationId, message, response);
@@ -149,7 +150,21 @@ public class ChatQueryController {
             String status, String reply, List<String> suggestions, QueryContext context, QueryResult result,
             String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
             String conversationId, QueryAction queryAction, String queryExplanation,
-            LlmResultMessage llmMessage) implements Serializable {
+            LlmResultMessage llmMessage, List<String> derivedFromArtifactIds) implements Serializable {
+
+        public ChatResponse {
+            derivedFromArtifactIds = derivedFromArtifactIds == null
+                    ? List.of() : List.copyOf(derivedFromArtifactIds);
+        }
+
+        public ChatResponse(
+                String status, String reply, List<String> suggestions, QueryContext context, QueryResult result,
+                String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
+                String conversationId, QueryAction queryAction, String queryExplanation,
+                LlmResultMessage llmMessage) {
+            this(status, reply, suggestions, context, result, executionEngine, workflowSteps,
+                    queryPlan, conversationId, queryAction, queryExplanation, llmMessage, List.of());
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -207,15 +222,36 @@ public class ChatQueryController {
 
     public record ConversationDetail(
             String conversationId, String title, String createdAt, String updatedAt,
-            QueryContext context, List<ConversationMessage> messages) implements Serializable {
+            QueryContext context, List<ConversationMessage> messages,
+            TemplateConversationState attributionState) implements Serializable {
+
+        public ConversationDetail(
+                String conversationId, String title, String createdAt, String updatedAt,
+                QueryContext context, List<ConversationMessage> messages) {
+            this(conversationId, title, createdAt, updatedAt, context, messages, null);
+        }
     }
 
     public record ConversationMessage(
             int id, String role, String text, List<String> suggestions, QueryResult result,
             String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
             String status, String tone, QueryAction queryAction, String queryExplanation,
-            LlmResultMessage llmMessage)
+            LlmResultMessage llmMessage, List<String> derivedFromArtifactIds)
             implements Serializable {
+
+        public ConversationMessage {
+            derivedFromArtifactIds = derivedFromArtifactIds == null
+                    ? List.of() : List.copyOf(derivedFromArtifactIds);
+        }
+
+        public ConversationMessage(
+                int id, String role, String text, List<String> suggestions, QueryResult result,
+                String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
+                String status, String tone, QueryAction queryAction, String queryExplanation,
+                LlmResultMessage llmMessage) {
+            this(id, role, text, suggestions, result, executionEngine, workflowSteps, queryPlan,
+                    status, tone, queryAction, queryExplanation, llmMessage, List.of());
+        }
     }
 
     public record MemoryStatus(

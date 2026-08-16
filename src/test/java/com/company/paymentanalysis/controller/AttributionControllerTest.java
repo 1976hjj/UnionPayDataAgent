@@ -1,10 +1,12 @@
 package com.company.paymentanalysis.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.company.paymentanalysis.chat.ChatConversationMemoryService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -19,6 +21,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class AttributionControllerTest {
 
     @Autowired private MockMvc mockMvc;
+    @Autowired private ChatConversationMemoryService memoryService;
 
     @Test
     void returnsBoundedBranchAttributionForJulyDecline() throws Exception {
@@ -39,6 +42,36 @@ class AttributionControllerTest {
                 .andExpect(jsonPath("$.reasoning[0].phase").value("PLAN"))
                 .andExpect(jsonPath("$.reasoning[1].phase").value("REFLECT"))
                 .andExpect(jsonPath("$.reasoning[1].branchActions").isArray());
+    }
+
+    @Test
+    void savesTheCompletedAttributionForAConversationFollowUp() throws Exception {
+        mockMvc.perform(analyze("""
+                {"userId":"attribution-user","conversationId":"attribution-follow-up",
+                 "metricId":"trans_rmb_amt_m","currentPeriod":"2026-07","comparisonPeriod":"2026-06",
+                 "analysisPlan":{"levels":[{"level":1,"dimensionIds":["acq_ins_ch"]}],"continueExploration":false},
+                 "dimensionFilters":[],"maxDepth":1,"maxQueries":4,"topN":4,"maxBranches":2}
+                """))
+                .andExpect(status().isOk());
+
+        var artifacts = memoryService.snapshot("attribution-user", "attribution-follow-up")
+                .orElseThrow().artifacts();
+        var artifact = artifacts.get(artifacts.size() - 1);
+        assertThat(artifact.verifiedFacts()).isNotEmpty();
+        assertThat(artifact.verifiedFacts()).allMatch(fact -> fact.source().startsWith("JAVA_")
+                || "REQUEST_VALIDATION".equals(fact.source()));
+        assertThat(artifact.modelNarrative()).contains("摘要=");
+
+        mockMvc.perform(post("/api/chat/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"userId":"attribution-user","sessionId":"attribution-follow-up",
+                                 "message":"把刚才归因改写成一段业务汇报","context":
+                                 {"metricIds":[],"dimensionIds":[],"dimensionFilters":[],"sorts":[]}}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.executionEngine").value(org.hamcrest.Matchers.containsString("Conversation Router")))
+                .andExpect(jsonPath("$.reply").value(org.hamcrest.Matchers.containsString("归因（2026-07 对比 2026-06）")));
     }
 
     @Test

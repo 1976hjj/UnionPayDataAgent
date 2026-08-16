@@ -58,7 +58,7 @@ class ChatConversationMemoryServiceTest {
                 conversationIds.remove(invocation.getArgument(1, String.class)) ? 1L : 0L);
 
         ChatConversationMemoryService service = new ChatConversationMemoryService(
-                redis, new ObjectMapper(), new ChatMemoryProperties(true, "test:chat:", 30, 50));
+                redis, new ObjectMapper(), new ChatMemoryProperties(true, "test:chat:", 30, 50, 100, 20));
         QueryContext context = new QueryContext(
                 List.of("transactionAmount"), List.of("channel"), List.of(), List.of());
         ChatResponse response = new ChatResponse(
@@ -91,7 +91,7 @@ class ChatConversationMemoryServiceTest {
     void fallsBackToInProcessMemoryWhenRedisIsDisabled() {
         StringRedisTemplate redis = mock(StringRedisTemplate.class);
         ChatConversationMemoryService service = new ChatConversationMemoryService(
-                redis, new ObjectMapper(), new ChatMemoryProperties(false, "test:chat:", 30, 50));
+                redis, new ObjectMapper(), new ChatMemoryProperties(false, "test:chat:", 30, 50, 100, 20));
         QueryContext context = new QueryContext(
                 List.of("transactionAmount"), List.of("channel"), List.of(), List.of());
         ChatResponse response = new ChatResponse(
@@ -110,5 +110,38 @@ class ChatConversationMemoryServiceTest {
         assertThat(service.status().detail()).contains("进程内临时会话");
         assertThat(service.deleteConversation("user-local", "conversation-local")).isTrue();
         assertThat(service.restoreContext("user-local", "conversation-local")).isEmpty();
+    }
+
+    @Test
+    void keepsOnlyNewestMessagesAndArtifactsWithinConfiguredCapacity() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        ChatConversationMemoryService service = new ChatConversationMemoryService(
+                redis, new ObjectMapper(), new ChatMemoryProperties(
+                        false, "test:chat:", 30, 50, 4, 2));
+        QueryContext context = QueryContext.empty();
+        ChatResponse response = new ChatResponse(
+                "completed", "done", List.of(), context, null, "Conversation Agent",
+                List.of(), null, "capacity-test", null, "done", null);
+
+        service.saveTurn("capacity-user", "capacity-test", "turn-1", response);
+        service.saveTurn("capacity-user", "capacity-test", "turn-2", response);
+        service.saveTurn("capacity-user", "capacity-test", "turn-3", response);
+        service.saveAttributionArtifact(
+                "capacity-user", "capacity-test", "artifact-1", "summary-1", "request-1", "evidence-1");
+        service.saveAttributionArtifact(
+                "capacity-user", "capacity-test", "artifact-2", "summary-2", "request-2", "evidence-2");
+        service.saveAttributionArtifact(
+                "capacity-user", "capacity-test", "artifact-3", "summary-3", "request-3", "evidence-3");
+
+        var snapshot = service.snapshot("capacity-user", "capacity-test").orElseThrow();
+        assertThat(snapshot.messages()).hasSize(4);
+        assertThat(snapshot.messages()).extracting(message -> message.id())
+                .containsExactly(6, 7, 8, 9);
+        assertThat(snapshot.messages().get(0).text()).isEqualTo("done");
+        assertThat(snapshot.messages().get(1).text()).contains("summary-1");
+        assertThat(snapshot.messages().get(2).text()).contains("summary-2");
+        assertThat(snapshot.messages().get(3).text()).contains("summary-3");
+        assertThat(snapshot.artifacts()).extracting(ConversationArtifact::title)
+                .containsExactly("artifact-2", "artifact-3");
     }
 }

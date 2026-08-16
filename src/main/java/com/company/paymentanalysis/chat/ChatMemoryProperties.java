@@ -7,5 +7,7 @@ public record ChatMemoryProperties(
         boolean redisEnabled,
         String keyPrefix,
         int ttlDays,
-        int maxConversations) {
+        int maxConversations,
+        int maxMessagesPerConversation,
+        int maxArtifactsPerConversation) {
 }

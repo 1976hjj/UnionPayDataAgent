@@ -2,9 +2,15 @@ package com.company.paymentanalysis.controller;
 
 import com.company.paymentanalysis.attribution.AttributionTemplateInterpreter;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.DimensionTemplate;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConfirmRequest;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateChatRequest;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateChatResponse;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConversationState;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateStateRequest;
+import com.company.paymentanalysis.chat.AttributionConversationRouterService;
+import com.company.paymentanalysis.chat.ChatConversationMemoryService;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
+import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -17,11 +23,18 @@ import org.springframework.web.server.ResponseStatusException;
 public class AttributionTemplateController {
 
     private final AttributionTemplateInterpreter interpreter;
+    private final AttributionConversationRouterService conversationRouter;
+    private final ChatConversationMemoryService memoryService;
     private final OpenAiCompatibleLlmClient llmClient;
 
     public AttributionTemplateController(
-            AttributionTemplateInterpreter interpreter, OpenAiCompatibleLlmClient llmClient) {
+            AttributionTemplateInterpreter interpreter,
+            AttributionConversationRouterService conversationRouter,
+            ChatConversationMemoryService memoryService,
+            OpenAiCompatibleLlmClient llmClient) {
         this.interpreter = interpreter;
+        this.conversationRouter = conversationRouter;
+        this.memoryService = memoryService;
         this.llmClient = llmClient;
     }
 
@@ -35,7 +48,7 @@ public class AttributionTemplateController {
         }
         try {
             String model = llmClient.resolveSelection(request.model());
-            return interpreter.interpret(new TemplateChatRequest(
+            return conversationRouter.respond(new TemplateChatRequest(
                     request.userId(), request.conversationId(), request.message().trim(),
                     request.conversationHistory(), request.currentTemplate(), model));
         } catch (IllegalArgumentException exception) {
@@ -44,11 +57,32 @@ public class AttributionTemplateController {
     }
 
     @PostMapping("/confirm")
-    public DimensionTemplate confirm(@RequestBody DimensionTemplate template) {
+    public DimensionTemplate confirm(@RequestBody TemplateConfirmRequest request) {
         try {
-            return interpreter.confirm(template);
+            if (request == null || request.template() == null) {
+                throw new IllegalArgumentException("归因模板不能为空");
+            }
+            DimensionTemplate confirmed = interpreter.confirm(request.template());
+            if (request.userId() != null && !request.userId().isBlank()
+                    && request.conversationId() != null && !request.conversationId().isBlank()) {
+                memoryService.saveAttributionState(
+                        request.userId().trim(), request.conversationId().trim(),
+                        new TemplateConversationState("READY_TO_CONFIRM", confirmed, List.of(), List.of()));
+            }
+            return confirmed;
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
+    }
+
+    @PostMapping("/state")
+    public void saveState(@RequestBody TemplateStateRequest request) {
+        if (request == null || request.state() == null
+                || request.userId() == null || request.userId().isBlank()
+                || request.conversationId() == null || request.conversationId().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "会话与模板状态不能为空");
+        }
+        memoryService.saveAttributionState(
+                request.userId().trim(), request.conversationId().trim(), request.state());
     }
 }

@@ -21,7 +21,9 @@ public final class AttributionModels {
             Integer maxQueries,
             Integer topN,
             Integer maxBranches,
-            String model) implements Serializable {
+            String model,
+            String userId,
+            String conversationId) implements Serializable {
 
         public AttributionRequest {
             dimensionFilters = dimensionFilters == null ? List.of() : List.copyOf(dimensionFilters);
@@ -32,7 +34,15 @@ public final class AttributionModels {
                 List<DimensionFilter> dimensionFilters, Integer maxDepth, Integer maxQueries,
                 Integer topN, Integer maxBranches, String model) {
             this(metricId, currentPeriod, comparisonPeriod, dimensionFilters, null,
-                    maxDepth, maxQueries, topN, maxBranches, model);
+                    maxDepth, maxQueries, topN, maxBranches, model, null, null);
+        }
+
+        public AttributionRequest(
+                String metricId, String currentPeriod, String comparisonPeriod,
+                List<DimensionFilter> dimensionFilters, AnalysisPlan analysisPlan, Integer maxDepth,
+                Integer maxQueries, Integer topN, Integer maxBranches, String model) {
+            this(metricId, currentPeriod, comparisonPeriod, dimensionFilters, analysisPlan,
+                    maxDepth, maxQueries, topN, maxBranches, model, null, null);
         }
     }
 

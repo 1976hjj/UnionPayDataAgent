@@ -110,6 +110,7 @@ type ChatResponse = {
   queryAction: QueryAction | null
   queryExplanation: string | null
   llmMessage: LlmResultMessage | null
+  derivedFromArtifactIds: string[]
 }
 
 type Message = {
@@ -125,6 +126,7 @@ type Message = {
   queryAction?: QueryAction | null
   queryExplanation?: string | null
   llmMessage?: LlmResultMessage | null
+  derivedFromArtifactIds?: string[]
   status?: ChatResponse['status'] | null
 }
 
@@ -364,6 +366,15 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [])
 
+  useEffect(() => {
+    function restoreUnifiedConversation(event: Event) {
+      const conversation = event as CustomEvent<string>
+      if (conversation.detail) void restoreConversation(conversation.detail, false)
+    }
+    window.addEventListener('unified-conversation-changed', restoreUnifiedConversation)
+    return () => window.removeEventListener('unified-conversation-changed', restoreUnifiedConversation)
+  }, [])
+
   const metricNames = context.metricIds
     .map((id) => metadata.metrics.find((metric) => metric.id === id)?.name)
     .filter(Boolean)
@@ -467,7 +478,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
   }
 
   async function deleteConversation(conversation: ConversationSummary) {
-    if (!window.confirm(`确定删除历史查询“${conversation.title}”吗？删除后无法恢复。`)) return
+    if (!window.confirm(`确定删除会话“${conversation.title}”吗？删除后无法恢复。`)) return
     setDeletingConversationId(conversation.conversationId)
     setValidation('')
     try {
@@ -477,14 +488,14 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
       )
       if (!response.ok) {
         const detail = await response.json().catch(() => null) as { detail?: string } | null
-        throw new Error(detail?.detail || '删除历史查询失败')
+        throw new Error(detail?.detail || '删除会话失败')
       }
       setConversations((current) => current.filter(
         (item) => item.conversationId !== conversation.conversationId,
       ))
       if (conversation.conversationId === conversationId) startNewConversation()
     } catch (error) {
-      setValidation(error instanceof Error ? error.message : '删除历史查询失败')
+      setValidation(error instanceof Error ? error.message : '删除会话失败')
     } finally {
       setDeletingConversationId(null)
     }
@@ -496,8 +507,8 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
       setValidation('请输入查数需求')
       return
     }
-    if (message.length > 200) {
-      setValidation('每次输入不能超过 200 字')
+    if (message.length > 2000) {
+      setValidation('每次输入不能超过 2000 字')
       return
     }
 
@@ -544,6 +555,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
         queryAction: data.queryAction,
         queryExplanation: data.queryExplanation,
         llmMessage: data.llmMessage,
+        derivedFromArtifactIds: data.derivedFromArtifactIds,
         status: data.status,
         tone: data.status === 'rejected' ? 'rejected' : 'normal',
       }])
@@ -588,14 +600,14 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
         )}
         <aside className={`conversation-history-panel ${openSidePanel === 'history' ? 'is-open' : ''}`}>
           <div className="history-heading">
-            <div><strong>历史查询</strong><small>演示用户的对话</small></div>
+            <div><strong>会话历史</strong><small>查数与归因共享</small></div>
             <div className="side-panel-actions">
               <button type="button" onClick={startNewConversation} aria-label="新建对话">＋</button>
               <button
                 className="side-panel-close"
                 type="button"
                 onClick={() => setOpenSidePanel(null)}
-                aria-label="关闭历史查询"
+                aria-label="关闭会话历史"
               >
                 ×
               </button>
@@ -604,7 +616,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
           <div className="history-list">
             {historyLoading && <p className="history-empty">正在读取会话…</p>}
             {!historyLoading && conversations.length === 0 && (
-              <p className="history-empty">还没有历史查询<br />发送第一条消息后会保存在这里</p>
+              <p className="history-empty">还没有历史会话<br />发送第一条消息后会保存在这里</p>
             )}
             {conversations.map((conversation) => (
               <div
@@ -621,7 +633,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
                   <span>{formatConversationTime(conversation.updatedAt)} · {conversation.messageCount / 2} 轮</span>
                 </button>
                 <button
-                  aria-label={`删除历史查询：${conversation.title}`}
+                  aria-label={`删除会话：${conversation.title}`}
                   className="history-delete-button"
                   disabled={pending || deletingConversationId !== null}
                   onClick={() => void deleteConversation(conversation)}
@@ -668,6 +680,9 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
                 {message.role === 'assistant' && <span className="message-avatar">BI</span>}
                 <div className="message-content">
                   <div className={`message-bubble ${message.tone === 'rejected' ? 'rejected' : ''}`}>{message.text}</div>
+                  {message.derivedFromArtifactIds && message.derivedFromArtifactIds.length > 0 && (
+                    <div className="artifact-source-note">引用分析产物：{message.derivedFromArtifactIds.join('、')}</div>
+                  )}
                   {message.result && <ResultTable result={message.result} />}
                   {message.executionEngine && message.workflowSteps && (
                     <WorkflowTrace
@@ -722,15 +737,15 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
             {validation && <span className="composer-error" role="alert">{validation}</span>}
             <textarea
               aria-label="输入查数需求"
-              maxLength={200}
-              placeholder="例如：查7月交易金额，按受理渠道分组"
+              maxLength={2000}
+              placeholder="可以查数，也可以基于刚才归因结果写汇报、解释结论或继续追问"
               value={input}
               onChange={(event) => { setInput(event.target.value); setValidation('') }}
               onKeyDown={handleKeyDown}
             />
             <div>
               <span>Enter 发送 · Shift + Enter 换行</span>
-              <span>{input.length}/200</span>
+              <span>{input.length}/2000</span>
               <button className="send-button" disabled={pending || !input.trim()} type="submit">发送</button>
             </div>
           </form>

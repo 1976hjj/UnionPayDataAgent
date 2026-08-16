@@ -24,6 +24,8 @@ chat:
     key-prefix: ${CHAT_MEMORY_KEY_PREFIX:payment-analysis:chat:}
     ttl-days: ${CHAT_MEMORY_TTL_DAYS:30}
     max-conversations: ${CHAT_MEMORY_MAX_CONVERSATIONS:50}
+    max-messages-per-conversation: ${CHAT_MEMORY_MAX_MESSAGES_PER_CONVERSATION:100}
+    max-artifacts-per-conversation: ${CHAT_MEMORY_MAX_ARTIFACTS_PER_CONVERSATION:20}
 
 smartbi:
   dataset-id: ${SMARTBI_DATASET_ID:Iff8080810196b306b3067b2a0196b3067b2a0000}

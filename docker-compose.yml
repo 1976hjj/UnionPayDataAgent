@@ -46,6 +46,8 @@ services:
       REDIS_PORT: 6379
       CHAT_MEMORY_REDIS_ENABLED: "true"
       CHAT_MEMORY_TTL_DAYS: ${CHAT_MEMORY_TTL_DAYS:-30}
+      CHAT_MEMORY_MAX_MESSAGES_PER_CONVERSATION: ${CHAT_MEMORY_MAX_MESSAGES_PER_CONVERSATION:-100}
+      CHAT_MEMORY_MAX_ARTIFACTS_PER_CONVERSATION: ${CHAT_MEMORY_MAX_ARTIFACTS_PER_CONVERSATION:-20}
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/health"]
       interval: 30s

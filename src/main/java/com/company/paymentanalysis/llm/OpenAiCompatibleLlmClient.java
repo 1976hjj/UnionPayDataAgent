@@ -191,7 +191,9 @@ public class OpenAiCompatibleLlmClient {
     private LlmProperties.ModelProfile resolveProfile(String requestedModel) {
         String selection = StringUtils.hasText(requestedModel) ? requestedModel.trim() : properties.model();
         return supportedProfiles().stream()
-                .filter(profile -> profile.id().equals(selection))
+                // The UI sends a profile id, while deployments often set LLM_MODEL
+                // to the provider's model name. Support both forms consistently.
+                .filter(profile -> profile.id().equals(selection) || profile.model().equals(selection))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("不支持的 LLM 模型：" + selection));
     }

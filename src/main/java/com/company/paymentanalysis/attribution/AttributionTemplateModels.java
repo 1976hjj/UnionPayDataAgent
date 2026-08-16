@@ -106,4 +106,30 @@ public final class AttributionTemplateModels {
             mappingIssues = mappingIssues == null ? List.of() : List.copyOf(mappingIssues);
         }
     }
+
+    /** Persisted alongside the shared conversation, without verbose LLM traces. */
+    public record TemplateConversationState(
+            String status,
+            DimensionTemplate template,
+            List<String> unmappedTerms,
+            List<MappingIssue> mappingIssues) implements Serializable {
+
+        public TemplateConversationState {
+            unmappedTerms = unmappedTerms == null ? List.of() : List.copyOf(unmappedTerms);
+            mappingIssues = mappingIssues == null ? List.of() : List.copyOf(mappingIssues);
+        }
+
+        public static TemplateConversationState from(TemplateChatResponse response) {
+            return new TemplateConversationState(
+                    response.status(), response.template(), response.unmappedTerms(), response.mappingIssues());
+        }
+    }
+
+    public record TemplateConfirmRequest(
+            String userId, String conversationId, DimensionTemplate template) implements Serializable {
+    }
+
+    public record TemplateStateRequest(
+            String userId, String conversationId, TemplateConversationState state) implements Serializable {
+    }
 }

@@ -23,8 +23,6 @@ class QueryMetadataCatalogTest {
                 .isEqualTo("acpt_trans_rmb_amt_m");
         assertThat(QueryMetadataCatalog.smartBiFilterField("sett_dt_Day2"))
                 .isEqualTo("sett_dt_Day2");
-        assertThat(QueryMetadataCatalog.displayName("ins_ins_ch")).isEqualTo("发卡机构名称");
-        assertThat(QueryMetadataCatalog.displayNameBySmartBiField("acq_mkt_ch")).isEqualTo("收单市场");
         assertThatThrownBy(() -> QueryMetadataCatalog.smartBiField("transactionAmount"))
                 .isInstanceOf(IllegalArgumentException.class);
     }

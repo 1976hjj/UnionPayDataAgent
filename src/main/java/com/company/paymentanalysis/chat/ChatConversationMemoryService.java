@@ -1,5 +1,6 @@
 package com.company.paymentanalysis.chat;
 
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConversationState;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatResponse;
 import com.company.paymentanalysis.controller.ChatQueryController.ConversationDetail;
 import com.company.paymentanalysis.controller.ChatQueryController.ConversationMessage;
@@ -13,8 +14,10 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -44,6 +47,13 @@ public class ChatConversationMemoryService {
         return findWithFallback(userId, conversationId).map(StoredConversation::context);
     }
 
+    /** Returns the bounded data required to ground a later conversation turn. */
+    public Optional<ConversationSnapshot> snapshot(String userId, String conversationId) {
+        return findWithFallback(userId, conversationId)
+                .map(value -> new ConversationSnapshot(
+                        value.context(), value.messages(), value.artifacts(), value.attributionState()));
+    }
+
     public void saveTurn(String userId, String conversationId, String userMessage, ChatResponse response) {
         Instant now = Instant.now();
         StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
@@ -57,19 +67,108 @@ public class ChatConversationMemoryService {
                 nextId + 1, "assistant", response.reply(), response.suggestions(), response.result(),
                 response.executionEngine(), response.workflowSteps(), response.queryPlan(),
                 response.status(), "rejected".equals(response.status()) ? "rejected" : "normal",
-                response.queryAction(), response.queryExplanation(), response.llmMessage()));
+                response.queryAction(), response.queryExplanation(), response.llmMessage(),
+                response.derivedFromArtifactIds()));
 
         StoredConversation saved = new StoredConversation(
                 userId, conversationId, previous == null ? title(userMessage) : previous.title(),
                 previous == null ? now.toString() : previous.createdAt(),
-                now.toString(), response.context(), List.copyOf(messages));
-        localConversations.put(localKey(userId, conversationId), saved);
-        trimLocal(userId);
-        try {
-            save(saved);
-        } catch (ChatMemoryUnavailableException ignored) {
-            // Redis is optional. Keep the current conversation in this Java process.
-        }
+                now.toString(), response.context(), List.copyOf(messages),
+                previous == null ? List.of() : previous.artifacts(),
+                previous == null ? null : previous.attributionState());
+        store(saved);
+    }
+
+    public void saveConversationTurn(
+            String userId, String conversationId, String userMessage, String assistantReply,
+            QueryContext context) {
+        Instant now = Instant.now();
+        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
+        List<ConversationMessage> messages =
+                new ArrayList<>(previous == null ? List.of() : previous.messages());
+        int nextId = messages.stream().mapToInt(ConversationMessage::id).max().orElse(0) + 1;
+        messages.add(new ConversationMessage(
+                nextId, "user", userMessage, List.of(), null, null, List.of(), null,
+                null, "normal", null, null, null));
+        messages.add(new ConversationMessage(
+                nextId + 1, "assistant", assistantReply, List.of(), null,
+                "Conversation Agent", List.of(), null, "completed", "normal",
+                null, "基于当前会话与已保存分析产物生成回复。", null));
+        store(new StoredConversation(
+                userId, conversationId, previous == null ? title(userMessage) : previous.title(),
+                previous == null ? now.toString() : previous.createdAt(), now.toString(),
+                context == null ? (previous == null ? QueryContext.empty() : previous.context()) : context,
+                List.copyOf(messages), previous == null ? List.of() : previous.artifacts(),
+                previous == null ? null : previous.attributionState()));
+    }
+
+    /** Appends a turn from the attribution page to the same server-side conversation. */
+    public void saveAttributionTurn(
+            String userId, String conversationId, String userMessage, String assistantReply,
+            TemplateConversationState attributionState) {
+        Instant now = Instant.now();
+        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
+        List<ConversationMessage> messages = new ArrayList<>(
+                previous == null ? List.of() : previous.messages());
+        int nextId = messages.stream().mapToInt(ConversationMessage::id).max().orElse(0) + 1;
+        messages.add(new ConversationMessage(
+                nextId, "user", userMessage, List.of(), null, null, List.of(), null,
+                null, "normal", null, null, null));
+        messages.add(new ConversationMessage(
+                nextId + 1, "assistant", assistantReply, List.of(), null,
+                null, List.of(), null, "completed", "normal",
+                null, "归因页对话；未执行归因时不会触发 SmartBI。", null));
+        store(new StoredConversation(
+                userId, conversationId, previous == null ? title(userMessage) : previous.title(),
+                previous == null ? now.toString() : previous.createdAt(), now.toString(),
+                previous == null ? QueryContext.empty() : previous.context(), List.copyOf(messages),
+                previous == null ? List.of() : previous.artifacts(), attributionState));
+    }
+
+    public void saveAttributionState(
+            String userId, String conversationId, TemplateConversationState attributionState) {
+        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
+        if (previous == null) return;
+        store(new StoredConversation(
+                previous.userId(), previous.conversationId(), previous.title(), previous.createdAt(),
+                Instant.now().toString(), previous.context(), previous.messages(), previous.artifacts(),
+                attributionState));
+    }
+
+    public ConversationArtifact saveAttributionArtifact(
+            String userId, String conversationId, String title, String summary,
+            String requestContract, String evidence) {
+        return saveAttributionArtifact(
+                userId, conversationId, title, summary, requestContract, evidence,
+                Map.of(), List.of(), summary);
+    }
+
+    public ConversationArtifact saveAttributionArtifact(
+            String userId, String conversationId, String title, String summary,
+            String requestContract, String evidence, Map<String, String> attributes,
+            List<ConversationArtifact.VerifiedFact> verifiedFacts, String modelNarrative) {
+        Instant now = Instant.now();
+        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
+        ConversationArtifact artifact = new ConversationArtifact(
+                "attr-" + UUID.randomUUID(), "ATTRIBUTION", title, now.toString(),
+                summary, requestContract, evidence, attributes, verifiedFacts, modelNarrative);
+        List<ConversationArtifact> artifacts = new ArrayList<>(
+                previous == null ? List.of() : previous.artifacts());
+        artifacts.add(artifact);
+        List<ConversationMessage> messages = new ArrayList<>(
+                previous == null ? List.of() : previous.messages());
+        int nextId = messages.stream().mapToInt(ConversationMessage::id).max().orElse(0) + 1;
+        messages.add(new ConversationMessage(
+                nextId, "assistant", "已完成“" + title + "”。\n" + summary,
+                List.of("基于这份归因写业务汇报", "解释主要下滑原因"), null,
+                "Attribution Agent", List.of(), null, "completed", "normal", null,
+                "归因结果已保存为可引用产物，可在对话查数中继续追问。", null));
+        store(new StoredConversation(
+                userId, conversationId, previous == null ? title(title) : previous.title(),
+                previous == null ? now.toString() : previous.createdAt(), now.toString(),
+                previous == null ? QueryContext.empty() : previous.context(), List.copyOf(messages),
+                List.copyOf(artifacts), previous == null ? null : previous.attributionState()));
+        return artifact;
     }
 
     public List<ConversationSummary> list(String userId) {
@@ -93,7 +192,7 @@ public class ChatConversationMemoryService {
         return findWithFallback(userId, conversationId)
                 .map(value -> new ConversationDetail(
                         value.conversationId(), value.title(), value.createdAt(), value.updatedAt(),
-                        value.context(), value.messages()));
+                        value.context(), value.messages(), value.attributionState()));
     }
 
     public boolean deleteConversation(String userId, String conversationId) {
@@ -125,7 +224,10 @@ public class ChatConversationMemoryService {
         try {
             String json = redisTemplate.opsForValue().get(conversationKey(userId, conversationId));
             markRedisAvailable();
-            return json == null ? Optional.empty() : Optional.of(objectMapper.readValue(json, StoredConversation.class));
+            return json == null
+                    ? Optional.empty()
+                    : Optional.of(enforceConversationLimits(
+                            objectMapper.readValue(json, StoredConversation.class)));
         } catch (RuntimeException | JsonProcessingException exception) {
             throw unavailable(exception);
         }
@@ -175,6 +277,17 @@ public class ChatConversationMemoryService {
             markRedisAvailable();
         } catch (RuntimeException | JsonProcessingException exception) {
             throw unavailable(exception);
+        }
+    }
+
+    private void store(StoredConversation conversation) {
+        conversation = enforceConversationLimits(conversation);
+        localConversations.put(localKey(conversation.userId(), conversation.conversationId()), conversation);
+        trimLocal(conversation.userId());
+        try {
+            save(conversation);
+        } catch (ChatMemoryUnavailableException ignored) {
+            // Redis is optional. Keep the current conversation in this Java process.
         }
     }
 
@@ -256,6 +369,30 @@ public class ChatConversationMemoryService {
         return Math.max(1, properties.maxConversations());
     }
 
+    private StoredConversation enforceConversationLimits(StoredConversation conversation) {
+        return new StoredConversation(
+                conversation.userId(), conversation.conversationId(), conversation.title(),
+                conversation.createdAt(), conversation.updatedAt(), conversation.context(),
+                keepNewest(conversation.messages(), maxMessagesPerConversation()),
+                keepNewest(conversation.artifacts(), maxArtifactsPerConversation()),
+                conversation.attributionState());
+    }
+
+    private <T> List<T> keepNewest(List<T> values, int maximum) {
+        if (values.size() <= maximum) {
+            return values;
+        }
+        return List.copyOf(values.subList(values.size() - maximum, values.size()));
+    }
+
+    private int maxMessagesPerConversation() {
+        return Math.max(1, properties.maxMessagesPerConversation());
+    }
+
+    private int maxArtifactsPerConversation() {
+        return Math.max(1, properties.maxArtifactsPerConversation());
+    }
+
     private String prefix() {
         String prefix = properties.keyPrefix();
         return prefix == null || prefix.isBlank() ? "payment-analysis:chat:" : prefix;
@@ -271,7 +408,28 @@ public class ChatConversationMemoryService {
 
     private record StoredConversation(
             String userId, String conversationId, String title, String createdAt, String updatedAt,
-            QueryContext context, List<ConversationMessage> messages) {
+            QueryContext context, List<ConversationMessage> messages, List<ConversationArtifact> artifacts,
+            TemplateConversationState attributionState) {
+        private StoredConversation {
+            context = context == null ? QueryContext.empty() : context;
+            messages = messages == null ? List.of() : List.copyOf(messages);
+            artifacts = artifacts == null ? List.of() : List.copyOf(artifacts);
+        }
+    }
+
+    public record ConversationSnapshot(
+            QueryContext context, List<ConversationMessage> messages,
+            List<ConversationArtifact> artifacts, TemplateConversationState attributionState) {
+        public ConversationSnapshot {
+            context = context == null ? QueryContext.empty() : context;
+            messages = messages == null ? List.of() : List.copyOf(messages);
+            artifacts = artifacts == null ? List.of() : List.copyOf(artifacts);
+        }
+
+        public ConversationSnapshot(
+                QueryContext context, List<ConversationMessage> messages, List<ConversationArtifact> artifacts) {
+            this(context, messages, artifacts, null);
+        }
     }
 
     public static class ChatMemoryUnavailableException extends RuntimeException {

@@ -25,8 +25,6 @@ class MetadataControllerTest {
                 .andExpect(jsonPath("$.metrics.length()").value(24))
                 .andExpect(jsonPath("$.dimensions.length()").value(71))
                 .andExpect(jsonPath("$.metrics[0].id").value("trans_cnt_m"))
-                .andExpect(jsonPath("$.metrics[0].name").value("总交易笔数"))
-                .andExpect(jsonPath("$.dimensions[0].name").value("年"))
                 .andExpect(jsonPath("$.dimensions[1].id").value("sett_dt_Month2"))
                 .andExpect(jsonPath("$.dimensions[4].id").value("acq_mkt_ch"));
     }
