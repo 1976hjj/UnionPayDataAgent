@@ -2676,7 +2676,8 @@ td { color: #3b5069; }
 }
 
 @media (min-width: 1600px) {
-  .content:has(.query-chat-page) {
+  .content:has(.query-chat-page),
+  .content.attribution-content {
     padding-inline: clamp(34px, 3vw, 64px);
   }
 
@@ -2725,7 +2726,8 @@ td { color: #3b5069; }
     padding: 9px;
   }
 
-  .content:has(.query-chat-page) {
+  .content:has(.query-chat-page),
+  .content.attribution-content {
     padding: 20px 22px 28px;
   }
 
@@ -3827,17 +3829,17 @@ nav a small,
 .attribution-history-panel { position:sticky; top:16px; display:grid; grid-template-rows:auto minmax(0,1fr); width:210px; height:min(720px,calc(100vh - 120px)); min-height:340px; color:#38506a; background:#fbfcfe; }
 .attribution-history-panel { margin-top:0; }
 
-@media (min-width:901px) {
-  .attribution-history-panel .history-heading,
-  .attribution-history-panel .history-list {
-    transform: translateY(-10px);
-  }
-}
 .attribution-history-panel .history-heading { min-height:54px; }
 .attribution-history-panel .history-list { overflow-y:auto; }
 .attribution-history-backdrop { display:none; }
 .template-persistent-artifact { padding-left:47px; }
-.template-chat-thread { width:min(860px,calc(100% - 48px)); min-height:340px; margin:0 auto; padding:26px 0 18px; }
+.template-chat-thread {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 340px;
+  margin: 0;
+  padding: 26px 24px 18px;
+}
 .template-chat-thread.is-empty { display:grid; place-items:center; min-height:390px; }
 .template-chat-hero { max-width:570px; text-align:center; color:#667085; }
 .template-agent-mark, .template-message-avatar { display:grid; place-items:center; color:#fff; background:linear-gradient(145deg,#4f7ee8,#3157c8); font-weight:750; }
@@ -3909,7 +3911,7 @@ nav a small,
 .template-send-button { width:32px; height:32px; border:0; border-radius:50%; color:#fff; background:#101828; font-size:19px; line-height:1; cursor:pointer; }
 .template-send-button:disabled { color:#98a2b3; background:#e4e7ec; cursor:default; }
 .template-chat-error { margin:8px 4px 0; color:#b42318; font-size:12px; }.template-chat-notice { display:block; margin-top:8px; text-align:center; color:#98a2b3; font-size:10px; }
-.template-execution-controls { padding:22px 25px 24px; border-top:1px solid #eaecf0; background:#fff; }
+.template-execution-controls { padding:22px 25px 24px; border-top:0; background:#fff; }
 .template-execution-controls .config-divider { margin:20px 0; }
 .template-execution-controls .form-actions { justify-content:flex-end; padding:20px 0 0; border-top:0; }
 .template-execution-controls .form-actions .primary-button { width:auto; }
@@ -4090,4 +4092,145 @@ nav a small,
   .query-chat-page .message-list { padding-inline: 14px; }
   .query-chat-page .chat-composer { width: calc(100% - 28px); }
   .query-chat-page .message-bubble { font-size: 13px; }
+  .template-chat-thread { margin: 0 auto; padding-inline: 0; }
+}
+
+/* Fixed chat workspaces: the thread scrolls while the composer stays visible. */
+.query-chat-page,
+.chatgpt-template-workbench {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 151px);
+  min-height: 0;
+}
+
+.query-chat-page .chat-layout {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  align-items: stretch;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.query-chat-page .chat-panel {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.query-chat-page .message-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.query-chat-page .query-composer-dock {
+  grid-row: auto;
+}
+
+.query-chat-page .query-character-count {
+  flex: 0 0 auto;
+}
+
+.query-chat-page .query-composer-tools > span:first-child {
+  flex: 1 1 auto;
+}
+
+.chatgpt-template-workbench .attribution-chat-layout {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  align-items: stretch;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.chatgpt-template-workbench .attribution-chat-main {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+}
+
+.chatgpt-template-workbench .template-chat-thread {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+@media (max-width: 1250px) {
+  .query-chat-page,
+  .chatgpt-template-workbench { height: calc(100dvh - 120px); }
+
+  .query-chat-page .chat-panel {
+    grid-template-rows: 62px minmax(0, 1fr) auto;
+  }
+}
+
+@media (max-width: 900px) {
+  .query-chat-page,
+  .chatgpt-template-workbench { height: calc(100dvh - 84px - 62px); }
+
+  .query-chat-page .chat-panel {
+    grid-template-rows: 58px minmax(0, 1fr) auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .query-chat-page,
+  .chatgpt-template-workbench { height: calc(100dvh - 76px - 62px); }
+}
+
+/* Attribution always occupies the available viewport; all long content scrolls in its thread. */
+.attribution-page {
+  height: calc(100dvh - 151px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.attribution-page > .chatgpt-template-workbench {
+  height: 100%;
+  margin-bottom: 0;
+}
+
+@media (min-width: 1101px) {
+  .attribution-page { height: calc(100dvh - 167px); }
+}
+
+@media (max-width: 900px) {
+  .attribution-page { height: calc(100dvh - 84px - 62px); }
+}
+
+@media (max-width: 520px) {
+  .attribution-page { height: calc(100dvh - 76px - 62px); }
+}
+
+/* Query is also viewport-locked; only its panels scroll. */
+main:has(> .content.query-content),
+main:has(> .content.attribution-content) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.content.query-content,
+.content.attribution-content {
+  height: calc(100dvh - 72px);
+  overflow: hidden;
+}
+
+.content.query-content .query-chat-page,
+.content.attribution-content .attribution-page {
+  height: 100%;
+  min-height: 0;
+}
+
+@media (min-width: 1101px) {
+  .content.query-content,
+  .content.attribution-content { height: calc(100dvh - 78px); }
+}
+
+@media (max-width: 900px) {
+  .content.query-content,
+  .content.attribution-content { height: calc(100dvh - 60px - 62px); }
 }

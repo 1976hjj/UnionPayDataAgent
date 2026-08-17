@@ -340,6 +340,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
           {!messages.length && <div className="template-chat-hero"><div className="template-agent-mark">归</div><h3>想怎样分析这次指标变化？</h3><p>告诉我度量、两段时间、每层维度；有分析范围时也可以直接说过滤条件。</p><button type="button" onClick={() => { setMessage(EXAMPLE); window.setTimeout(() => inputRef.current?.focus(), 0) }}>使用示例</button></div>}
           {messages.map((item, index) => <div className={`template-thread-message ${item.role}`} key={`${item.role}-${index}`}><div className="template-message-avatar">{item.role === 'user' ? '你' : '归'}</div><div><p>{item.text}</p></div></div>)}
           {template && <div className="template-persistent-artifact"><TemplateArtifact template={template} response={response} pending={pending} onConfirm={confirm} onReset={startNewConversation} onContinuationChange={changeContinuation} onRemoveDimension={removeDimension} /></div>}
+          {executionControls}
           {pending && <div className="template-thread-message assistant thinking"><div className="template-message-avatar">归</div><div><span /><span /><span /></div></div>}
         </div>
 
@@ -347,7 +348,6 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
           <textarea ref={inputRef} aria-label="描述归因模板" rows={1} value={message} onKeyDown={keyboardSubmit} onChange={(event) => setMessage(event.target.value)} placeholder="给归因 Agent 发消息……" />
           <div className="template-composer-tools"><button className="template-example-button" type="button" onClick={() => { setMessage(EXAMPLE); window.setTimeout(() => inputRef.current?.focus(), 0) }}>示例</button><span>Enter 发送 · Shift+Enter 换行</span><button className="template-send-button" aria-label="发送" type="submit" disabled={pending || !message.trim()}>↑</button></div>
         </form>{error && <div className="template-chat-error" role="alert">{error}</div>}<small className="template-chat-notice">模板由模型理解生成，请确认度量、周期和层级后再使用。</small></div>
-        {executionControls}
       </div>
     </div>
   </section>

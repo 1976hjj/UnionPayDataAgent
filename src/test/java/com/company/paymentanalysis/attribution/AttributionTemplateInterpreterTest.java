@@ -18,10 +18,36 @@ import com.company.paymentanalysis.attribution.AttributionTemplateModels.Templat
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class AttributionTemplateInterpreterTest {
+
+    @Test
+    void resolvesRelativePeriodsEvenWhenTheModelLeavesTheDateFieldsBlank() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model")))
+                .thenReturn(message("""
+                        {"analysisTerms":[],"explicitOrder":false,"requestsAutoExploration":true,
+                        "requestsStopAfterTemplate":false,"metricTerm":"交易金额","currentPeriod":"",
+                        "comparisonPeriod":"","filterTerms":[],"unmappedTerms":[]}
+                        """))
+                .thenReturn(message("""
+                        {"name":"交易金额归因","mode":"AUTO","metricId":"trans_rmb_amt_m",
+                        "currentPeriod":"","comparisonPeriod":"","filters":[],"levels":[],
+                        "continuationMode":"AUTO","summary":"自由探索","unmappedTerms":[],"mappingIssues":[]}
+                        """));
+
+        var result = interpreterAt("2026-08-16T00:00:00Z", llm).interpret(new TemplateChatRequest(
+                "user", "conversation", "当前周期，本月；对比周期，上月", List.of(), null, "company-model"));
+
+        assertThat(result.status()).isEqualTo("READY_TO_CONFIRM");
+        assertThat(result.template().currentPeriod()).isEqualTo("2026-08");
+        assertThat(result.template().comparisonPeriod()).isEqualTo("2026-07");
+    }
 
     @Test
     void extractsMetricPeriodsAndParallelDimensionsIntoACompleteTemplate() {
@@ -202,6 +228,11 @@ class AttributionTemplateInterpreterTest {
 
     private AttributionTemplateInterpreter interpreter(OpenAiCompatibleLlmClient llm) {
         return new AttributionTemplateInterpreter(llm, new ObjectMapper());
+    }
+
+    private AttributionTemplateInterpreter interpreterAt(String instant, OpenAiCompatibleLlmClient llm) {
+        return new AttributionTemplateInterpreter(
+                llm, new ObjectMapper(), Clock.fixed(Instant.parse(instant), ZoneOffset.UTC));
     }
 
     private LlmResultMessage message(String content) {

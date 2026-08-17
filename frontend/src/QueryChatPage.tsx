@@ -733,22 +733,24 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
             )}
           </div>
 
-          <form className="chat-composer" onSubmit={submit}>
-            {validation && <span className="composer-error" role="alert">{validation}</span>}
-            <textarea
-              aria-label="输入查数需求"
-              maxLength={2000}
-              placeholder="可以查数，也可以基于刚才归因结果写汇报、解释结论或继续追问"
-              value={input}
-              onChange={(event) => { setInput(event.target.value); setValidation('') }}
-              onKeyDown={handleKeyDown}
-            />
-            <div>
-              <span>Enter 发送 · Shift + Enter 换行</span>
-              <span>{input.length}/2000</span>
-              <button className="send-button" disabled={pending || !input.trim()} type="submit">发送</button>
-            </div>
-          </form>
+          <div className="template-composer-dock query-composer-dock">
+            <form className="template-chat-composer" onSubmit={submit}>
+              <textarea
+                aria-label="输入查数需求"
+                maxLength={2000}
+                placeholder="可以查数，也可以基于刚才归因结果写汇报、解释结论或继续追问"
+                value={input}
+                onChange={(event) => { setInput(event.target.value); setValidation('') }}
+                onKeyDown={handleKeyDown}
+              />
+              <div className="template-composer-tools query-composer-tools">
+                <span>Enter 发送 · Shift+Enter 换行</span>
+                <span className="query-character-count">{input.length}/2000</span>
+                <button className="template-send-button" aria-label="发送" disabled={pending || !input.trim()} type="submit">↑</button>
+              </div>
+            </form>
+            {validation && <div className="template-chat-error" role="alert">{validation}</div>}
+          </div>
         </div>
 
         <aside className={`context-panel ${openSidePanel === 'context' ? 'is-open' : ''}`}>

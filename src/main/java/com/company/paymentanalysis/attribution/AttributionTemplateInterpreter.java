@@ -11,6 +11,7 @@ import com.company.paymentanalysis.attribution.AttributionTemplateModels.Templat
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.ChatMessage;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
+import com.company.paymentanalysis.time.RelativeTimeResolver;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -20,6 +21,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.time.YearMonth;
+import java.time.Clock;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -36,10 +39,18 @@ public class AttributionTemplateInterpreter {
 
     private final OpenAiCompatibleLlmClient llmClient;
     private final ObjectMapper objectMapper;
+    private final RelativeTimeResolver relativeTimeResolver;
 
-    public AttributionTemplateInterpreter(OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper) {
+    @Autowired
+    public AttributionTemplateInterpreter(
+            OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
+        this.relativeTimeResolver = new RelativeTimeResolver(clock);
+    }
+
+    AttributionTemplateInterpreter(OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper) {
+        this(llmClient, objectMapper, Clock.systemDefaultZone());
     }
 
     public TemplateChatResponse interpret(TemplateChatRequest request) {
@@ -55,6 +66,10 @@ public class AttributionTemplateInterpreter {
                     + "\"comparisonPeriod\":\"\",\"filterTerms\":[],\"unmappedTerms\":[]}";
             LlmResultMessage intentMessage = complete(intentMessages, mockIntent, request.model());
             RawSemanticIntent semanticIntent = parseSemanticIntent(intentMessage.content());
+            RelativeTimeResolver.ResolvedPeriodPair resolvedPeriods = relativeTimeResolver
+                    .resolveAttributionPeriods(
+                            semanticIntent.currentPeriod(), semanticIntent.comparisonPeriod(), request.message());
+            semanticIntent = semanticIntent.withResolvedPeriods(resolvedPeriods);
 
             List<ChatMessage> mappingMessages = List.of(
                     new ChatMessage("system", mappingPrompt()),
@@ -65,6 +80,7 @@ public class AttributionTemplateInterpreter {
                     "未识别到明确分析维度，保持自由探索。", List.of(), List.of()));
             LlmResultMessage mappingMessage = complete(mappingMessages, mockMapped, request.model());
             RawMappedTemplate mapped = parseMappedTemplate(mappingMessage.content());
+            mapped = mapped.withResolvedPeriods(resolvedPeriods);
             DimensionTemplate template = validateMapped(mapped);
             String status = mapped.mappingIssues().isEmpty() && mapped.unmappedTerms().isEmpty()
                     && hasRequiredAnalysisInputs(template)
@@ -421,6 +437,14 @@ public class AttributionTemplateInterpreter {
             unmappedTerms = unmappedTerms == null ? List.of() : List.copyOf(unmappedTerms);
             mappingIssues = mappingIssues == null ? List.of() : List.copyOf(mappingIssues);
         }
+
+        private RawMappedTemplate withResolvedPeriods(RelativeTimeResolver.ResolvedPeriodPair periods) {
+            return new RawMappedTemplate(
+                    name, mode, metricId,
+                    periods.currentPeriod() == null ? currentPeriod : periods.currentPeriod(),
+                    periods.comparisonPeriod() == null ? comparisonPeriod : periods.comparisonPeriod(),
+                    filters, levels, continuationMode, summary, unmappedTerms, mappingIssues);
+        }
     }
 
     private record RawLayer(int level, List<RawDimension> dimensions) {
@@ -453,6 +477,14 @@ public class AttributionTemplateInterpreter {
             analysisTerms = analysisTerms == null ? List.of() : List.copyOf(analysisTerms);
             filterTerms = filterTerms == null ? List.of() : List.copyOf(filterTerms);
             unmappedTerms = unmappedTerms == null ? List.of() : List.copyOf(unmappedTerms);
+        }
+
+        private RawSemanticIntent withResolvedPeriods(RelativeTimeResolver.ResolvedPeriodPair periods) {
+            return new RawSemanticIntent(
+                    analysisTerms, explicitOrder, requestsAutoExploration, requestsStopAfterTemplate, metricTerm,
+                    periods.currentPeriod() == null ? currentPeriod : periods.currentPeriod(),
+                    periods.comparisonPeriod() == null ? comparisonPeriod : periods.comparisonPeriod(),
+                    filterTerms, unmappedTerms);
         }
     }
 

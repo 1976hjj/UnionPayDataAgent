@@ -129,7 +129,7 @@ export default function App() {
             <div className="user">演示用户<small>数据分析员</small></div>
           </div>
         </header>
-        <div className={`content ${queryActive ? 'query-content' : ''}`}>
+        <div className={`content ${queryActive ? 'query-content' : ''} ${attributionActive ? 'attribution-content' : ''}`}>
           <Routes>
             <Route path="/query" element={null} />
             <Route path="/attribution" element={null} />

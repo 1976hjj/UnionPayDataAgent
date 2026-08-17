@@ -580,7 +580,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
 
   return (
     <section className="attribution-page">
-      <AttributionTemplateChat selectedModel={selectedModel} onTemplateChange={applyTemplate} onConversationChange={setConversationId} executionControls={
+      <AttributionTemplateChat selectedModel={selectedModel} onTemplateChange={applyTemplate} onConversationChange={setConversationId} executionControls={<>
         <div className="template-execution-controls attribution-mvp-config">
           <div className="attribution-limit-grid">
             <label>每轮最大分支 <input type="number" min="1" max={limits.hardMaxBranches} value={maxBranches} onChange={(event) => setMaxBranches(Number(event.target.value))} /><small>最多 {limits.hardMaxBranches} 个分支</small></label>
@@ -602,7 +602,6 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
           <div className="form-actions"><button className="primary-button" disabled={pending || !metadata || templateStatus === 'DRAFT'} type="button" onClick={() => void submit()}>{pending ? 'Agent 分析中…' : templateStatus === 'DRAFT' ? '请先确认模板' : '开始归因分析'}</button></div>
           {pending && <div className="attribution-running" aria-live="polite"><i /><div><strong>正在执行智能归因</strong><span>总体查询 → 维度假设 → 并行取证 → 动态下钻 → 生成报告</span></div></div>}
         </div>
-      } />
 
       {(pending || streamFailure) && <section className="workspace-card live-agent-process" aria-live="polite">
         <header><div><small>{streamFailure ? '执行失败' : '实时执行中'}</small><h2>Agent 过程</h2><p>{streamFailure || '节点完成后会立即标记为 COMPLETED；LLM 输入和返回会在调用完成后显示。'}</p></div><span className={streamFailure ? 'failed' : 'running'}>{streamFailure ? 'FAILED' : 'RUNNING'}</span></header>
@@ -644,6 +643,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
           </section>}
         </div>
       )}
+      </>} />
     </section>
   )
 }

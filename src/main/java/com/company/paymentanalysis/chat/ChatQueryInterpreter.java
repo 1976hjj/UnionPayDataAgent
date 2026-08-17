@@ -7,6 +7,7 @@ import com.company.paymentanalysis.controller.ChatQueryController.SortSpec;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.ChatMessage;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
+import com.company.paymentanalysis.time.RelativeTimeResolver;
 import com.company.paymentanalysis.query.QueryMetadataCatalog;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -16,7 +17,6 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.Serializable;
 import java.time.Clock;
 import java.time.LocalDate;
-import java.time.YearMonth;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -40,12 +40,14 @@ public class ChatQueryInterpreter {
     private final OpenAiCompatibleLlmClient llmClient;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final RelativeTimeResolver relativeTimeResolver;
 
     public ChatQueryInterpreter(
             OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.relativeTimeResolver = new RelativeTimeResolver(clock);
     }
 
     public QueryActionResult interpret(ChatRequest request, QueryContext current) {
@@ -156,7 +158,6 @@ public class ChatQueryInterpreter {
             if (!(root instanceof ObjectNode objectRoot) || !root.path("filters").isArray()) {
                 return content;
             }
-            LocalDate today = LocalDate.now(clock);
             for (JsonNode filter : root.path("filters")) {
                 if (!(filter instanceof ObjectNode objectFilter)
                         || !"RELATIVE".equals(filter.path("operator").asText())) {
@@ -168,26 +169,10 @@ public class ChatQueryInterpreter {
                 if (count < 1 || count > 10000) {
                     continue;
                 }
-                List<String> values = switch (unit) {
-                    case "DAY" -> count == 1
-                            ? List.of(today.toString())
-                            : List.of(today.minusDays(count - 1L).toString(), today.toString());
-                    case "MONTH" -> {
-                        YearMonth end = YearMonth.from(today);
-                        yield count == 1
-                                ? List.of(end.toString())
-                                : List.of(end.minusMonths(count - 1L).toString(), end.toString());
-                    }
-                    case "YEAR" -> count == 1
-                            ? List.of(Integer.toString(today.getYear()))
-                            : List.of(
-                                    Integer.toString(today.getYear() - count + 1),
-                                    Integer.toString(today.getYear()));
-                    default -> List.of();
-                };
-                if (!values.isEmpty()) {
-                    objectFilter.put("resolvedOperator", count == 1 ? "EQUALS" : "BETWEEN");
-                    objectFilter.set("resolvedValues", objectMapper.valueToTree(values));
+                var resolved = relativeTimeResolver.resolveRange(unit, count);
+                if (resolved.isPresent()) {
+                    objectFilter.put("resolvedOperator", resolved.get().operator());
+                    objectFilter.set("resolvedValues", objectMapper.valueToTree(resolved.get().values()));
                 }
             }
             return objectMapper.writeValueAsString(objectRoot);
