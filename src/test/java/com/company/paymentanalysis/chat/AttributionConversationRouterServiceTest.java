@@ -68,6 +68,26 @@ class AttributionConversationRouterServiceTest {
     }
 
     @Test
+    void treatsAnUnspecifiedBusinessDeclineAsAttributionInsteadOfGenericRouteClarification() {
+        AttributionTemplateInterpreter interpreter = mock(AttributionTemplateInterpreter.class);
+        ChatConversationMemoryService memory = mock(ChatConversationMemoryService.class);
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        DimensionTemplate template = DimensionTemplate.auto();
+        when(memory.snapshot("user", "conversation", ChatConversationMemoryService.ConversationScope.ATTRIBUTION))
+                .thenReturn(Optional.of(new ConversationSnapshot(QueryContext.empty(), List.of(), List.of())));
+        when(interpreter.interpret(org.mockito.ArgumentMatchers.any())).thenReturn(new TemplateChatResponse(
+                "NEEDS_CLARIFICATION", "请补充分析度量、当前周期和对比周期。",
+                template, List.of(), List.of(), null, null));
+
+        TemplateChatResponse response = service(interpreter, memory, llm).respond(new TemplateChatRequest(
+                "user", "conversation", "帮我看看最近交易情况下跌为什么", List.of(), null, "model"));
+
+        assertThat(response.status()).isEqualTo("NEEDS_CLARIFICATION");
+        verify(interpreter).interpret(org.mockito.ArgumentMatchers.argThat(request ->
+                request.message().contains("交易情况") && request.currentTemplate() == null));
+    }
+
+    @Test
     void neverRendersMalformedProviderJsonAsChatAnswer() {
         AttributionTemplateInterpreter interpreter = mock(AttributionTemplateInterpreter.class);
         ChatConversationMemoryService memory = mock(ChatConversationMemoryService.class);

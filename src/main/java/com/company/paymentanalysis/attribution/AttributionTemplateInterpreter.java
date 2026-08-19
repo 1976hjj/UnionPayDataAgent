@@ -9,6 +9,7 @@ import com.company.paymentanalysis.attribution.AttributionTemplateModels.Templat
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConversationMessage;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateChatResponse;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateFilter;
+import com.company.paymentanalysis.chat.ClarificationPlanner;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.ChatMessage;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
@@ -45,15 +46,23 @@ public class AttributionTemplateInterpreter {
     private final ObjectMapper objectMapper;
     private final RelativeTimeResolver relativeTimeResolver;
     private final MetadataRetrievalTool metadataRetrievalTool;
+    private final ClarificationPlanner clarificationPlanner;
 
     @Autowired
     public AttributionTemplateInterpreter(
             OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock,
-            MetadataRetrievalTool metadataRetrievalTool) {
+            MetadataRetrievalTool metadataRetrievalTool, ClarificationPlanner clarificationPlanner) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
         this.relativeTimeResolver = new RelativeTimeResolver(clock);
         this.metadataRetrievalTool = metadataRetrievalTool;
+        this.clarificationPlanner = clarificationPlanner;
+    }
+
+    AttributionTemplateInterpreter(
+            OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock,
+            MetadataRetrievalTool metadataRetrievalTool) {
+        this(llmClient, objectMapper, clock, metadataRetrievalTool, ClarificationPlanner.noOp());
     }
 
     AttributionTemplateInterpreter(
@@ -97,7 +106,7 @@ public class AttributionTemplateInterpreter {
             String status = hasRequiredAnalysisInputs(template)
                     ? "READY_TO_CONFIRM"
                     : "NEEDS_CLARIFICATION";
-            String reply = reply(current, template, mapped, status);
+            String reply = reply(request, current, template, mapped, retrievedMetadata, status);
             return new TemplateChatResponse(
                     status, reply, template, mapped.unmappedTerms(), mapped.mappingIssues(),
                     intentMessage, mappingMessage);
@@ -311,7 +320,12 @@ public class AttributionTemplateInterpreter {
     }
 
     private String reply(
-            DimensionTemplate previous, DimensionTemplate current, RawMappedTemplate mapped, String status) {
+            TemplateChatRequest request,
+            DimensionTemplate previous,
+            DimensionTemplate current,
+            RawMappedTemplate mapped,
+            RetrievedMetadata retrievedMetadata,
+            String status) {
         List<String> changes = describeChanges(previous, current);
         String changed = changes.isEmpty() ? "" : "已基于上一轮模板更新：" + String.join("；", changes) + "。";
         if ("READY_TO_CONFIRM".equals(status)) {
@@ -319,18 +333,47 @@ public class AttributionTemplateInterpreter {
                     ? "已保留上一轮完整分析框架，本轮没有识别到需要修改的内容。"
                     : changed + "请确认当前完整模板。";
         }
-        java.util.ArrayList<String> needs = new java.util.ArrayList<>();
-        if (!StringUtils.hasText(current.metricId())) needs.add("分析度量");
-        if (!StringUtils.hasText(current.currentPeriod())) needs.add("当前周期（请使用 yyyy-MM，例如 2026-07）");
-        if (!StringUtils.hasText(current.comparisonPeriod())) needs.add("对比周期（请使用 yyyy-MM，例如 2025-07）");
+        java.util.ArrayList<ClarificationPlanner.MissingItem> needs = new java.util.ArrayList<>();
+        if (!StringUtils.hasText(current.metricId())) needs.add(new ClarificationPlanner.MissingItem("metric", "分析度量"));
+        if (!StringUtils.hasText(current.currentPeriod())) needs.add(new ClarificationPlanner.MissingItem(
+                "currentPeriod", "当前分析周期（yyyy-MM）"));
+        if (!StringUtils.hasText(current.comparisonPeriod())) needs.add(new ClarificationPlanner.MissingItem(
+                "comparisonPeriod", "对比基准或对比周期（yyyy-MM）"));
         if (StringUtils.hasText(current.currentPeriod()) && StringUtils.hasText(current.comparisonPeriod())
                 && !YearMonth.parse(current.currentPeriod()).isAfter(YearMonth.parse(current.comparisonPeriod()))) {
-            needs.add("当前周期需晚于对比周期");
+            needs.add(new ClarificationPlanner.MissingItem("periodOrder", "当前周期需晚于对比周期"));
         }
-        mapped.mappingIssues().forEach(issue -> needs.add(issue.userTerm() + "的维度映射"));
-        mapped.unmappedTerms().forEach(term -> needs.add(term + "的字段映射"));
-        String clarification = needs.isEmpty() ? "请澄清本轮要求。" : "还需要确认：" + String.join("、", needs) + "。";
+        java.util.LinkedHashSet<String> mappingTerms = new java.util.LinkedHashSet<>();
+        mapped.mappingIssues().forEach(issue -> mappingTerms.add(issue.userTerm()));
+        mappingTerms.addAll(mapped.unmappedTerms());
+        mappingTerms.forEach(term -> needs.add(new ClarificationPlanner.MissingItem(
+                "mapping:" + term, term + "的字段归属")));
+        String clarification = clarificationPlanner.plan(new ClarificationPlanner.ClarificationRequest(
+                "ATTRIBUTION",
+                request.message(),
+                needs,
+                knownAttributionFacts(current),
+                attributionMetricCandidates(retrievedMetadata)), request.model());
         return changed + clarification;
+    }
+
+    private List<String> knownAttributionFacts(DimensionTemplate template) {
+        java.util.ArrayList<String> facts = new java.util.ArrayList<>();
+        if (StringUtils.hasText(template.metricName())) facts.add("已识别度量：" + template.metricName());
+        if (StringUtils.hasText(template.currentPeriod())) facts.add("当前周期：" + template.currentPeriod());
+        if (StringUtils.hasText(template.comparisonPeriod())) facts.add("对比周期：" + template.comparisonPeriod());
+        if (!template.filters().isEmpty()) facts.add("已保留维度过滤：" + template.filters().size() + " 项");
+        return List.copyOf(facts);
+    }
+
+    private List<String> attributionMetricCandidates(RetrievedMetadata metadata) {
+        List<String> retrieved = metadata == null ? List.of() : metadata.metrics().stream()
+                .map(candidate -> candidate.fieldName())
+                .filter(StringUtils::hasText)
+                .distinct().limit(6).toList();
+        if (!retrieved.isEmpty()) return retrieved;
+        return AttributionCatalog.metricIds().stream().filter(id -> id.endsWith("_m"))
+                .map(AttributionCatalog::metricName).distinct().limit(6).toList();
     }
 
     private List<String> describeChanges(DimensionTemplate previous, DimensionTemplate current) {

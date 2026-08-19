@@ -71,17 +71,20 @@ public class ChatQueryWorkflowService {
     private final SmartBiQueryBuilder queryBuilder;
     private final SmartBiClient smartBiClient;
     private final ObjectMapper objectMapper;
+    private final ClarificationPlanner clarificationPlanner;
     private final CompiledGraph<ChatState> graph;
 
     public ChatQueryWorkflowService(
             ChatQueryInterpreter interpreter,
             SmartBiQueryBuilder queryBuilder,
             SmartBiClient smartBiClient,
-            ObjectMapper objectMapper) throws GraphStateException {
+            ObjectMapper objectMapper,
+            ClarificationPlanner clarificationPlanner) throws GraphStateException {
         this.interpreter = interpreter;
         this.queryBuilder = queryBuilder;
         this.smartBiClient = smartBiClient;
         this.objectMapper = objectMapper;
+        this.clarificationPlanner = clarificationPlanner;
         this.graph = new StateGraph<>(
                         ChatState.SCHEMA,
                         (AgentStateFactory<ChatState>) ChatState::new)
@@ -152,12 +155,19 @@ public class ChatQueryWorkflowService {
                 ? null
                 : interpretationFailure.llmMessage();
         List<WorkflowStep> steps = failureSteps(failedNode, error);
-        String reply = "查询流程在“" + failedName + "”节点停止：" + error
-                + "。后续 SmartBI 查询未执行。";
+        boolean needsClarification = interpretationFailure != null;
+        String reply = needsClarification
+                ? clarificationPlanner.plan(new ClarificationPlanner.ClarificationRequest(
+                        "QUERY", request.message(),
+                        List.of(new ClarificationPlanner.MissingItem(
+                                "fieldMapping", "可识别的查询指标或维度")),
+                        List.of(), queryMetricCandidates()), request.model())
+                : "查询流程在“" + failedName + "”节点停止：" + error
+                        + "。后续 SmartBI 查询未执行。";
         return new ChatResponse(
-                "rejected",
+                needsClarification ? "clarifying" : "rejected",
                 reply,
-                List.of(),
+                needsClarification ? queryMetricCandidates() : List.of(),
                 normalize(request.context()),
                 null,
                 "LangGraph4j → " + interpreter.engineLabel(request.model()) + " → SmartBI Client",
@@ -371,7 +381,7 @@ public class ChatQueryWorkflowService {
                 ? result.summary()
                 : ready
                         ? confirmationSummary(context)
-                        : clarificationReply(validationIssues);
+                        : clarificationReply(chatRequest, context, validationIssues);
         List<WorkflowStep> steps = appendFinalStep(state, new WorkflowStep(
                 "generateChatResponse",
                 "生成查数回复",
@@ -496,11 +506,38 @@ public class ChatQueryWorkflowService {
                 + "。确认后才会调用 SmartBI。";
     }
 
-    private String clarificationReply(List<String> validationIssues) {
-        if (validationIssues.isEmpty()) {
-            return "查询条件尚未完整，请补充必要条件。";
+    private String clarificationReply(
+            ChatRequest request, QueryContext context, List<String> validationIssues) {
+        List<ClarificationPlanner.MissingItem> missing = validationIssues.stream()
+                .filter(org.springframework.util.StringUtils::hasText)
+                .map(item -> new ClarificationPlanner.MissingItem("query:" + item, item))
+                .toList();
+        return clarificationPlanner.plan(new ClarificationPlanner.ClarificationRequest(
+                "QUERY", request.message(), missing, knownQueryFacts(context),
+                context.metricIds().isEmpty() ? queryMetricCandidates() : List.of()), request.model());
+    }
+
+    private List<String> knownQueryFacts(QueryContext context) {
+        List<String> facts = new ArrayList<>();
+        if (!context.metricIds().isEmpty()) {
+            facts.add("已识别度量：" + context.metricIds().stream()
+                    .map(QueryMetadataCatalog::displayName)
+                    .reduce((left, right) -> left + "、" + right).orElse(""));
         }
-        return "查询条件尚未完整：" + String.join("、", validationIssues) + "。";
+        if (!context.dimensionIds().isEmpty()) {
+            facts.add("已识别分组维度：" + context.dimensionIds().stream()
+                    .map(QueryMetadataCatalog::displayName)
+                    .reduce((left, right) -> left + "、" + right).orElse(""));
+        }
+        if (!context.dimensionFilters().isEmpty()) {
+            facts.add("已识别维度过滤：" + context.dimensionFilters().size() + " 项");
+        }
+        return List.copyOf(facts);
+    }
+
+    private List<String> queryMetricCandidates() {
+        return QueryMetadataCatalog.metricIds().stream()
+                .map(QueryMetadataCatalog::displayName).distinct().limit(6).toList();
     }
 
     private String fieldDisplayName(String fieldId) {

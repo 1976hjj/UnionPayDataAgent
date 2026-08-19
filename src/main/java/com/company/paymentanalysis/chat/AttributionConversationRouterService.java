@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -32,7 +33,7 @@ public class AttributionConversationRouterService {
             ".*(总结|解释|说明|结论|汇报|邮件|润色|改写|翻译|描述|复盘|输出格式|写成|整理成|刚才结果|归因结果).*",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern TEMPLATE_OPERATION = Pattern.compile(
-            ".*(归因|分析.*(?:下降|上涨|变化|原因)|第[一二三123]层|层级|维度|度量|当前周期|对比周期|"
+            ".*(归因|分析.*(?:下降|下跌|减少|变少|上涨|增长|变化|原因)|(?:交易|业务|表现|金额|笔数|商户).*(?:下降|下跌|减少|变少|上涨|增长|变化|原因)|第[一二三123]层|层级|维度|度量|当前周期|对比周期|"
                     + "同比|环比|自由探索|继续下钻|停止下钻|模板|过滤条件|筛选范围|改成|改为|增加|删除|移除|合并|"
                     + "不用管|不需要|不要|不看|忽略|去掉|排除|只看).*",
             Pattern.CASE_INSENSITIVE);
@@ -42,18 +43,31 @@ public class AttributionConversationRouterService {
     private final ConversationRouterService artifactSelector;
     private final OpenAiCompatibleLlmClient llmClient;
     private final ObjectMapper objectMapper;
+    private final ClarificationPlanner clarificationPlanner;
 
+    @Autowired
     public AttributionConversationRouterService(
             AttributionTemplateInterpreter interpreter,
             ChatConversationMemoryService memoryService,
             ConversationRouterService artifactSelector,
             OpenAiCompatibleLlmClient llmClient,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            ClarificationPlanner clarificationPlanner) {
         this.interpreter = interpreter;
         this.memoryService = memoryService;
         this.artifactSelector = artifactSelector;
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
+        this.clarificationPlanner = clarificationPlanner;
+    }
+
+    AttributionConversationRouterService(
+            AttributionTemplateInterpreter interpreter,
+            ChatConversationMemoryService memoryService,
+            ConversationRouterService artifactSelector,
+            OpenAiCompatibleLlmClient llmClient,
+            ObjectMapper objectMapper) {
+        this(interpreter, memoryService, artifactSelector, llmClient, objectMapper, ClarificationPlanner.noOp());
     }
 
     public TemplateChatResponse respond(TemplateChatRequest sourceRequest) {
@@ -72,8 +86,8 @@ public class AttributionConversationRouterService {
         TemplateChatResponse response = decision == Route.ATTRIBUTION_TEMPLATE
                 ? interpreter.interpret(request)
                 : decision == Route.CLARIFY
-                        ? chatResponse(previousState,
-                                "我需要确认：你是想继续调整当前归因模板，还是想对已有结果进行解释/改写？")
+                        ? chatResponse(previousState, clarificationPlanner.plan(
+                                routeClarification(request, previousState), request.model()))
                         : conversationalResponse(request, snapshot.artifacts(), previousState);
         TemplateConversationState state = "CHAT".equals(response.status())
                 ? previousState : TemplateConversationState.from(response);
@@ -125,6 +139,18 @@ public class AttributionConversationRouterService {
         } catch (Exception ignored) {
             return Route.CLARIFY;
         }
+    }
+
+    private ClarificationPlanner.ClarificationRequest routeClarification(
+            TemplateChatRequest request, TemplateConversationState previousState) {
+        List<ClarificationPlanner.MissingItem> missing = new ArrayList<>();
+        if (previousState == null || previousState.template() == null) {
+            missing.add(new ClarificationPlanner.MissingItem("intent", "本轮希望完成的分析目标"));
+        } else {
+            missing.add(new ClarificationPlanner.MissingItem("intent", "本轮希望对当前归因做的调整或解读目标"));
+        }
+        return new ClarificationPlanner.ClarificationRequest(
+                "ATTRIBUTION_ROUTE", request.message(), missing, List.of(), List.of());
     }
 
     private String routeContext(TemplateChatRequest request, List<ConversationArtifact> artifacts) {
