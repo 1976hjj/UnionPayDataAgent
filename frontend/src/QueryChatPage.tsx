@@ -147,7 +147,7 @@ type ConversationDetail = {
 }
 
 const CURRENT_USER_ID = 'demo-user'
-const ACTIVE_CONVERSATION_KEY = `payment-analysis:active-conversation:${CURRENT_USER_ID}`
+const ACTIVE_CONVERSATION_KEY = `payment-analysis:active-query-conversation:${CURRENT_USER_ID}`
 
 const EMPTY_CONTEXT: QueryContext = {
   metricIds: [],
@@ -366,15 +366,6 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [])
 
-  useEffect(() => {
-    function restoreUnifiedConversation(event: Event) {
-      const conversation = event as CustomEvent<string>
-      if (conversation.detail) void restoreConversation(conversation.detail, false)
-    }
-    window.addEventListener('unified-conversation-changed', restoreUnifiedConversation)
-    return () => window.removeEventListener('unified-conversation-changed', restoreUnifiedConversation)
-  }, [])
-
   const metricNames = context.metricIds
     .map((id) => metadata.metrics.find((metric) => metric.id === id)?.name)
     .filter(Boolean)
@@ -403,7 +394,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
     setHistoryLoading(true)
     try {
       const historyResponse = await fetch(
-        `/api/chat/conversations?userId=${encodeURIComponent(CURRENT_USER_ID)}`,
+        `/api/chat/conversations?userId=${encodeURIComponent(CURRENT_USER_ID)}&scope=QUERY`,
       )
       const history = historyResponse.ok
         ? await historyResponse.json() as ConversationSummary[]
@@ -424,7 +415,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
 
   async function refreshHistory() {
     try {
-      const response = await fetch(`/api/chat/conversations?userId=${encodeURIComponent(CURRENT_USER_ID)}`)
+      const response = await fetch(`/api/chat/conversations?userId=${encodeURIComponent(CURRENT_USER_ID)}&scope=QUERY`)
       if (response.ok) setConversations(await response.json() as ConversationSummary[])
     } catch {
       // 当前对话仍可继续，历史列表稍后再次刷新。
@@ -435,7 +426,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
     if (showLoading) setPending(true)
     try {
       const response = await fetch(
-        `/api/chat/conversations/${encodeURIComponent(id)}?userId=${encodeURIComponent(CURRENT_USER_ID)}`,
+        `/api/chat/conversations/${encodeURIComponent(id)}?userId=${encodeURIComponent(CURRENT_USER_ID)}&scope=QUERY`,
       )
       if (!response.ok) return false
       const detail = await response.json() as ConversationDetail
@@ -483,7 +474,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
     setValidation('')
     try {
       const response = await fetch(
-        `/api/chat/conversations/${encodeURIComponent(conversation.conversationId)}?userId=${encodeURIComponent(CURRENT_USER_ID)}`,
+        `/api/chat/conversations/${encodeURIComponent(conversation.conversationId)}?userId=${encodeURIComponent(CURRENT_USER_ID)}&scope=QUERY`,
         { method: 'DELETE' },
       )
       if (!response.ok) {
@@ -600,7 +591,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
         )}
         <aside className={`conversation-history-panel ${openSidePanel === 'history' ? 'is-open' : ''}`}>
           <div className="history-heading">
-            <div><strong>会话历史</strong><small>查数与归因共享</small></div>
+          <div><strong>会话历史</strong><small>仅显示查数会话</small></div>
             <div className="side-panel-actions">
               <button type="button" onClick={startNewConversation} aria-label="新建对话">＋</button>
               <button

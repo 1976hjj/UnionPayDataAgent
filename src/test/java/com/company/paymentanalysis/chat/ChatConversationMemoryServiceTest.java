@@ -119,13 +119,9 @@ class ChatConversationMemoryServiceTest {
                 redis, new ObjectMapper(), new ChatMemoryProperties(
                         false, "test:chat:", 30, 50, 4, 2));
         QueryContext context = QueryContext.empty();
-        ChatResponse response = new ChatResponse(
-                "completed", "done", List.of(), context, null, "Conversation Agent",
-                List.of(), null, "capacity-test", null, "done", null);
-
-        service.saveTurn("capacity-user", "capacity-test", "turn-1", response);
-        service.saveTurn("capacity-user", "capacity-test", "turn-2", response);
-        service.saveTurn("capacity-user", "capacity-test", "turn-3", response);
+        service.saveAttributionTurn("capacity-user", "capacity-test", "turn-1", "done", null);
+        service.saveAttributionTurn("capacity-user", "capacity-test", "turn-2", "done", null);
+        service.saveAttributionTurn("capacity-user", "capacity-test", "turn-3", "done", null);
         service.saveAttributionArtifact(
                 "capacity-user", "capacity-test", "artifact-1", "summary-1", "request-1", "evidence-1");
         service.saveAttributionArtifact(
@@ -133,7 +129,8 @@ class ChatConversationMemoryServiceTest {
         service.saveAttributionArtifact(
                 "capacity-user", "capacity-test", "artifact-3", "summary-3", "request-3", "evidence-3");
 
-        var snapshot = service.snapshot("capacity-user", "capacity-test").orElseThrow();
+        var snapshot = service.snapshot("capacity-user", "capacity-test",
+                ChatConversationMemoryService.ConversationScope.ATTRIBUTION).orElseThrow();
         assertThat(snapshot.messages()).hasSize(4);
         assertThat(snapshot.messages()).extracting(message -> message.id())
                 .containsExactly(6, 7, 8, 9);

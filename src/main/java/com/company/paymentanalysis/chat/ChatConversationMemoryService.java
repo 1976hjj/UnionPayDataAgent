@@ -44,19 +44,24 @@ public class ChatConversationMemoryService {
     }
 
     public Optional<QueryContext> restoreContext(String userId, String conversationId) {
-        return findWithFallback(userId, conversationId).map(StoredConversation::context);
+        return findWithFallback(userId, conversationId, ConversationScope.QUERY).map(StoredConversation::context);
     }
 
     /** Returns the bounded data required to ground a later conversation turn. */
     public Optional<ConversationSnapshot> snapshot(String userId, String conversationId) {
-        return findWithFallback(userId, conversationId)
+        return snapshot(userId, conversationId, ConversationScope.QUERY);
+    }
+
+    public Optional<ConversationSnapshot> snapshot(
+            String userId, String conversationId, ConversationScope scope) {
+        return findWithFallback(userId, conversationId, scope)
                 .map(value -> new ConversationSnapshot(
                         value.context(), value.messages(), value.artifacts(), value.attributionState()));
     }
 
     public void saveTurn(String userId, String conversationId, String userMessage, ChatResponse response) {
         Instant now = Instant.now();
-        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
+        StoredConversation previous = findWithFallback(userId, conversationId, ConversationScope.QUERY).orElse(null);
         List<ConversationMessage> messages =
                 new ArrayList<>(previous == null ? List.of() : previous.messages());
         int nextId = messages.stream().mapToInt(ConversationMessage::id).max().orElse(0) + 1;
@@ -75,7 +80,7 @@ public class ChatConversationMemoryService {
                 previous == null ? now.toString() : previous.createdAt(),
                 now.toString(), response.context(), List.copyOf(messages),
                 previous == null ? List.of() : previous.artifacts(),
-                previous == null ? null : previous.attributionState());
+                previous == null ? null : previous.attributionState(), ConversationScope.QUERY);
         store(saved);
     }
 
@@ -83,7 +88,7 @@ public class ChatConversationMemoryService {
             String userId, String conversationId, String userMessage, String assistantReply,
             QueryContext context) {
         Instant now = Instant.now();
-        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
+        StoredConversation previous = findWithFallback(userId, conversationId, ConversationScope.QUERY).orElse(null);
         List<ConversationMessage> messages =
                 new ArrayList<>(previous == null ? List.of() : previous.messages());
         int nextId = messages.stream().mapToInt(ConversationMessage::id).max().orElse(0) + 1;
@@ -99,7 +104,7 @@ public class ChatConversationMemoryService {
                 previous == null ? now.toString() : previous.createdAt(), now.toString(),
                 context == null ? (previous == null ? QueryContext.empty() : previous.context()) : context,
                 List.copyOf(messages), previous == null ? List.of() : previous.artifacts(),
-                previous == null ? null : previous.attributionState()));
+                previous == null ? null : previous.attributionState(), ConversationScope.QUERY));
     }
 
     /** Appends a turn from the attribution page to the same server-side conversation. */
@@ -107,7 +112,7 @@ public class ChatConversationMemoryService {
             String userId, String conversationId, String userMessage, String assistantReply,
             TemplateConversationState attributionState) {
         Instant now = Instant.now();
-        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
+        StoredConversation previous = findWithFallback(userId, conversationId, ConversationScope.ATTRIBUTION).orElse(null);
         List<ConversationMessage> messages = new ArrayList<>(
                 previous == null ? List.of() : previous.messages());
         int nextId = messages.stream().mapToInt(ConversationMessage::id).max().orElse(0) + 1;
@@ -122,17 +127,17 @@ public class ChatConversationMemoryService {
                 userId, conversationId, previous == null ? title(userMessage) : previous.title(),
                 previous == null ? now.toString() : previous.createdAt(), now.toString(),
                 previous == null ? QueryContext.empty() : previous.context(), List.copyOf(messages),
-                previous == null ? List.of() : previous.artifacts(), attributionState));
+                previous == null ? List.of() : previous.artifacts(), attributionState, ConversationScope.ATTRIBUTION));
     }
 
     public void saveAttributionState(
             String userId, String conversationId, TemplateConversationState attributionState) {
-        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
+        StoredConversation previous = findWithFallback(userId, conversationId, ConversationScope.ATTRIBUTION).orElse(null);
         if (previous == null) return;
         store(new StoredConversation(
                 previous.userId(), previous.conversationId(), previous.title(), previous.createdAt(),
                 Instant.now().toString(), previous.context(), previous.messages(), previous.artifacts(),
-                attributionState));
+                attributionState, ConversationScope.ATTRIBUTION));
     }
 
     public ConversationArtifact saveAttributionArtifact(
@@ -148,7 +153,7 @@ public class ChatConversationMemoryService {
             String requestContract, String evidence, Map<String, String> attributes,
             List<ConversationArtifact.VerifiedFact> verifiedFacts, String modelNarrative) {
         Instant now = Instant.now();
-        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
+        StoredConversation previous = findWithFallback(userId, conversationId, ConversationScope.ATTRIBUTION).orElse(null);
         ConversationArtifact artifact = new ConversationArtifact(
                 "attr-" + UUID.randomUUID(), "ATTRIBUTION", title, now.toString(),
                 summary, requestContract, evidence, attributes, verifiedFacts, modelNarrative);
@@ -167,11 +172,15 @@ public class ChatConversationMemoryService {
                 userId, conversationId, previous == null ? title(title) : previous.title(),
                 previous == null ? now.toString() : previous.createdAt(), now.toString(),
                 previous == null ? QueryContext.empty() : previous.context(), List.copyOf(messages),
-                List.copyOf(artifacts), previous == null ? null : previous.attributionState()));
+                List.copyOf(artifacts), previous == null ? null : previous.attributionState(), ConversationScope.ATTRIBUTION));
         return artifact;
     }
 
     public List<ConversationSummary> list(String userId) {
+        return list(userId, ConversationScope.QUERY);
+    }
+
+    public List<ConversationSummary> list(String userId, ConversationScope scope) {
         List<StoredConversation> conversations;
         try {
             conversations = listStored(userId);
@@ -181,6 +190,7 @@ public class ChatConversationMemoryService {
             conversations = localStored(userId);
         }
         return conversations.stream()
+                .filter(value -> value.scope() == scope)
                 .sorted(Comparator.comparing(StoredConversation::updatedAt).reversed())
                 .limit(maxConversations())
                 .map(value -> new ConversationSummary(
@@ -189,13 +199,23 @@ public class ChatConversationMemoryService {
     }
 
     public Optional<ConversationDetail> detail(String userId, String conversationId) {
-        return findWithFallback(userId, conversationId)
+        return detail(userId, conversationId, ConversationScope.QUERY);
+    }
+
+    public Optional<ConversationDetail> detail(
+            String userId, String conversationId, ConversationScope scope) {
+        return findWithFallback(userId, conversationId, scope)
                 .map(value -> new ConversationDetail(
                         value.conversationId(), value.title(), value.createdAt(), value.updatedAt(),
                         value.context(), value.messages(), value.attributionState()));
     }
 
     public boolean deleteConversation(String userId, String conversationId) {
+        return deleteConversation(userId, conversationId, ConversationScope.QUERY);
+    }
+
+    public boolean deleteConversation(String userId, String conversationId, ConversationScope scope) {
+        if (findWithFallback(userId, conversationId, scope).isEmpty()) return false;
         boolean localDeleted = localConversations.remove(localKey(userId, conversationId)) != null;
         try {
             ensureRedisAttemptAllowed();
@@ -243,6 +263,11 @@ public class ChatConversationMemoryService {
         } catch (ChatMemoryUnavailableException ignored) {
             return Optional.ofNullable(localConversations.get(localKey(userId, conversationId)));
         }
+    }
+
+    private Optional<StoredConversation> findWithFallback(
+            String userId, String conversationId, ConversationScope scope) {
+        return findWithFallback(userId, conversationId).filter(value -> value.scope() == scope);
     }
 
     private List<StoredConversation> localStored(String userId) {
@@ -375,7 +400,7 @@ public class ChatConversationMemoryService {
                 conversation.createdAt(), conversation.updatedAt(), conversation.context(),
                 keepNewest(conversation.messages(), maxMessagesPerConversation()),
                 keepNewest(conversation.artifacts(), maxArtifactsPerConversation()),
-                conversation.attributionState());
+                conversation.attributionState(), conversation.scope());
     }
 
     private <T> List<T> keepNewest(List<T> values, int maximum) {
@@ -409,13 +434,18 @@ public class ChatConversationMemoryService {
     private record StoredConversation(
             String userId, String conversationId, String title, String createdAt, String updatedAt,
             QueryContext context, List<ConversationMessage> messages, List<ConversationArtifact> artifacts,
-            TemplateConversationState attributionState) {
+            TemplateConversationState attributionState, ConversationScope scope) {
         private StoredConversation {
             context = context == null ? QueryContext.empty() : context;
             messages = messages == null ? List.of() : List.copyOf(messages);
             artifacts = artifacts == null ? List.of() : List.copyOf(artifacts);
+            scope = scope == null
+                    ? attributionState == null ? ConversationScope.QUERY : ConversationScope.ATTRIBUTION
+                    : scope;
         }
     }
+
+    public enum ConversationScope { QUERY, ATTRIBUTION }
 
     public record ConversationSnapshot(
             QueryContext context, List<ConversationMessage> messages,

@@ -1,5 +1,7 @@
 package com.company.paymentanalysis.llm;
 
+import com.company.paymentanalysis.audit.ProcessAuditLog;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.Serializable;
 import java.time.Instant;
@@ -20,12 +22,15 @@ public class OpenAiCompatibleLlmClient {
 
     private final LlmProperties properties;
     private final RestClient.Builder restClientBuilder;
+    private final ProcessAuditLog auditLog;
     private final Map<String, Instant> lastSuccessAt = new ConcurrentHashMap<>();
     private final Map<String, Instant> lastFailureAt = new ConcurrentHashMap<>();
 
-    public OpenAiCompatibleLlmClient(LlmProperties properties, RestClient.Builder restClientBuilder) {
+    public OpenAiCompatibleLlmClient(
+            LlmProperties properties, RestClient.Builder restClientBuilder, ProcessAuditLog auditLog) {
         this.properties = properties;
         this.restClientBuilder = restClientBuilder;
+        this.auditLog = auditLog;
     }
 
     public String complete(List<ChatMessage> messages, String mockContent) {
@@ -40,8 +45,21 @@ public class OpenAiCompatibleLlmClient {
             List<ChatMessage> messages, String mockContent, String requestedModel) {
         LlmProperties.ModelProfile profile = resolveProfile(requestedModel);
         String model = profile.model();
+        auditLog.event("llm.request", Map.of(
+                "profileId", profile.id(),
+                "model", model,
+                "baseUrl", profile.baseUrl(),
+                "chatPath", profile.chatPath(),
+                "jsonMode", profile.jsonMode(),
+                "thinkingEnabled", profile.thinkingEnabled(),
+                "maxTokens", profile.maxTokens(),
+                "temperature", profile.temperature(),
+                "messages", messages));
         if (properties.mockEnabled()) {
-            return new LlmResultMessage(model, "assistant", mockContent, List.copyOf(messages));
+            LlmResultMessage result = new LlmResultMessage(model, "assistant", mockContent, List.copyOf(messages));
+            auditLog.event("llm.response", Map.of(
+                    "model", result.model(), "role", result.role(), "content", result.content(), "mock", true));
+            return result;
         }
         if (!StringUtils.hasText(profile.baseUrl()) || !StringUtils.hasText(model)) {
             throw new IllegalStateException("启用真实 LLM 时必须配置模型地址和模型名称");
@@ -72,6 +90,10 @@ public class OpenAiCompatibleLlmClient {
             response = executeWithRetry(request, body);
         } catch (RuntimeException exception) {
             lastFailureAt.put(profile.id(), Instant.now());
+            auditLog.event("llm.failed", Map.of(
+                    "model", model,
+                    "exception", exception.getClass().getSimpleName(),
+                    "message", exception.getMessage() == null ? "" : exception.getMessage()));
             throw exception;
         }
         JsonNode message = response == null ? null : response.at("/choices/0/message");
@@ -82,12 +104,20 @@ public class OpenAiCompatibleLlmClient {
         }
         lastSuccessAt.put(profile.id(), Instant.now());
         String role = message.path("role").asText("assistant");
-        return new LlmResultMessage(
+        LlmResultMessage result = new LlmResultMessage(
                 response.path("model").asText(model),
                 role,
                 content.asText(),
                 List.copyOf(messages),
-                response.toPrettyString());
+                // Audit records are JSONL, so the provider payload must not inject line breaks.
+                response.toString());
+        auditLog.event("llm.response", Map.of(
+                "model", result.model(),
+                "role", result.role(),
+                "content", result.content(),
+                "rawProviderResponse", result.rawResponse(),
+                "mock", false));
+        return result;
     }
 
     private JsonNode executeWithRetry(RestClient.RequestBodySpec request, ChatCompletionRequest body) {

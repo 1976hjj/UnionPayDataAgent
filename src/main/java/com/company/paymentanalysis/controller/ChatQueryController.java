@@ -1,6 +1,8 @@
 package com.company.paymentanalysis.controller;
 
 import com.company.paymentanalysis.chat.ChatConversationMemoryService;
+import com.company.paymentanalysis.chat.ChatConversationMemoryService.ConversationScope;
+import com.company.paymentanalysis.audit.ProcessAuditLog;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService.ChatMemoryUnavailableException;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
 import com.company.paymentanalysis.chat.ConversationRouterService;
@@ -33,13 +35,15 @@ public class ChatQueryController {
     private final ConversationRouterService conversationRouter;
     private final ChatConversationMemoryService memoryService;
     private final OpenAiCompatibleLlmClient llmClient;
+    private final ProcessAuditLog auditLog;
 
     public ChatQueryController(
             ConversationRouterService conversationRouter, ChatConversationMemoryService memoryService,
-            OpenAiCompatibleLlmClient llmClient) {
+            OpenAiCompatibleLlmClient llmClient, ProcessAuditLog auditLog) {
         this.conversationRouter = conversationRouter;
         this.memoryService = memoryService;
         this.llmClient = llmClient;
+        this.auditLog = auditLog;
     }
 
     @PostMapping("/query")
@@ -59,6 +63,13 @@ public class ChatQueryController {
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
+        try (ProcessAuditLog.AuditScope scope = auditLog.start("chat.query", Map.of(
+                "userId", userId,
+                "conversationId", conversationId,
+                "userInput", message,
+                "model", model,
+                "confirmed", request.confirmed(),
+                "clientContext", request.context() == null ? QueryContext.empty() : request.context()))) {
         QueryContext restoredContext = request.context();
         try {
             restoredContext = memoryService.restoreContext(userId, conversationId).orElse(request.context());
@@ -73,13 +84,31 @@ public class ChatQueryController {
         } catch (ChatMemoryUnavailableException ignored) {
             // 依赖状态接口会向前端报告 Redis 故障。
         }
+        scope.completed(Map.of(
+                "status", response.status(),
+                "assistantReply", response.reply(),
+                "conversationId", response.conversationId(),
+                "queryAction", response.queryAction() == null ? "" : response.queryAction().toString(),
+                "smartBiExecuted", response.result() != null,
+                "smartBiRowCount", response.result() == null ? 0 : response.result().rows().size(),
+                "conversationOutcome", querySucceeded(response) ? "success" : "failed"));
         return response;
+        }
+    }
+
+    private boolean querySucceeded(ChatResponse response) {
+        return "completed".equals(response.status())
+                && response.result() != null
+                && response.result().rows() != null
+                && !response.result().rows().isEmpty();
     }
 
     @GetMapping("/conversations")
-    public List<ConversationSummary> conversations(@RequestParam(defaultValue = "demo-user") String userId) {
+    public List<ConversationSummary> conversations(
+            @RequestParam(defaultValue = "demo-user") String userId,
+            @RequestParam(defaultValue = "QUERY") ConversationScope scope) {
         try {
-            return memoryService.list(identifier(userId, "demo-user"));
+            return memoryService.list(identifier(userId, "demo-user"), scope);
         } catch (ChatMemoryUnavailableException exception) {
             throw new ResponseStatusException(
                     HttpStatus.SERVICE_UNAVAILABLE, "Redis 不可用，无法读取历史会话");
@@ -88,11 +117,12 @@ public class ChatQueryController {
 
     @GetMapping("/conversations/{conversationId}")
     public ConversationDetail conversation(
-            @PathVariable String conversationId, @RequestParam(defaultValue = "demo-user") String userId) {
+            @PathVariable String conversationId, @RequestParam(defaultValue = "demo-user") String userId,
+            @RequestParam(defaultValue = "QUERY") ConversationScope scope) {
         String safeUserId = identifier(userId, "demo-user");
         String safeConversationId = identifier(conversationId, "");
         try {
-            return memoryService.detail(safeUserId, safeConversationId)
+            return memoryService.detail(safeUserId, safeConversationId, scope)
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "对话不存在"));
         } catch (ChatMemoryUnavailableException exception) {
             throw new ResponseStatusException(
@@ -103,11 +133,12 @@ public class ChatQueryController {
     @DeleteMapping("/conversations/{conversationId}")
     public ResponseEntity<Void> deleteConversation(
             @PathVariable String conversationId,
-            @RequestParam(defaultValue = "demo-user") String userId) {
+            @RequestParam(defaultValue = "demo-user") String userId,
+            @RequestParam(defaultValue = "QUERY") ConversationScope scope) {
         String safeUserId = identifier(userId, "demo-user");
         String safeConversationId = identifier(conversationId, "");
         try {
-            if (!memoryService.deleteConversation(safeUserId, safeConversationId)) {
+            if (!memoryService.deleteConversation(safeUserId, safeConversationId, scope)) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "对话不存在");
             }
             return ResponseEntity.noContent().build();

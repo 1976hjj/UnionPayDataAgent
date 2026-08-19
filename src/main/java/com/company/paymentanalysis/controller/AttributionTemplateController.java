@@ -1,6 +1,7 @@
 package com.company.paymentanalysis.controller;
 
 import com.company.paymentanalysis.attribution.AttributionTemplateInterpreter;
+import com.company.paymentanalysis.audit.ProcessAuditLog;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.DimensionTemplate;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConfirmRequest;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateChatRequest;
@@ -11,6 +12,7 @@ import com.company.paymentanalysis.chat.AttributionConversationRouterService;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import java.util.List;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -26,16 +28,19 @@ public class AttributionTemplateController {
     private final AttributionConversationRouterService conversationRouter;
     private final ChatConversationMemoryService memoryService;
     private final OpenAiCompatibleLlmClient llmClient;
+    private final ProcessAuditLog auditLog;
 
     public AttributionTemplateController(
             AttributionTemplateInterpreter interpreter,
             AttributionConversationRouterService conversationRouter,
             ChatConversationMemoryService memoryService,
-            OpenAiCompatibleLlmClient llmClient) {
+            OpenAiCompatibleLlmClient llmClient,
+            ProcessAuditLog auditLog) {
         this.interpreter = interpreter;
         this.conversationRouter = conversationRouter;
         this.memoryService = memoryService;
         this.llmClient = llmClient;
+        this.auditLog = auditLog;
     }
 
     @PostMapping("/chat")
@@ -48,9 +53,22 @@ public class AttributionTemplateController {
         }
         try {
             String model = llmClient.resolveSelection(request.model());
-            return conversationRouter.respond(new TemplateChatRequest(
-                    request.userId(), request.conversationId(), request.message().trim(),
-                    request.conversationHistory(), request.currentTemplate(), model));
+            try (ProcessAuditLog.AuditScope scope = auditLog.start("attribution.template.chat", Map.of(
+                    "userId", request.userId() == null ? "" : request.userId(),
+                    "conversationId", request.conversationId() == null ? "" : request.conversationId(),
+                    "userInput", request.message().trim(),
+                    "model", model,
+                    "currentTemplate", request.currentTemplate() == null ? DimensionTemplate.auto() : request.currentTemplate()))) {
+                TemplateChatResponse response = conversationRouter.respond(new TemplateChatRequest(
+                        request.userId(), request.conversationId(), request.message().trim(),
+                        request.conversationHistory(), request.currentTemplate(), model));
+                scope.completed(Map.of(
+                        "status", response.status(), "assistantReply", response.reply(),
+                        "template", response.template() == null ? DimensionTemplate.auto() : response.template(),
+                        "conversationOutcome", "failed",
+                        "outcomeReason", "Template chat does not produce an attribution report"));
+                return response;
+            }
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage());
         }

@@ -21,6 +21,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home appuser
 COPY --from=backend-build /workspace/target/payment-analysis.jar /app/app.jar
+RUN mkdir -p /app/logs && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 8080
 ENV JAVA_OPTS=""

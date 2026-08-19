@@ -5,4 +5,5 @@ frontend/node/
 .idea/
 .vscode/
 *.log
+logs/
 .env

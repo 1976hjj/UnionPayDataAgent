@@ -23,6 +23,8 @@ services:
         condition: service_healthy
     ports:
       - "${APP_PORT:-8080}:8080"
+    volumes:
+      - ${PROCESS_AUDIT_HOST_DIR:-./logs}:/app/logs
     environment:
       JAVA_OPTS: >-
         -XX:MaxRAMPercentage=75.0
@@ -48,6 +50,9 @@ services:
       CHAT_MEMORY_TTL_DAYS: ${CHAT_MEMORY_TTL_DAYS:-30}
       CHAT_MEMORY_MAX_MESSAGES_PER_CONVERSATION: ${CHAT_MEMORY_MAX_MESSAGES_PER_CONVERSATION:-100}
       CHAT_MEMORY_MAX_ARTIFACTS_PER_CONVERSATION: ${CHAT_MEMORY_MAX_ARTIFACTS_PER_CONVERSATION:-20}
+      PROCESS_AUDIT_ENABLED: ${PROCESS_AUDIT_ENABLED:-true}
+      PROCESS_AUDIT_FILE: ${PROCESS_AUDIT_FILE:-/app/logs/process-audit.jsonl}
+      PROCESS_AUDIT_MAX_TEXT_LENGTH: ${PROCESS_AUDIT_MAX_TEXT_LENGTH:-200000}
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/health"]
       interval: 30s

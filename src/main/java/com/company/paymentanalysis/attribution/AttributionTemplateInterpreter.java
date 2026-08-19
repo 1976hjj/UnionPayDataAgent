@@ -80,10 +80,9 @@ public class AttributionTemplateInterpreter {
                     "未识别到明确分析维度，保持自由探索。", List.of(), List.of()));
             LlmResultMessage mappingMessage = complete(mappingMessages, mockMapped, request.model());
             RawMappedTemplate mapped = parseMappedTemplate(mappingMessage.content());
-            mapped = mapped.withResolvedPeriods(resolvedPeriods);
+            mapped = mapped.withResolvedPeriods(resolvedPeriods).withValidPeriods();
             DimensionTemplate template = validateMapped(mapped);
-            String status = mapped.mappingIssues().isEmpty() && mapped.unmappedTerms().isEmpty()
-                    && hasRequiredAnalysisInputs(template)
+            String status = hasRequiredAnalysisInputs(template)
                     ? "READY_TO_CONFIRM"
                     : "NEEDS_CLARIFICATION";
             String reply = reply(current, template, mapped, status);
@@ -283,8 +282,8 @@ public class AttributionTemplateInterpreter {
         }
         java.util.ArrayList<String> needs = new java.util.ArrayList<>();
         if (!StringUtils.hasText(current.metricId())) needs.add("分析度量");
-        if (!StringUtils.hasText(current.currentPeriod())) needs.add("当前周期");
-        if (!StringUtils.hasText(current.comparisonPeriod())) needs.add("对比周期");
+        if (!StringUtils.hasText(current.currentPeriod())) needs.add("当前周期（请使用 yyyy-MM，例如 2026-07）");
+        if (!StringUtils.hasText(current.comparisonPeriod())) needs.add("对比周期（请使用 yyyy-MM，例如 2025-07）");
         if (StringUtils.hasText(current.currentPeriod()) && StringUtils.hasText(current.comparisonPeriod())
                 && !YearMonth.parse(current.currentPeriod()).isAfter(YearMonth.parse(current.comparisonPeriod()))) {
             needs.add("当前周期需晚于对比周期");
@@ -338,7 +337,7 @@ public class AttributionTemplateInterpreter {
         return StringUtils.hasText(value) ? value : "未设置";
     }
 
-    private String normalizePeriod(String value) {
+    private static String normalizePeriod(String value) {
         String text = safeText(value);
         if (text.isEmpty()) return "";
         java.util.regex.Matcher matcher = java.util.regex.Pattern
@@ -356,6 +355,16 @@ public class AttributionTemplateInterpreter {
         if (!StringUtils.hasText(value)) return;
         try { YearMonth.parse(value); }
         catch (RuntimeException exception) { throw new IllegalArgumentException(name + "格式必须是yyyy-MM"); }
+    }
+
+    private static String validPeriodOrBlank(String value) {
+        String normalized = normalizePeriod(value);
+        if (!StringUtils.hasText(normalized)) return "";
+        try {
+            return YearMonth.parse(normalized).toString();
+        } catch (RuntimeException exception) {
+            return "";
+        }
     }
 
     private RawSemanticIntent parseSemanticIntent(String content) throws JsonProcessingException {
@@ -400,7 +409,7 @@ public class AttributionTemplateInterpreter {
                 : llmClient.completeWithMessage(messages, fallback);
     }
 
-    private String safeText(String value) {
+    private static String safeText(String value) {
         return value == null ? "" : value.trim();
     }
 
@@ -443,6 +452,13 @@ public class AttributionTemplateInterpreter {
                     name, mode, metricId,
                     periods.currentPeriod() == null ? currentPeriod : periods.currentPeriod(),
                     periods.comparisonPeriod() == null ? comparisonPeriod : periods.comparisonPeriod(),
+                    filters, levels, continuationMode, summary, unmappedTerms, mappingIssues);
+        }
+
+        private RawMappedTemplate withValidPeriods() {
+            return new RawMappedTemplate(
+                    name, mode, metricId,
+                    validPeriodOrBlank(currentPeriod), validPeriodOrBlank(comparisonPeriod),
                     filters, levels, continuationMode, summary, unmappedTerms, mappingIssues);
         }
     }

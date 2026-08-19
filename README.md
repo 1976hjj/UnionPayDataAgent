@@ -249,3 +249,8 @@ SMARTBI_AUTHORIZATION=
 `SMARTBI_AUTHORIZATION` 传入完整的 Authorization 请求头值；密钥和会话值不要写进代码或镜像。
 SmartBI 原始 `CellData` 会在客户端适配层转换成按 `columnLabels` 命名的行数据，
 LangGraph4j 流程和前端无需感知 HTTP 返回格式。
+
+查日志命令
+Get-Content .\logs\process-audit.jsonl |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object traceId -eq '你的-traceId'

@@ -114,6 +114,56 @@ class AttributionTemplateInterpreterTest {
     }
 
     @Test
+    void returnsClarificationInsteadOfFailingWhenTheModelReturnsYearOnlyPeriods() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model")))
+                .thenReturn(message("""
+                        {"analysisTerms":[],"explicitOrder":true,"requestsAutoExploration":true,
+                        "requestsStopAfterTemplate":false,"metricTerm":"rate promotion","currentPeriod":"2024",
+                        "comparisonPeriod":"2023","filterTerms":[],"unmappedTerms":[]}
+                        """))
+                .thenReturn(message("""
+                        {"name":"Rate promotion comparison","mode":"AUTO","metricId":"","currentPeriod":"2024",
+                        "comparisonPeriod":"2023","filters":[],"levels":[],"continuationMode":"AUTO",
+                        "summary":"Need more information","unmappedTerms":["rate promotion"],
+                        "mappingIssues":[{"userTerm":"rate promotion","reason":"No catalog match","candidateDimensionIds":[]}]}
+                        """));
+
+        var result = interpreter(llm).interpret(new TemplateChatRequest(
+                "user", "conversation", "compare this year with last year", List.of(), null, "company-model"));
+
+        assertThat(result.status()).isEqualTo("NEEDS_CLARIFICATION");
+        assertThat(result.template().currentPeriod()).isEmpty();
+        assertThat(result.template().comparisonPeriod()).isEmpty();
+        assertThat(result.reply()).contains("yyyy-MM");
+    }
+
+    @Test
+    void allowsConfirmationWhenTheRequiredInputsArePresentButMappingWarningsRemain() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model")))
+                .thenReturn(message("""
+                        {"analysisTerms":[{"term":"brand","level":1,"context":"requested dimension"}],
+                        "explicitOrder":true,"requestsAutoExploration":false,"requestsStopAfterTemplate":true,
+                        "metricTerm":"transaction count","currentPeriod":"2026-08","comparisonPeriod":"2025-08",
+                        "filterTerms":[],"unmappedTerms":[]}
+                        """))
+                .thenReturn(message("""
+                        {"name":"Comparison","mode":"USER_DEFINED","metricId":"trans_cnt_m","currentPeriod":"2026-08",
+                        "comparisonPeriod":"2025-08","filters":[],"levels":[{"level":1,"dimensions":[
+                        {"dimensionId":"brand","userTerm":"brand","rationale":"catalog match","confidence":"HIGH"}]}],
+                        "continuationMode":"STOP","summary":"Ready with an advisory","unmappedTerms":[],
+                        "mappingIssues":[{"userTerm":"rate promotion","reason":"Advisory only","candidateDimensionIds":[]}]}
+                        """));
+
+        var result = interpreter(llm).interpret(new TemplateChatRequest(
+                "user", "conversation", "compare transaction count", List.of(), null, "company-model"));
+
+        assertThat(result.status()).isEqualTo("READY_TO_CONFIRM");
+        assertThat(result.mappingIssues()).singleElement().extracting(issue -> issue.userTerm()).isEqualTo("rate promotion");
+    }
+
+    @Test
     void refusesToConfirmUntilMetricAndBothPeriodsArePresent() {
         DimensionTemplate draft = new DimensionTemplate(
                 "缺少任务要素", "USER_DEFINED", "", "", "", "",

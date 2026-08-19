@@ -45,7 +45,7 @@ class AttributionControllerTest {
     }
 
     @Test
-    void savesTheCompletedAttributionForAConversationFollowUp() throws Exception {
+    void savesTheCompletedAttributionWithoutExposingItToAQueryConversation() throws Exception {
         mockMvc.perform(analyze("""
                 {"userId":"attribution-user","conversationId":"attribution-follow-up",
                  "metricId":"trans_rmb_amt_m","currentPeriod":"2026-07","comparisonPeriod":"2026-06",
@@ -54,7 +54,8 @@ class AttributionControllerTest {
                 """))
                 .andExpect(status().isOk());
 
-        var artifacts = memoryService.snapshot("attribution-user", "attribution-follow-up")
+        var artifacts = memoryService.snapshot("attribution-user", "attribution-follow-up",
+                ChatConversationMemoryService.ConversationScope.ATTRIBUTION)
                 .orElseThrow().artifacts();
         var artifact = artifacts.get(artifacts.size() - 1);
         assertThat(artifact.verifiedFacts()).isNotEmpty();
@@ -70,8 +71,8 @@ class AttributionControllerTest {
                                  {"metricIds":[],"dimensionIds":[],"dimensionFilters":[],"sorts":[]}}
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.executionEngine").value(org.hamcrest.Matchers.containsString("Conversation Router")))
-                .andExpect(jsonPath("$.reply").value(org.hamcrest.Matchers.containsString("归因（2026-07 对比 2026-06）")));
+                .andExpect(jsonPath("$.derivedFromArtifactIds.length()").value(0))
+                .andExpect(jsonPath("$.result").doesNotExist());
     }
 
     @Test

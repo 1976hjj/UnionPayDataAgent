@@ -3,6 +3,9 @@ package com.company.paymentanalysis.llm;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.company.paymentanalysis.audit.ProcessAuditLog;
+import com.company.paymentanalysis.audit.ProcessAuditProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.client.RestClient;
@@ -27,7 +30,7 @@ class OpenAiCompatibleLlmClientTest {
                                     "glm-4.6-fp8", "GLM-4.6-FP8（公司）", "glm-4.6-fp8",
                                     "http://172.19.209.6:32002/v1", "/chat/completions",
                                     false, false, false, 512, 0.0))),
-            RestClient.builder());
+            RestClient.builder(), auditLog());
 
     @Test
     void resolvesOnlyConfiguredModelsAndKeepsTheirOrder() {
@@ -64,8 +67,11 @@ class OpenAiCompatibleLlmClientTest {
                                 "glm-flash", "GLM Flash", "glm-4-flash-250414",
                                 "https://open.bigmodel.cn", "/api/paas/v4/chat/completions",
                                 true, false, false, 512, 0.0))),
-                RestClient.builder());
+                RestClient.builder(), auditLog());
 
         assertThat(providerModelDefault.defaultModel()).isEqualTo("glm-flash");
+    }
+    private static ProcessAuditLog auditLog() {
+        return new ProcessAuditLog(new ObjectMapper(), new ProcessAuditProperties(false, "target/test-audit.jsonl", 1_000));
     }
 }

@@ -50,7 +50,7 @@ class ChatQueryControllerTest {
     }
 
     @Test
-    void groundsAFormattingFollowUpInTheSavedAttributionArtifactWithoutNewQuery() throws Exception {
+    void doesNotExposeAnAttributionArtifactInsideAQueryConversation() throws Exception {
         memoryService.saveAttributionArtifact(
                 "test-user", "attribution-follow-up", "人民币交易金额归因（2026-07 对比 2026-06）",
                 "7 月人民币交易金额下降，收单机构 A 是主要负向驱动。",
@@ -69,9 +69,7 @@ class ChatQueryControllerTest {
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("completed"))
-                .andExpect(jsonPath("$.executionEngine").value(org.hamcrest.Matchers.containsString("Conversation Router")))
-                .andExpect(jsonPath("$.reply").value(org.hamcrest.Matchers.containsString("收单机构 A")))
-                .andExpect(jsonPath("$.derivedFromArtifactIds.length()").value(1))
+                .andExpect(jsonPath("$.derivedFromArtifactIds.length()").value(0))
                 .andExpect(jsonPath("$.result").doesNotExist());
     }
 }

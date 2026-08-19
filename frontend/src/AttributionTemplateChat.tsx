@@ -30,7 +30,7 @@ type ConversationDetail = {
 }
 
 const CURRENT_USER_ID = 'demo-user'
-const ACTIVE_CONVERSATION_KEY = `payment-analysis:active-conversation:${CURRENT_USER_ID}`
+const ACTIVE_CONVERSATION_KEY = `payment-analysis:active-attribution-conversation:${CURRENT_USER_ID}`
 
 const EXAMPLE = '分析2026年7月对比6月的人民币总金额，只看卡品牌为银联。第一层同时看卡品牌、卡性质和交易渠道，第二层看IP用法和移动支付，第三层看响应码名称；后面自由探索。'
 
@@ -53,10 +53,11 @@ async function errorText(response: Response) {
   catch { return `请求失败（HTTP ${response.status}）` }
 }
 
-function TemplateArtifact({ template, response, pending, onConfirm, onReset, onContinuationChange, onRemoveDimension }: {
+function TemplateArtifact({ template, response, pending, onConfirm, onReset, onContinuationChange, onRemoveDimension, onRemoveFilter }: {
   template: DimensionTemplate; response: TemplateResponse | null; pending: boolean; onConfirm: () => void; onReset: () => void
   onContinuationChange: (mode: 'AUTO' | 'STOP') => void
   onRemoveDimension: (level: number, dimensionId: string) => void
+  onRemoveFilter: (index: number) => void
 }) {
   const requiredReady = Boolean(template.metricId && template.currentPeriod && template.comparisonPeriod)
   return <section className="chat-template-artifact">
@@ -67,9 +68,10 @@ function TemplateArtifact({ template, response, pending, onConfirm, onReset, onC
       <div className={template.comparisonPeriod ? '' : 'missing'}><span>对比周期</span><strong>{template.comparisonPeriod || '待补充'}</strong></div>
     </div>
     {!!template.filters?.length && <div className="chat-template-filters">
-      <strong>过滤条件</strong>
+      <strong>查询条件</strong>
       <div>{template.filters.map((filter, index) => <span key={`${filter.dimensionId}-${index}`} title={filter.rationale}>
         <b>{filter.dimensionName}</b> {FILTER_OPERATOR_NAMES[filter.operator] || filter.operator} {filter.values.join('、')}
+        <button type="button" aria-label={`删除查询条件：${filter.dimensionName}`} title="删除查询条件" disabled={pending} onClick={() => onRemoveFilter(index)}>×</button>
       </span>)}</div>
     </div>}
     <div className="chat-template-path">
@@ -89,8 +91,8 @@ function TemplateArtifact({ template, response, pending, onConfirm, onReset, onC
         <button className={template.continuationMode === 'STOP' ? 'selected' : ''} type="button" disabled={pending || template.status === 'CONFIRMED'} onClick={() => onContinuationChange('STOP')}>就此结束</button>
         <button className={template.continuationMode === 'AUTO' ? 'selected' : ''} type="button" disabled={pending || template.status === 'CONFIRMED'} onClick={() => onContinuationChange('AUTO')}>继续自由探索</button>
       </div>}
-      {!!response?.mappingIssues.length && <div className="chat-template-warning">{response.mappingIssues.map((issue) => <p key={issue.userTerm}><b>{issue.userTerm}</b>：{issue.reason}</p>)}</div>}
-      <div className="chat-template-actions"><button type="button" onClick={onReset}>重新开始</button><button className="primary-button" type="button" onClick={onConfirm} disabled={pending || response?.status !== 'READY_TO_CONFIRM' || template.status === 'CONFIRMED'}>{template.status === 'CONFIRMED' ? '已确认' : !requiredReady ? '请在对话中补充任务要素' : response?.status === 'NEEDS_CLARIFICATION' ? '请继续澄清' : '确认模板'}</button></div>
+      {!!response?.mappingIssues.length && <div className="chat-template-warning"><strong>映射提示（不影响确认）</strong>{response.mappingIssues.map((issue) => <p key={issue.userTerm}><b>{issue.userTerm}</b>：{issue.reason}</p>)}</div>}
+      <div className="chat-template-actions"><button type="button" onClick={onReset}>重新开始</button><button className="primary-button" type="button" onClick={onConfirm} disabled={pending || !requiredReady || template.status === 'CONFIRMED'}>{template.status === 'CONFIRMED' ? '已确认' : !requiredReady ? '请在对话中补充度量和周期' : '确认模板'}</button></div>
     </footer>
   </section>
 }
@@ -138,7 +140,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
   async function initializeMemory() {
     setHistoryLoading(true)
     try {
-      const raw = await fetch(`/api/chat/conversations?userId=${encodeURIComponent(CURRENT_USER_ID)}`)
+      const raw = await fetch(`/api/chat/conversations?userId=${encodeURIComponent(CURRENT_USER_ID)}&scope=ATTRIBUTION`)
       const history = raw.ok ? await raw.json() as ConversationSummary[] : []
       setConversations(history)
       const target = localStorage.getItem(ACTIVE_CONVERSATION_KEY) || history[0]?.conversationId
@@ -155,7 +157,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
 
   async function refreshHistory() {
     try {
-      const raw = await fetch(`/api/chat/conversations?userId=${encodeURIComponent(CURRENT_USER_ID)}`)
+      const raw = await fetch(`/api/chat/conversations?userId=${encodeURIComponent(CURRENT_USER_ID)}&scope=ATTRIBUTION`)
       if (raw.ok) setConversations(await raw.json() as ConversationSummary[])
     } catch {
       // The active conversation remains usable even when history cannot refresh.
@@ -165,7 +167,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
   async function restoreConversation(id: string, showLoading = true) {
     if (showLoading) setPending(true)
     try {
-      const raw = await fetch(`/api/chat/conversations/${encodeURIComponent(id)}?userId=${encodeURIComponent(CURRENT_USER_ID)}`)
+      const raw = await fetch(`/api/chat/conversations/${encodeURIComponent(id)}?userId=${encodeURIComponent(CURRENT_USER_ID)}&scope=ATTRIBUTION`)
       if (!raw.ok) return false
       const detail = await raw.json() as ConversationDetail
       const state = detail.attributionState
@@ -208,7 +210,6 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
       }
       setMessages((items) => [...items, { role: 'assistant', text: result.reply }])
       localStorage.setItem(ACTIVE_CONVERSATION_KEY, conversationId)
-      window.dispatchEvent(new CustomEvent('unified-conversation-changed', { detail: conversationId }))
       void refreshHistory()
       window.dispatchEvent(new Event('model-health-changed'))
     } catch (reason) { setError(reason instanceof Error ? reason.message : '分析模板理解失败') }
@@ -216,7 +217,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
   }
 
   async function confirm() {
-    if (!template || response?.status !== 'READY_TO_CONFIRM') return
+    if (!template || !template.metricId || !template.currentPeriod || !template.comparisonPeriod) return
     setPending(true); setError('')
     try {
       const raw = await fetch('/api/attribution/template/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: CURRENT_USER_ID, conversationId, template }) })
@@ -279,9 +280,34 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
     const mappingIssues = (response?.mappingIssues ?? []).filter((issue) => issue.userTerm !== removed.userTerm)
     const unmappedTerms = (response?.unmappedTerms ?? []).filter((term) => term !== removed.userTerm)
     const nextResponse: TemplateResponse = {
-      status: next.metricId && next.currentPeriod && next.comparisonPeriod && !mappingIssues.length && !unmappedTerms.length
+      status: next.metricId && next.currentPeriod && next.comparisonPeriod
         ? 'READY_TO_CONFIRM' : 'NEEDS_CLARIFICATION',
       reply: `已删除${removed.dimensionName}。`,
+      template: next,
+      unmappedTerms,
+      mappingIssues,
+    }
+    setTemplate(next)
+    setResponse(nextResponse)
+    onTemplateChange?.(next)
+    persistTemplateState(next, nextResponse)
+  }
+
+  function removeFilter(index: number) {
+    if (!template || pending || index < 0 || index >= template.filters.length) return
+    const removed = template.filters[index]
+    const next: DimensionTemplate = {
+      ...template,
+      filters: template.filters.filter((_, filterIndex) => filterIndex !== index),
+      status: 'DRAFT',
+      summary: `已移除查询条件：${removed.dimensionName}。请确认调整后的模板。`,
+    }
+    const mappingIssues = (response?.mappingIssues ?? []).filter((issue) => issue.userTerm !== removed.userTerm)
+    const unmappedTerms = (response?.unmappedTerms ?? []).filter((term) => term !== removed.userTerm)
+    const nextResponse: TemplateResponse = {
+      status: next.metricId && next.currentPeriod && next.comparisonPeriod
+        ? 'READY_TO_CONFIRM' : 'NEEDS_CLARIFICATION',
+      reply: `已移除查询条件：${removed.dimensionName}。`,
       template: next,
       unmappedTerms,
       mappingIssues,
@@ -303,7 +329,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
     if (!window.confirm(`确定删除会话“${item.title}”？删除后无法恢复。`)) return
     setDeletingConversationId(item.conversationId)
     try {
-      const raw = await fetch(`/api/chat/conversations/${encodeURIComponent(item.conversationId)}?userId=${encodeURIComponent(CURRENT_USER_ID)}`, { method: 'DELETE' })
+      const raw = await fetch(`/api/chat/conversations/${encodeURIComponent(item.conversationId)}?userId=${encodeURIComponent(CURRENT_USER_ID)}&scope=ATTRIBUTION`, { method: 'DELETE' })
       if (!raw.ok) throw new Error('删除会话失败')
       setConversations((current) => current.filter((value) => value.conversationId !== item.conversationId))
       if (item.conversationId === conversationId) startNewConversation()
@@ -339,7 +365,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
         <div className={`template-chat-thread ${messages.length ? 'has-messages' : 'is-empty'}`}>
           {!messages.length && <div className="template-chat-hero"><div className="template-agent-mark">归</div><h3>想怎样分析这次指标变化？</h3><p>告诉我度量、两段时间、每层维度；有分析范围时也可以直接说过滤条件。</p><button type="button" onClick={() => { setMessage(EXAMPLE); window.setTimeout(() => inputRef.current?.focus(), 0) }}>使用示例</button></div>}
           {messages.map((item, index) => <div className={`template-thread-message ${item.role}`} key={`${item.role}-${index}`}><div className="template-message-avatar">{item.role === 'user' ? '你' : '归'}</div><div><p>{item.text}</p></div></div>)}
-          {template && <div className="template-persistent-artifact"><TemplateArtifact template={template} response={response} pending={pending} onConfirm={confirm} onReset={startNewConversation} onContinuationChange={changeContinuation} onRemoveDimension={removeDimension} /></div>}
+          {template && <div className="template-persistent-artifact"><TemplateArtifact template={template} response={response} pending={pending} onConfirm={confirm} onReset={startNewConversation} onContinuationChange={changeContinuation} onRemoveDimension={removeDimension} onRemoveFilter={removeFilter} /></div>}
           {executionControls}
           {pending && <div className="template-thread-message assistant thinking"><div className="template-message-avatar">归</div><div><span /><span /><span /></div></div>}
         </div>

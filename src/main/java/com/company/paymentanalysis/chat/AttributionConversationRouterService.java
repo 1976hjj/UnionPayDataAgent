@@ -58,7 +58,8 @@ public class AttributionConversationRouterService {
 
     public TemplateChatResponse respond(TemplateChatRequest sourceRequest) {
         ChatConversationMemoryService.ConversationSnapshot snapshot = memoryService
-                .snapshot(sourceRequest.userId(), sourceRequest.conversationId())
+                .snapshot(sourceRequest.userId(), sourceRequest.conversationId(),
+                        ChatConversationMemoryService.ConversationScope.ATTRIBUTION)
                 .orElse(new ChatConversationMemoryService.ConversationSnapshot(null, List.of(), List.of()));
         TemplateConversationState previousState = snapshot.attributionState();
         DimensionTemplate currentTemplate = previousState != null && previousState.template() != null

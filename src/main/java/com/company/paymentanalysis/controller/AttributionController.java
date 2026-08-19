@@ -1,6 +1,7 @@
 package com.company.paymentanalysis.controller;
 
 import com.company.paymentanalysis.attribution.AttributionCatalog;
+import com.company.paymentanalysis.audit.ProcessAuditLog;
 import com.company.paymentanalysis.attribution.AttributionCatalog.AttributionDimension;
 import com.company.paymentanalysis.attribution.AttributionPolicyProperties;
 import com.company.paymentanalysis.attribution.AttributionModels.AttributionRequest;
@@ -47,26 +48,40 @@ public class AttributionController {
     private final OpenAiCompatibleLlmClient llmClient;
     private final AttributionPolicyProperties policy;
     private final ObjectMapper objectMapper;
+    private final ProcessAuditLog auditLog;
 
     public AttributionController(
             AttributionWorkflowService workflowService,
             ChatConversationMemoryService memoryService,
             OpenAiCompatibleLlmClient llmClient,
             AttributionPolicyProperties policy,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            ProcessAuditLog auditLog) {
         this.workflowService = workflowService;
         this.memoryService = memoryService;
         this.llmClient = llmClient;
         this.policy = policy;
         this.objectMapper = objectMapper;
+        this.auditLog = auditLog;
     }
 
     @PostMapping("/analyze")
     public AttributionResponse analyze(@RequestBody AttributionRequest request) {
         EffectiveRequest effectiveRequest = validate(request);
-        AttributionResponse response = workflowService.analyze(effectiveRequest);
-        saveConversationArtifact(request, effectiveRequest, response);
-        return response;
+        try (ProcessAuditLog.AuditScope scope = auditLog.start("attribution.analyze", Map.of(
+                "userId", request.userId() == null ? "" : request.userId(),
+                "conversationId", request.conversationId() == null ? "" : request.conversationId(),
+                "request", effectiveRequest))) {
+            AttributionResponse response = workflowService.analyze(effectiveRequest);
+            saveConversationArtifact(request, effectiveRequest, response);
+            scope.completed(Map.of(
+                    "status", response.status(),
+                    "queryCount", response.queryCount(),
+                    "report", response.report(),
+                    "stop", response.stop() == null ? "" : response.stop().code(),
+                    "conversationOutcome", reportGenerated(response) ? "success" : "failed"));
+            return response;
+        }
     }
 
     @PostMapping(value = "/analyze/stream", produces = "application/x-ndjson")
@@ -78,12 +93,20 @@ public class AttributionController {
     private void streamAnalysis(
             OutputStream output, AttributionRequest sourceRequest, EffectiveRequest request) throws IOException {
         Object writeLock = new Object();
-        try {
+        try (ProcessAuditLog.AuditScope scope = auditLog.start("attribution.analyze.stream", Map.of(
+                "userId", sourceRequest.userId() == null ? "" : sourceRequest.userId(),
+                "conversationId", sourceRequest.conversationId() == null ? "" : sourceRequest.conversationId(),
+                "request", request))) {
             AttributionResponse response = workflowService.analyze(request,
                     event -> writeStreamItem(output, writeLock, new AttributionStreamItem("event", event, null, null)));
             saveConversationArtifact(sourceRequest, request, response);
+            scope.completed(Map.of(
+                    "status", response.status(), "queryCount", response.queryCount(), "report", response.report(),
+                    "conversationOutcome", reportGenerated(response) ? "success" : "failed"));
             writeStreamItem(output, writeLock, new AttributionStreamItem("result", null, response, null));
         } catch (Exception exception) {
+            auditLog.event("attribution.analyze.stream.failed", Map.of(
+                    "message", rootMessage(exception), "exception", exception.getClass().getSimpleName()));
             String message = rootMessage(exception);
             writeStreamItem(output, writeLock, new AttributionStreamItem(
                     "error",
@@ -188,6 +211,13 @@ public class AttributionController {
             current = current.getCause();
         }
         return current.getMessage() == null ? "归因分析执行失败" : current.getMessage();
+    }
+
+    private boolean reportGenerated(AttributionResponse response) {
+        return "completed".equals(response.status())
+                && response.report() != null
+                && response.report().summary() != null
+                && !response.report().summary().isBlank();
     }
 
     @GetMapping("/metadata")

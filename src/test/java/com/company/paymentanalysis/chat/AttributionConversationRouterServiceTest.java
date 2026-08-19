@@ -30,7 +30,7 @@ class AttributionConversationRouterServiceTest {
         AttributionTemplateInterpreter interpreter = mock(AttributionTemplateInterpreter.class);
         ChatConversationMemoryService memory = mock(ChatConversationMemoryService.class);
         OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
-        when(memory.snapshot("user", "conversation")).thenReturn(Optional.of(
+        when(memory.snapshot("user", "conversation", ChatConversationMemoryService.ConversationScope.ATTRIBUTION)).thenReturn(Optional.of(
                 new ConversationSnapshot(QueryContext.empty(), List.of(), List.of(),
                         new TemplateConversationState("READY_TO_CONFIRM", DimensionTemplate.auto(), List.of(), List.of()))));
         when(llm.completeWithMessage(anyList(), anyString(), eq("model")))
@@ -52,7 +52,7 @@ class AttributionConversationRouterServiceTest {
         ChatConversationMemoryService memory = mock(ChatConversationMemoryService.class);
         OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
         DimensionTemplate template = DimensionTemplate.auto();
-        when(memory.snapshot("user", "conversation")).thenReturn(Optional.of(
+        when(memory.snapshot("user", "conversation", ChatConversationMemoryService.ConversationScope.ATTRIBUTION)).thenReturn(Optional.of(
                 new ConversationSnapshot(QueryContext.empty(), List.of(), List.of(),
                         new TemplateConversationState("READY_TO_CONFIRM", template, List.of(), List.of()))));
         when(interpreter.interpret(org.mockito.ArgumentMatchers.any())).thenReturn(new TemplateChatResponse(
@@ -72,7 +72,7 @@ class AttributionConversationRouterServiceTest {
         AttributionTemplateInterpreter interpreter = mock(AttributionTemplateInterpreter.class);
         ChatConversationMemoryService memory = mock(ChatConversationMemoryService.class);
         OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
-        when(memory.snapshot("user", "conversation")).thenReturn(Optional.of(
+        when(memory.snapshot("user", "conversation", ChatConversationMemoryService.ConversationScope.ATTRIBUTION)).thenReturn(Optional.of(
                 new ConversationSnapshot(QueryContext.empty(), List.of(), List.of())));
         when(llm.completeWithMessage(anyList(), anyString(), eq("model")))
                 .thenReturn(message("[\"交易渠道名称\",\"交易类型\"]"));

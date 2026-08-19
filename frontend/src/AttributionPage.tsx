@@ -588,16 +588,6 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
             <label>最大查询次数 <input type="number" min="2" max={limits.hardMaxQueries} value={maxQueries} onChange={(event) => setMaxQueries(Number(event.target.value))} /><small>最多 {limits.hardMaxQueries} 次</small></label>
             <label>每维展示 TopN <input type="number" min="1" max={limits.hardTopN} value={topN} onChange={(event) => setTopN(Number(event.target.value))} /><small>最多 {limits.hardTopN} 项</small></label>
           </div>
-          <div className="config-divider" />
-          <div className="filter-heading"><strong>维度过滤</strong><button type="button" onClick={addFilter} disabled={!metadata}>+ 添加条件</button></div>
-          {filters.map((filter) => (
-            <div className="attribution-filter-row" key={filter.key}>
-              <select aria-label="过滤维度" value={filter.dimensionId} onChange={(event) => updateFilter(filter.key, { dimensionId: event.target.value })}>{metadata?.dimensions.map((dimension) => <option value={dimension.id} key={dimension.id}>{dimension.name}</option>)}</select>
-              <select aria-label="过滤操作" value={filter.operator} onChange={(event) => updateFilter(filter.key, { operator: event.target.value as FilterOperator })}><option value="EQUALS">等于</option><option value="IN">属于</option><option value="NOT_EQUALS">不等于</option><option value="NOT_IN">不属于</option><option value="GREATER">大于</option><option value="GREATER_EQUALS">大于等于</option><option value="LESS">小于</option><option value="LESS_EQUALS">小于等于</option><option value="BETWEEN">介于</option><option value="CONTAINS">包含</option></select>
-              <input aria-label="过滤值" value={filter.value} placeholder="输入成员值" onChange={(event) => updateFilter(filter.key, { value: event.target.value })} />
-              <button type="button" aria-label="删除过滤条件" onClick={() => setFilters((items) => items.filter((item) => item.key !== filter.key))}>×</button>
-            </div>
-          ))}
           {error && <div className="validation-box" role="alert"><span>• {error}</span></div>}
           <div className="form-actions"><button className="primary-button" disabled={pending || !metadata || templateStatus === 'DRAFT'} type="button" onClick={() => void submit()}>{pending ? 'Agent 分析中…' : templateStatus === 'DRAFT' ? '请先确认模板' : '开始归因分析'}</button></div>
           {pending && <div className="attribution-running" aria-live="polite"><i /><div><strong>正在执行智能归因</strong><span>总体查询 → 维度假设 → 并行取证 → 动态下钻 → 生成报告</span></div></div>}

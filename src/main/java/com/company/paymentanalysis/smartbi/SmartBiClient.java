@@ -1,5 +1,7 @@
 package com.company.paymentanalysis.smartbi;
 
+import com.company.paymentanalysis.audit.ProcessAuditLog;
+
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryResponse;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -25,6 +27,7 @@ public class SmartBiClient {
     private final SmartBiProperties properties;
     private final RestClient mockRestClient;
     private final SmartBiResponseAdapter responseAdapter;
+    private final ProcessAuditLog auditLog;
     private volatile Instant lastSuccessAt;
     private volatile Instant lastFailureAt;
 
@@ -32,17 +35,34 @@ public class SmartBiClient {
             RestClient.Builder builder,
             ObjectMapper objectMapper,
             SmartBiProperties properties,
-            SmartBiResponseAdapter responseAdapter) {
+            SmartBiResponseAdapter responseAdapter,
+            ProcessAuditLog auditLog) {
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.mockRestClient = builder.baseUrl(properties.mockBaseUrl()).build();
         this.responseAdapter = responseAdapter;
+        this.auditLog = auditLog;
     }
 
     public QueryResponse query(QueryRequest request) {
-        if (properties.mockEnabled()) {
-            return mockQuery(request);
+        auditLog.event("smartbi.request", java.util.Map.of(
+                "mock", properties.mockEnabled(), "request", request));
+        try {
+            QueryResponse response = properties.mockEnabled() ? mockQuery(request) : realQuery(request);
+            auditLog.event("smartbi.response", java.util.Map.of(
+                    "requestId", response.requestId(),
+                    "rowCount", response.data() == null ? 0 : response.data().size(),
+                    "metadata", response.metadata() == null ? java.util.Map.of() : response.metadata()));
+            return response;
+        } catch (RuntimeException exception) {
+            auditLog.event("smartbi.failed", java.util.Map.of(
+                    "exception", exception.getClass().getSimpleName(),
+                    "message", exception.getMessage() == null ? "" : exception.getMessage()));
+            throw exception;
         }
+    }
+
+    private QueryResponse realQuery(QueryRequest request) {
         ClientConnector conn = new ClientConnector(properties.baseUrl());
         try {
             if (!conn.open(properties.username(), properties.password())) {
