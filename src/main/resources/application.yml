@@ -43,6 +43,31 @@ smartbi:
   mock-enabled: ${SMARTBI_MOCK_ENABLED:true}
   mock-base-url: ${SMARTBI_MOCK_BASE_URL:http://localhost:${server.port}}
 
+# Metadata retrieval is mocked from the current three source workbooks until
+# RAGFlow is reachable. Remote mode is enabled with RAGFLOW_ENABLED=true and
+# RAGFLOW_MOCK_ENABLED=false; credentials are never committed here.
+ragflow:
+  enabled: ${RAGFLOW_ENABLED:false}
+  mock-enabled: ${RAGFLOW_MOCK_ENABLED:true}
+  base-url: ${RAGFLOW_BASE_URL:}
+  retrieval-path: ${RAGFLOW_RETRIEVAL_PATH:/api/v1/retrieval}
+  api-key: ${RAGFLOW_API_KEY:}
+  dataset-ids: ${RAGFLOW_DATASET_IDS:}
+  document-ids:
+    metrics: ${RAGFLOW_METRICS_DOCUMENT_ID:}
+    dimensions: ${RAGFLOW_DIMENSIONS_DOCUMENT_ID:}
+    values: ${RAGFLOW_VALUES_DOCUMENT_ID:}
+  similarity-threshold: ${RAGFLOW_SIMILARITY_THRESHOLD:0.2}
+  vector-similarity-weight: ${RAGFLOW_VECTOR_SIMILARITY_WEIGHT:0.3}
+  rerank-id: ${RAGFLOW_RERANK_ID:}
+  top-k: ${RAGFLOW_TOP_K:50}
+  page: ${RAGFLOW_PAGE:1}
+  page-size: ${RAGFLOW_PAGE_SIZE:5}
+  mock-files:
+    metrics: ${RAGFLOW_MOCK_METRICS_FILE:C:/Users/hjjgg/Desktop/agent/ragflow/ragflow修改后/度量表.xlsx}
+    dimensions: ${RAGFLOW_MOCK_DIMENSIONS_FILE:C:/Users/hjjgg/Desktop/agent/ragflow/ragflow修改后/维度表.xlsx}
+    values: ${RAGFLOW_MOCK_VALUES_FILE:C:/Users/hjjgg/Desktop/agent/ragflow/ragflow修改后/维度值域.xlsx}
+
 attribution:
   policy:
     max-initial-dimensions: ${ATTRIBUTION_MAX_INITIAL_DIMENSIONS:3}

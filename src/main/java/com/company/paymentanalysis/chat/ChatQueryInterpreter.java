@@ -9,6 +9,9 @@ import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.ChatMessage;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
 import com.company.paymentanalysis.time.RelativeTimeResolver;
 import com.company.paymentanalysis.query.QueryMetadataCatalog;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.RetrievedMetadata;
+import com.company.paymentanalysis.ragflow.RetrievedMetadataPrompt;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -16,11 +19,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.Serializable;
 import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.util.StringUtils;
 
 /**
@@ -41,13 +47,21 @@ public class ChatQueryInterpreter {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final RelativeTimeResolver relativeTimeResolver;
+    private final MetadataRetrievalTool metadataRetrievalTool;
 
+    @Autowired
     public ChatQueryInterpreter(
-            OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock) {
+            OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock,
+            MetadataRetrievalTool metadataRetrievalTool) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.relativeTimeResolver = new RelativeTimeResolver(clock);
+        this.metadataRetrievalTool = metadataRetrievalTool;
+    }
+
+    ChatQueryInterpreter(OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock) {
+        this(llmClient, objectMapper, clock, MetadataRetrievalTool.noOp());
     }
 
     public QueryActionResult interpret(ChatRequest request, QueryContext current) {
@@ -59,17 +73,19 @@ public class ChatQueryInterpreter {
             String mockIntent = "{\"metrics\":[],\"groups\":[],\"filters\":[],"
                     + "\"sorts\":[],\"clears\":[]}";
             LlmResultMessage intent = complete(intentMessages, mockIntent, request.model());
-            String enrichedIntent = enrichRelativeTimes(intent.content());
+            String enrichedIntent = enrichRelativeTimes(intent.content(), request.message());
+            RetrievedMetadata retrievedMetadata = metadataRetrievalTool
+                    .retrieveForQuery(request.message(), enrichedIntent);
 
             List<ChatMessage> mappingMessages = List.of(
-                    new ChatMessage("system", systemPrompt()),
+                    new ChatMessage("system", systemPrompt(retrievedMetadata)),
                     new ChatMessage("user", mappingPrompt(request.message(), current, enrichedIntent)));
             ObjectNode mockPayload = objectMapper.valueToTree(QueryAction.fromContext(current));
             mockPayload.put("explanation", "沿用当前查询状态，未增加额外查询条件。");
             String mockContent = objectMapper.writeValueAsString(mockPayload);
             LlmResultMessage mapped = complete(mappingMessages, mockContent, request.model());
             try {
-                ParsedQueryAction parsed = parseAndValidate(mapped.content());
+                ParsedQueryAction parsed = parseAndValidate(mapped.content(), enrichedIntent);
                 return new QueryActionResult(parsed.action(), parsed.explanation(), mapped);
             } catch (JsonProcessingException | RuntimeException mappingError) {
                 throw new QueryInterpretationException(
@@ -98,6 +114,10 @@ public class ChatQueryInterpreter {
     }
 
     String systemPrompt() {
+        return systemPrompt(MetadataRetrievalTool.RetrievedMetadata.empty());
+    }
+
+    String systemPrompt(RetrievedMetadata retrievedMetadata) {
         return """
                 你是支付数据查询状态生成器。结合当前查询状态和用户输入，只返回处理后的完整 QueryState JSON。
                 不要 Markdown、解释性文字或额外字段。
@@ -123,10 +143,17 @@ public class ChatQueryInterpreter {
                 示例（仅说明时间范围不是分组，字段仍以动态元数据为准）：
                 用户输入“海外地区总交易笔数，近3个月”时，应输出总交易笔数度量、空 dimensionIds、海外地区过滤、月份 BETWEEN 过滤、空 sorts。
 
-                动态元数据：
-                可用度量：%s。
-                可用维度：%s。
-                """.formatted(QueryMetadataCatalog.metricPrompt(), QueryMetadataCatalog.dimensionPrompt());
+                动态元数据候选：
+                %s
+                """.formatted(metadataPrompt(retrievedMetadata));
+    }
+
+    private String metadataPrompt(RetrievedMetadata retrievedMetadata) {
+        if (retrievedMetadata != null && !retrievedMetadata.isEmpty()) {
+            return RetrievedMetadataPrompt.render(retrievedMetadata);
+        }
+        return "可用度量：" + QueryMetadataCatalog.metricPrompt()
+                + "。可用维度：" + QueryMetadataCatalog.dimensionPrompt();
     }
 
     private String mappingPrompt(String message, QueryContext current, String semanticIntent)
@@ -142,43 +169,66 @@ public class ChatQueryInterpreter {
         return """
                 你是查询语义清单提取器。只提取用户本轮明确说出的要求，不选择数据库字段 ID、不计算日期。
                 只返回 JSON，固定结构：
-                {"metrics":["用户原词"],"groups":["用户原词"],"filters":[{"category":"GEOGRAPHY|TIME|ORGANIZATION|CHANNEL|TRANSACTION_TYPE|OTHER","raw":"用户原词","operator":"EQUALS|IN|RELATIVE","values":["用户原值"],"relativeTime":{"unit":"DAY|MONTH|YEAR","count":1}}],"sorts":[{"raw":"用户原词","direction":"ASC|DESC"}],"clears":[]}
+                {"metrics":["用户原词"],"groups":["用户原词"],"filters":[{"category":"GEOGRAPHY|TIME|ORGANIZATION|CHANNEL|TRANSACTION_TYPE|OTHER","raw":"用户原词","operator":"EQUALS|IN|RELATIVE","values":["用户原值"],"relativeTime":{"kind":"TODAY|YESTERDAY|CURRENT_MONTH_TO_DATE|CURRENT_YEAR_TO_DATE|LAST_N","unit":"DAY|MONTH|YEAR","count":1}}],"sorts":[{"raw":"用户原词","direction":"ASC|DESC"}],"clears":[]}
 
                 严格规则：
                 1. 逐项覆盖度量、分组、时间、地域、机构、渠道、交易类型、排序，不得遗漏或添加。
                 2. 地名、国家、地区、洲际如果没有“按、各、每、分组”等词，一律是 GEOGRAPHY 过滤，不是分组；values 必须保留用户说出的地域值。
-                3. “近/最近 N 天、月、年”用 TIME + RELATIVE，只填 unit 和 count=N，不换算日期；“今天、本月、今年”对应 count=1。
+                3. 相对时间用 TIME + RELATIVE，只提取原词，不换算日期：今天=TODAY，昨天=YESTERDAY，本月至今=CURRENT_MONTH_TO_DATE，今年至今=CURRENT_YEAR_TO_DATE，近/最近 N 天、月、年=LAST_N 且填写 unit、count=N；本月、今年也保留原词并填写对应 unit、count=1。
                 4. 没有的数组返回 []。非相对时间的 relativeTime 返回 null。
                 """;
     }
 
-    private String enrichRelativeTimes(String content) {
+    private String enrichRelativeTimes(String content, String userMessage) {
         try {
             JsonNode root = objectMapper.readTree(stripMarkdownFence(content));
             if (!(root instanceof ObjectNode objectRoot) || !root.path("filters").isArray()) {
                 return content;
             }
+            var resolvedFromMessage = relativeTimeResolver.resolveQueryTime(userMessage);
+            boolean hasMessageTimeFilter = false;
             for (JsonNode filter : root.path("filters")) {
-                if (!(filter instanceof ObjectNode objectFilter)
-                        || !"RELATIVE".equals(filter.path("operator").asText())) {
+                if (!(filter instanceof ObjectNode objectFilter)) {
+                    continue;
+                }
+                if (resolvedFromMessage.isPresent() && "TIME".equals(filter.path("category").asText())) {
+                    applyResolvedTime(objectFilter, resolvedFromMessage.get());
+                    hasMessageTimeFilter = true;
+                    continue;
+                }
+                if (!"RELATIVE".equals(filter.path("operator").asText())) {
                     continue;
                 }
                 JsonNode relative = filter.path("relativeTime");
                 int count = relative.path("count").asInt(0);
                 String unit = relative.path("unit").asText("");
-                if (count < 1 || count > 10000) {
-                    continue;
-                }
-                var resolved = relativeTimeResolver.resolveRange(unit, count);
+                String kind = relative.path("kind").asText("");
+                var resolved = relativeTimeResolver.resolveQueryTime(
+                        filter.path("raw").asText(""), kind, unit, count);
                 if (resolved.isPresent()) {
-                    objectFilter.put("resolvedOperator", resolved.get().operator());
-                    objectFilter.set("resolvedValues", objectMapper.valueToTree(resolved.get().values()));
+                    applyResolvedTime(objectFilter, resolved.get());
                 }
+            }
+            if (resolvedFromMessage.isPresent() && !hasMessageTimeFilter) {
+                ObjectNode timeFilter = objectRoot.withArray("filters").addObject();
+                timeFilter.put("category", "TIME");
+                timeFilter.put("raw", "服务端已识别的时间条件");
+                timeFilter.put("operator", "RELATIVE");
+                timeFilter.set("values", objectMapper.createArrayNode());
+                timeFilter.putNull("relativeTime");
+                applyResolvedTime(timeFilter, resolvedFromMessage.get());
             }
             return objectMapper.writeValueAsString(objectRoot);
         } catch (JsonProcessingException | RuntimeException ignored) {
             return content;
         }
+    }
+
+    private void applyResolvedTime(
+            ObjectNode target, RelativeTimeResolver.ResolvedQueryTime resolved) {
+        target.put("resolvedOperator", resolved.operator());
+        target.set("resolvedValues", objectMapper.valueToTree(resolved.values()));
+        target.put("resolvedDimensionId", resolved.dimensionId());
     }
 
     private LlmResultMessage complete(List<ChatMessage> messages, String mockContent, String model) {
@@ -187,7 +237,7 @@ public class ChatQueryInterpreter {
                 : llmClient.completeWithMessage(messages, mockContent);
     }
 
-    private ParsedQueryAction parseAndValidate(String content) throws JsonProcessingException {
+    private ParsedQueryAction parseAndValidate(String content, String enrichedIntent) throws JsonProcessingException {
         JsonNode root = objectMapper.readTree(stripMarkdownFence(content));
         if (root == null || !root.isObject()) {
             throw new IllegalArgumentException("QueryState 必须是 JSON 对象");
@@ -202,7 +252,41 @@ public class ChatQueryInterpreter {
         ObjectNode actionPayload = ((ObjectNode) root).deepCopy();
         actionPayload.remove("explanation");
         QueryAction action = objectMapper.treeToValue(actionPayload, QueryAction.class);
-        return new ParsedQueryAction(validate(action), explanation);
+        return new ParsedQueryAction(validate(applyResolvedTimeFilters(action, enrichedIntent)), explanation);
+    }
+
+    /**
+     * The server owns relative-date arithmetic. Once it resolved a time phrase,
+     * the model may not replace it with a different precision or date value.
+     */
+    private QueryAction applyResolvedTimeFilters(QueryAction action, String enrichedIntent)
+            throws JsonProcessingException {
+        JsonNode root = objectMapper.readTree(enrichedIntent);
+        List<DimensionFilter> resolved = new java.util.ArrayList<>();
+        for (JsonNode filter : root.path("filters")) {
+            String dimensionId = filter.path("resolvedDimensionId").asText("");
+            String operator = filter.path("resolvedOperator").asText("");
+            List<String> values = new java.util.ArrayList<>();
+            for (JsonNode value : filter.path("resolvedValues")) {
+                if (value.isTextual() && StringUtils.hasText(value.asText())) {
+                    values.add(value.asText());
+                }
+            }
+            if (isTimeDimension(dimensionId) && FILTER_OPERATORS.contains(operator) && !values.isEmpty()) {
+                resolved.add(new DimensionFilter(dimensionId, operator, values));
+            }
+        }
+        if (resolved.isEmpty()) {
+            return action;
+        }
+        List<DimensionFilter> filters = new java.util.ArrayList<>();
+        for (DimensionFilter filter : action.dimensionFilters()) {
+            if (!isTimeDimension(filter.dimensionId())) {
+                filters.add(filter);
+            }
+        }
+        filters.addAll(resolved);
+        return new QueryAction(action.metricIds(), action.dimensionIds(), filters, action.sorts());
     }
 
     private QueryAction validate(QueryAction action) {
@@ -221,7 +305,9 @@ public class ChatQueryInterpreter {
             if (new LinkedHashSet<>(filter.values()).size() != filter.values().size()) {
                 throw new IllegalArgumentException("dimensionFilters 的过滤值不允许重复");
             }
-            return new DimensionFilter(filter.dimensionId(), filter.operator(), List.copyOf(filter.values()));
+            DimensionFilter normalized = new DimensionFilter(filter.dimensionId(), filter.operator(), List.copyOf(filter.values()));
+            validateTimeFilter(normalized);
+            return normalized;
         }).toList();
         Set<String> availableSortFields = new LinkedHashSet<>(QueryMetadataCatalog.metricIds());
         availableSortFields.addAll(QueryMetadataCatalog.dimensionIds());
@@ -236,6 +322,55 @@ public class ChatQueryInterpreter {
             throw new IllegalArgumentException("sorts 的排序字段不允许重复");
         }
         return new QueryAction(metrics, dimensions, filters, sorts);
+    }
+
+    private static boolean isTimeDimension(String dimensionId) {
+        return Set.of(
+                RelativeTimeResolver.YEAR_FIELD,
+                RelativeTimeResolver.MONTH_FIELD,
+                RelativeTimeResolver.DAY_FIELD).contains(dimensionId);
+    }
+
+    private void validateTimeFilter(DimensionFilter filter) {
+        if (!isTimeDimension(filter.dimensionId())) {
+            return;
+        }
+        if ("EQUALS".equals(filter.operator()) && filter.values().size() != 1) {
+            throw new IllegalArgumentException("时间 EQUALS 过滤必须且只能有一个值");
+        }
+        if ("BETWEEN".equals(filter.operator()) && filter.values().size() != 2) {
+            throw new IllegalArgumentException("时间 BETWEEN 过滤必须包含起止两个值");
+        }
+        List<String> parsed = filter.values().stream()
+                .map(value -> parseTimeValue(filter.dimensionId(), value))
+                .toList();
+        if ("BETWEEN".equals(filter.operator()) && parsed.get(0).compareTo(parsed.get(1)) > 0) {
+            throw new IllegalArgumentException("时间 BETWEEN 过滤的开始值不能晚于结束值");
+        }
+    }
+
+    private String parseTimeValue(String dimensionId, String value) {
+        try {
+            return switch (dimensionId) {
+                case RelativeTimeResolver.YEAR_FIELD -> {
+                    if (!value.matches("\\d{4}")) {
+                        throw new IllegalArgumentException("年字段只接受 yyyy 格式");
+                    }
+                    yield Integer.toString(Integer.parseInt(value));
+                }
+                case RelativeTimeResolver.MONTH_FIELD -> YearMonth.parse(value).toString();
+                case RelativeTimeResolver.DAY_FIELD -> LocalDate.parse(value).toString();
+                default -> throw new IllegalArgumentException("未知时间字段");
+            };
+        } catch (DateTimeException | NumberFormatException exception) {
+            String expected = switch (dimensionId) {
+                case RelativeTimeResolver.MONTH_FIELD -> "yyyy-MM";
+                case RelativeTimeResolver.DAY_FIELD -> "yyyy-MM-dd";
+                default -> "yyyy";
+            };
+            throw new IllegalArgumentException(QueryMetadataCatalog.displayName(dimensionId)
+                    + "字段只接受 " + expected + " 格式", exception);
+        }
     }
 
     private List<String> identifiers(List<String> ids, Set<String> allowed, String fieldName) {

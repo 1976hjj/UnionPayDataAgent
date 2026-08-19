@@ -6,12 +6,16 @@ import com.company.paymentanalysis.attribution.AttributionTemplateModels.Dimensi
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.DimensionTemplate;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.MappingIssue;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateChatRequest;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConversationMessage;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateChatResponse;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateFilter;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.ChatMessage;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
 import com.company.paymentanalysis.time.RelativeTimeResolver;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.RetrievedMetadata;
+import com.company.paymentanalysis.ragflow.RetrievedMetadataPrompt;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -40,13 +44,21 @@ public class AttributionTemplateInterpreter {
     private final OpenAiCompatibleLlmClient llmClient;
     private final ObjectMapper objectMapper;
     private final RelativeTimeResolver relativeTimeResolver;
+    private final MetadataRetrievalTool metadataRetrievalTool;
 
     @Autowired
     public AttributionTemplateInterpreter(
-            OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock) {
+            OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock,
+            MetadataRetrievalTool metadataRetrievalTool) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
         this.relativeTimeResolver = new RelativeTimeResolver(clock);
+        this.metadataRetrievalTool = metadataRetrievalTool;
+    }
+
+    AttributionTemplateInterpreter(
+            OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock) {
+        this(llmClient, objectMapper, clock, MetadataRetrievalTool.noOp());
     }
 
     AttributionTemplateInterpreter(OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper) {
@@ -66,13 +78,13 @@ public class AttributionTemplateInterpreter {
                     + "\"comparisonPeriod\":\"\",\"filterTerms\":[],\"unmappedTerms\":[]}";
             LlmResultMessage intentMessage = complete(intentMessages, mockIntent, request.model());
             RawSemanticIntent semanticIntent = parseSemanticIntent(intentMessage.content());
-            RelativeTimeResolver.ResolvedPeriodPair resolvedPeriods = relativeTimeResolver
-                    .resolveAttributionPeriods(
-                            semanticIntent.currentPeriod(), semanticIntent.comparisonPeriod(), request.message());
-            semanticIntent = semanticIntent.withResolvedPeriods(resolvedPeriods);
+            RelativeTimeResolver.ResolvedPeriodPair resolvedPeriods = resolveAuthoritativePeriods(request, current);
+            semanticIntent = semanticIntent.withAuthoritativePeriods(resolvedPeriods);
+            RetrievedMetadata retrievedMetadata = metadataRetrievalTool.retrieveForAttribution(
+                    request.message(), objectMapper.writeValueAsString(semanticIntent));
 
             List<ChatMessage> mappingMessages = List.of(
-                    new ChatMessage("system", mappingPrompt()),
+                    new ChatMessage("system", mappingPrompt(retrievedMetadata)),
                     new ChatMessage("user", mappingPayload(request.message(), current,
                             objectMapper.writeValueAsString(semanticIntent))));
             String mockMapped = objectMapper.writeValueAsString(new RawMappedTemplate(
@@ -80,7 +92,7 @@ public class AttributionTemplateInterpreter {
                     "未识别到明确分析维度，保持自由探索。", List.of(), List.of()));
             LlmResultMessage mappingMessage = complete(mappingMessages, mockMapped, request.model());
             RawMappedTemplate mapped = parseMappedTemplate(mappingMessage.content());
-            mapped = mapped.withResolvedPeriods(resolvedPeriods).withValidPeriods();
+            mapped = mapped.withAuthoritativePeriods(resolvedPeriods).withValidPeriods();
             DimensionTemplate template = validateMapped(mapped);
             String status = hasRequiredAnalysisInputs(template)
                     ? "READY_TO_CONFIRM"
@@ -92,6 +104,29 @@ public class AttributionTemplateInterpreter {
         } catch (JsonProcessingException | RuntimeException exception) {
             throw new IllegalArgumentException("分析层级模板解析失败：" + conciseMessage(exception), exception);
         }
+    }
+
+    /**
+     * Periods are never accepted from the model alone. Use user-authored turns
+     * first, then preserve an existing template; an empty result remains empty
+     * and is surfaced as a clarification instead of becoming a guessed date.
+     */
+    private RelativeTimeResolver.ResolvedPeriodPair resolveAuthoritativePeriods(
+            TemplateChatRequest request, DimensionTemplate current) {
+        StringBuilder userText = new StringBuilder();
+        for (TemplateConversationMessage message : request.conversationHistory()) {
+            if (message != null && "user".equals(message.role()) && StringUtils.hasText(message.text())) {
+                userText.append(message.text()).append('\n');
+            }
+        }
+        userText.append(request.message());
+        RelativeTimeResolver.ResolvedPeriodPair fromMessage = relativeTimeResolver
+                .resolveAttributionPeriods(userText.toString());
+        return new RelativeTimeResolver.ResolvedPeriodPair(
+                fromMessage.currentPeriod() == null
+                        ? validPeriodOrBlank(current.currentPeriod()) : fromMessage.currentPeriod(),
+                fromMessage.comparisonPeriod() == null
+                        ? validPeriodOrBlank(current.comparisonPeriod()) : fromMessage.comparisonPeriod());
     }
 
     public DimensionTemplate confirm(DimensionTemplate template) {
@@ -121,7 +156,7 @@ public class AttributionTemplateInterpreter {
                 """;
     }
 
-    private String mappingPrompt() throws JsonProcessingException {
+    private String mappingPrompt(RetrievedMetadata retrievedMetadata) throws JsonProcessingException {
         return """
                 你是归因分析维度模板映射器。结合用户原话、当前完整模板、第一阶段语义清单和动态维度元数据，返回处理后的完整最终模板，不返回增量动作。
                 只返回JSON，字段必须且只能为：name、mode、metricId、currentPeriod、comparisonPeriod、filters、levels、continuationMode、summary、unmappedTerms、mappingIssues。
@@ -140,14 +175,18 @@ public class AttributionTemplateInterpreter {
                 9. filters是可选分析范围。过滤dimensionId也只能来自动态维度元数据，operator必须使用固定枚举，values必须逐字保留用户给出的非空值。用户本轮未修改过滤范围时保留当前filters；明确说取消过滤时清空。
                 10. 对第一阶段中与当前模板语义相同、顺序相同的维度，优先复用当前模板已有的dimensionId；不得把未变化的词重新映射到相近字段。只对新增或被明确改写的业务词重新匹配元数据。
 
-                动态归因维度元数据：
+                动态归因元数据候选：
                 %s
-                动态归因度量元数据：
-                %s
-                """.formatted(
-                        objectMapper.writeValueAsString(AttributionCatalog.dimensions()),
-                        objectMapper.writeValueAsString(AttributionCatalog.metricIds().stream()
-                                .map(id -> java.util.Map.of("id", id, "name", AttributionCatalog.metricName(id))).toList()));
+                """.formatted(metadataPrompt(retrievedMetadata));
+    }
+
+    private String metadataPrompt(RetrievedMetadata retrievedMetadata) throws JsonProcessingException {
+        if (retrievedMetadata != null && !retrievedMetadata.isEmpty()) {
+            return RetrievedMetadataPrompt.render(retrievedMetadata);
+        }
+        return "可用归因维度：" + objectMapper.writeValueAsString(AttributionCatalog.dimensions())
+                + "\n可用归因度量：" + objectMapper.writeValueAsString(AttributionCatalog.metricIds().stream()
+                        .map(id -> java.util.Map.of("id", id, "name", AttributionCatalog.metricName(id))).toList());
     }
 
     private String mappingPayload(String message, DimensionTemplate current, String semanticIntent)
@@ -447,11 +486,10 @@ public class AttributionTemplateInterpreter {
             mappingIssues = mappingIssues == null ? List.of() : List.copyOf(mappingIssues);
         }
 
-        private RawMappedTemplate withResolvedPeriods(RelativeTimeResolver.ResolvedPeriodPair periods) {
+        private RawMappedTemplate withAuthoritativePeriods(RelativeTimeResolver.ResolvedPeriodPair periods) {
             return new RawMappedTemplate(
                     name, mode, metricId,
-                    periods.currentPeriod() == null ? currentPeriod : periods.currentPeriod(),
-                    periods.comparisonPeriod() == null ? comparisonPeriod : periods.comparisonPeriod(),
+                    periods.currentPeriod(), periods.comparisonPeriod(),
                     filters, levels, continuationMode, summary, unmappedTerms, mappingIssues);
         }
 
@@ -495,11 +533,10 @@ public class AttributionTemplateInterpreter {
             unmappedTerms = unmappedTerms == null ? List.of() : List.copyOf(unmappedTerms);
         }
 
-        private RawSemanticIntent withResolvedPeriods(RelativeTimeResolver.ResolvedPeriodPair periods) {
+        private RawSemanticIntent withAuthoritativePeriods(RelativeTimeResolver.ResolvedPeriodPair periods) {
             return new RawSemanticIntent(
                     analysisTerms, explicitOrder, requestsAutoExploration, requestsStopAfterTemplate, metricTerm,
-                    periods.currentPeriod() == null ? currentPeriod : periods.currentPeriod(),
-                    periods.comparisonPeriod() == null ? comparisonPeriod : periods.comparisonPeriod(),
+                    periods.currentPeriod(), periods.comparisonPeriod(),
                     filterTerms, unmappedTerms);
         }
     }

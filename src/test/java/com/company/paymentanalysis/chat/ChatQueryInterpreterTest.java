@@ -1,6 +1,7 @@
 package com.company.paymentanalysis.chat;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -13,6 +14,10 @@ import com.company.paymentanalysis.controller.ChatQueryController.ChatRequest;
 import com.company.paymentanalysis.controller.ChatQueryController.QueryContext;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.MetadataCandidate;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.RetrievedMetadata;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.Scope;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
@@ -49,10 +54,93 @@ class ChatQueryInterpreterTest {
         verify(llm, times(2)).completeWithMessage(anyList(), anyString(), eq("company-model"));
     }
 
+    @Test
+    void injectsTypedRetrievalCandidatesInsteadOfTheWholeCatalog() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant",
+                        "{\"metrics\":[\"人民币总金额\"],\"groups\":[\"卡品牌\"],\"filters\":[],\"sorts\":[],\"clears\":[]}", List.of()),
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metricIds":["trans_rmb_amt_m"],"dimensionIds":["brand"],
+                         "dimensionFilters":[],"sorts":[],"explanation":"按卡品牌查看人民币总金额"}
+                        """, List.of()));
+        MetadataRetrievalTool retrieval = new MetadataRetrievalTool() {
+            @Override
+            public RetrievedMetadata retrieveForQuery(String message, String semanticIntent) {
+                return new RetrievedMetadata(
+                        List.of(new MetadataCandidate(Scope.METRIC, "trans_rmb_amt_m", "人民币总金额", "", "交易金额", 1, "mock")),
+                        List.of(new MetadataCandidate(Scope.DIMENSION, "brand", "卡品牌", "", "卡属性", 1, "mock")),
+                        List.of(), true);
+            }
+
+            @Override
+            public RetrievedMetadata retrieveForAttribution(String message, String semanticIntent) {
+                return RetrievedMetadata.empty();
+            }
+        };
+
+        interpreter(llm, retrieval).interpret(
+                new ChatRequest("user", "session", "按卡品牌看人民币总金额", QueryContext.empty(), "company-model", false),
+                QueryContext.empty());
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<OpenAiCompatibleLlmClient.ChatMessage>> messagesCaptor =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(llm, times(2)).completeWithMessage(messagesCaptor.capture(), anyString(), eq("company-model"));
+        String mappingSystemPrompt = messagesCaptor.getAllValues().get(1).get(0).content();
+        assertThat(mappingSystemPrompt).contains("metricCandidates", "trans_rmb_amt_m", "brand");
+        assertThat(mappingSystemPrompt).doesNotContain("acpt_cnt_m");
+    }
+
+    @Test
+    void serverResolvedYesterdayOverridesAnIncorrectModelTimeField() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metrics":["原币承兑金额"],"groups":[],"filters":[],"sorts":[],"clears":[]}
+                        """, List.of()),
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metricIds":["acpt_trans_amt_m"],"dimensionIds":[],
+                         "dimensionFilters":[{"dimensionId":"sett_dt_Year2","operator":"EQUALS","values":["2026-08-04"]}],
+                         "sorts":[],"explanation":"昨天的原币承兑金额"}
+                        """, List.of()));
+
+        var result = interpreter(llm).interpret(
+                new ChatRequest("user", "session", "昨天原币承兑金额", QueryContext.empty(), "company-model", false),
+                QueryContext.empty());
+
+        assertThat(result.action().dimensionFilters()).containsExactly(
+                new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
+                        "sett_dt_Day2", "EQUALS", List.of("2026-08-03")));
+    }
+
+    @Test
+    void rejectsAValueWhoseDatePrecisionDoesNotMatchTheTimeField() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant",
+                        "{\"metrics\":[],\"groups\":[],\"filters\":[],\"sorts\":[],\"clears\":[]}", List.of()),
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metricIds":["trans_rmb_amt_m"],"dimensionIds":[],
+                         "dimensionFilters":[{"dimensionId":"sett_dt_Year2","operator":"EQUALS","values":["2026-08-04"]}],
+                         "sorts":[],"explanation":"错误日期格式"}
+                        """, List.of()));
+
+        assertThatThrownBy(() -> interpreter(llm).interpret(
+                new ChatRequest("user", "session", "测试", QueryContext.empty(), "company-model", false),
+                QueryContext.empty()))
+                .isInstanceOf(ChatQueryInterpreter.QueryInterpretationException.class)
+                .hasMessageContaining("年字段只接受 yyyy 格式");
+    }
+
     private ChatQueryInterpreter interpreter(OpenAiCompatibleLlmClient llm) {
+        return interpreter(llm, MetadataRetrievalTool.noOp());
+    }
+
+    private ChatQueryInterpreter interpreter(OpenAiCompatibleLlmClient llm, MetadataRetrievalTool retrieval) {
         return new ChatQueryInterpreter(
                 llm,
                 new ObjectMapper(),
-                Clock.fixed(Instant.parse("2026-08-04T00:00:00Z"), ZoneOffset.UTC));
+                Clock.fixed(Instant.parse("2026-08-04T00:00:00Z"), ZoneOffset.UTC), retrieval);
     }
 }

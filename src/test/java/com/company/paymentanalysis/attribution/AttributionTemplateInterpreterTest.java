@@ -17,6 +17,10 @@ import com.company.paymentanalysis.attribution.AttributionTemplateModels.Templat
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConversationMessage;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.MetadataCandidate;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.RetrievedMetadata;
+import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.Scope;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
@@ -50,6 +54,76 @@ class AttributionTemplateInterpreterTest {
     }
 
     @Test
+    void rejectsAnInventedModelYearAndUsesTheBareMonthFromUserHistory() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model")))
+                .thenReturn(message("""
+                        {"analysisTerms":[],"explicitOrder":true,"requestsAutoExploration":true,
+                         "requestsStopAfterTemplate":false,"metricTerm":"交易额","currentPeriod":"2024-07",
+                         "comparisonPeriod":"","filterTerms":[],"unmappedTerms":[]}
+                        """))
+                .thenReturn(message("""
+                        {"name":"交易额分析","mode":"AUTO","metricId":"trans_rmb_amt_m",
+                         "currentPeriod":"2024-07","comparisonPeriod":"","filters":[],"levels":[],
+                         "continuationMode":"AUTO","summary":"等待周期确认","unmappedTerms":[],"mappingIssues":[]}
+                        """));
+
+        var result = interpreterAt("2026-08-19T00:00:00Z", llm).interpret(new TemplateChatRequest(
+                "user", "conversation", "继续调整当前归因模板",
+                List.of(new TemplateConversationMessage("user", "7月交易额怎么变少了")),
+                null, "company-model"));
+
+        assertThat(result.status()).isEqualTo("NEEDS_CLARIFICATION");
+        assertThat(result.template().currentPeriod()).isEqualTo("2026-07");
+        assertThat(result.template().comparisonPeriod()).isEmpty();
+        assertThat(result.reply()).contains("对比周期");
+    }
+
+    @Test
+    void injectsTypedRetrievalCandidatesInsteadOfTheWholeAttributionCatalog() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                message("""
+                        {"analysisTerms":[{"term":"卡品牌","level":1,"context":"分析维度"}],
+                         "explicitOrder":true,"requestsAutoExploration":false,"requestsStopAfterTemplate":true,
+                         "metricTerm":"人民币总金额","currentPeriod":"2026-07","comparisonPeriod":"2026-06",
+                         "filterTerms":[],"unmappedTerms":[]}
+                        """),
+                message("""
+                        {"name":"卡品牌归因","mode":"USER_DEFINED","metricId":"trans_rmb_amt_m",
+                         "currentPeriod":"2026-07","comparisonPeriod":"2026-06","filters":[],
+                         "levels":[{"level":1,"dimensions":[{"dimensionId":"brand","userTerm":"卡品牌",
+                         "rationale":"候选命中","confidence":"HIGH"}]}],"continuationMode":"STOP",
+                         "summary":"按卡品牌分析","unmappedTerms":[],"mappingIssues":[]}
+                        """));
+        MetadataRetrievalTool retrieval = new MetadataRetrievalTool() {
+            @Override
+            public RetrievedMetadata retrieveForQuery(String message, String semanticIntent) {
+                return RetrievedMetadata.empty();
+            }
+
+            @Override
+            public RetrievedMetadata retrieveForAttribution(String message, String semanticIntent) {
+                return new RetrievedMetadata(
+                        List.of(new MetadataCandidate(Scope.METRIC, "trans_rmb_amt_m", "人民币总金额", "", "交易金额", 1, "mock")),
+                        List.of(new MetadataCandidate(Scope.DIMENSION, "brand", "卡品牌", "", "卡属性", 1, "mock")),
+                        List.of(), true);
+            }
+        };
+
+        new AttributionTemplateInterpreter(llm, new ObjectMapper(), Clock.systemUTC(), retrieval).interpret(
+                new TemplateChatRequest("user", "conversation", "按卡品牌归因人民币总金额", List.of(), null, "company-model"));
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<OpenAiCompatibleLlmClient.ChatMessage>> messagesCaptor =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(llm, times(2)).completeWithMessage(messagesCaptor.capture(), anyString(), eq("company-model"));
+        String mappingSystemPrompt = messagesCaptor.getAllValues().get(1).get(0).content();
+        assertThat(mappingSystemPrompt).contains("metricCandidates", "trans_rmb_amt_m", "brand");
+        assertThat(mappingSystemPrompt).doesNotContain("acpt_cnt_m");
+    }
+
+    @Test
     void extractsMetricPeriodsAndParallelDimensionsIntoACompleteTemplate() {
         OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
         when(llm.completeWithMessage(anyList(), anyString(), eq("company-model")))
@@ -78,7 +152,7 @@ class AttributionTemplateInterpreterTest {
 
         var result = interpreter(llm).interpret(new TemplateChatRequest(
                 "user", "conversation",
-                "分析2026年7月对比6月的人民币总金额。第一层同时看双标卡和卡性质，再看交易场景，最后看ExpressPay；后面自由探索。",
+                "Analyze 2026-07 compared with 2026-06. Then inspect the requested dimensions.",
                 List.of(), null, "company-model"));
 
         assertThat(result.status()).isEqualTo("READY_TO_CONFIRM");
@@ -157,7 +231,7 @@ class AttributionTemplateInterpreterTest {
                         """));
 
         var result = interpreter(llm).interpret(new TemplateChatRequest(
-                "user", "conversation", "compare transaction count", List.of(), null, "company-model"));
+                "user", "conversation", "compare 2026-08 with 2025-08 transaction count", List.of(), null, "company-model"));
 
         assertThat(result.status()).isEqualTo("READY_TO_CONFIRM");
         assertThat(result.mappingIssues()).singleElement().extracting(issue -> issue.userTerm()).isEqualTo("rate promotion");
