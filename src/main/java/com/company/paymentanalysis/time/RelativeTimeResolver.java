@@ -1,6 +1,7 @@
 package com.company.paymentanalysis.time;
 
 import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.ArrayList;
@@ -22,6 +23,9 @@ public final class RelativeTimeResolver {
     private static final Pattern RECENT_N = Pattern.compile("(?:最近|近)\\s*(\\d+)\\s*(天|日|个月|月|年)");
     private static final Pattern EXPLICIT_MONTH = Pattern.compile(
             "(20\\d{2})\\s*(?:年|[-/.])\\s*(0?[1-9]|1[0-2])(?:月)?");
+    private static final Pattern EXPLICIT_DAY = Pattern.compile(
+            "(20\\d{2})\\s*(?:年|[-/.])\\s*(0?[1-9]|1[0-2])\\s*(?:月|[-/.])\\s*(0?[1-9]|[12]\\d|3[01])(?:日)?");
+    private static final Pattern EXPLICIT_YEAR = Pattern.compile("(?<!\\d)(20\\d{2})年(?!\\d)");
     private static final Pattern MONTH_ONLY = Pattern.compile("(?<!\\d)(1[0-2]|[1-9])月");
 
     private static final String MONTH_REFERENCE =
@@ -77,6 +81,11 @@ public final class RelativeTimeResolver {
         String text = raw == null ? "" : raw.replaceAll("\\s+", "").trim();
         LocalDate today = today();
 
+        Optional<ResolvedQueryTime> explicit = resolveExplicitTime(text);
+        if (explicit.isPresent()) {
+            return explicit;
+        }
+
         if (containsAny(text, "今年至今", "本年至今", "年初至今", "年初到今", "YTD")) {
             return Optional.of(range(DAY_FIELD, today.withDayOfYear(1), today));
         }
@@ -117,6 +126,29 @@ public final class RelativeTimeResolver {
         }
 
         return resolveSemanticKind(semanticKind, unit, count);
+    }
+
+    /**
+     * Explicit dates are canonicalized by the server before an LLM can select a
+     * field ID. Multiple mentioned points intentionally use IN instead of a
+     * range: “2026-03 对比 2026-04” means two comparable periods, not every
+     * period between them.
+     */
+    private Optional<ResolvedQueryTime> resolveExplicitTime(String text) {
+        List<String> days = explicitDays(text);
+        if (!days.isEmpty()) {
+            return Optional.of(points(DAY_FIELD, days));
+        }
+        List<YearMonth> months = explicitMonths(text);
+        if (!months.isEmpty()) {
+            return Optional.of(points(MONTH_FIELD, months.stream().map(YearMonth::toString).toList()));
+        }
+        List<String> years = explicitYears(text);
+        return years.isEmpty() ? Optional.empty() : Optional.of(points(YEAR_FIELD, years));
+    }
+
+    private static ResolvedQueryTime points(String fieldId, List<String> values) {
+        return new ResolvedQueryTime(fieldId, values.size() == 1 ? "EQUALS" : "IN", values);
     }
 
     /** Parses a query's original user message without requiring an LLM time slot. */
@@ -265,6 +297,37 @@ public final class RelativeTimeResolver {
             YearMonth month = YearMonth.of(Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2)));
             if (!result.contains(month)) {
                 result.add(month);
+            }
+        }
+        return result;
+    }
+
+    private static List<String> explicitDays(String text) {
+        List<String> result = new ArrayList<>();
+        Matcher matcher = EXPLICIT_DAY.matcher(text);
+        while (matcher.find()) {
+            try {
+                String value = LocalDate.of(
+                        Integer.parseInt(matcher.group(1)),
+                        Integer.parseInt(matcher.group(2)),
+                        Integer.parseInt(matcher.group(3))).toString();
+                if (!result.contains(value)) {
+                    result.add(value);
+                }
+            } catch (DateTimeException | NumberFormatException ignored) {
+                // An invalid explicit date must be clarified, not normalized by guesswork.
+            }
+        }
+        return result;
+    }
+
+    private static List<String> explicitYears(String text) {
+        List<String> result = new ArrayList<>();
+        Matcher matcher = EXPLICIT_YEAR.matcher(text);
+        while (matcher.find()) {
+            String value = matcher.group(1);
+            if (!result.contains(value)) {
+                result.add(value);
             }
         }
         return result;

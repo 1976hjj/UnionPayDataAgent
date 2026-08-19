@@ -23,7 +23,7 @@ class OpenAiCompatibleLlmClientTest {
                                     "http://172.19.209.4:32001/v1", "/chat/completions",
                                     false, false, false, 512, 0.0),
                             new LlmProperties.ModelProfile(
-                                    "glm-4.7", "GLM-4.7（本机）", "glm-4.7",
+                                    "glm-5.2", "GLM-5.2（本机）", "glm-5.2",
                                     "https://open.bigmodel.cn", "/api/paas/v4/chat/completions",
                                     true, true, false, 512, 0.0),
                             new LlmProperties.ModelProfile(
@@ -36,7 +36,7 @@ class OpenAiCompatibleLlmClientTest {
     void resolvesOnlyConfiguredModelsAndKeepsTheirOrder() {
         assertThat(client.defaultModel()).isEqualTo("deepseek-v4-flash");
         assertThat(client.supportedModels())
-                .containsExactly("deepseek-v4-flash", "glm-4.7", "glm-4.6-fp8");
+                .containsExactly("deepseek-v4-flash", "glm-5.2", "glm-4.6-fp8");
         assertThat(client.resolveModel("glm-4.6-fp8")).isEqualTo("glm-4.6-fp8");
         assertThat(client.resolveSelection("deepseek-v4-flash")).isEqualTo("deepseek-v4-flash");
         assertThat(client.supportedProfiles().get(0).baseUrl())

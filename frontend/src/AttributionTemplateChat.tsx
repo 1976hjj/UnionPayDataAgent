@@ -11,7 +11,7 @@ type DimensionTemplate = {
   continuationMode: 'AUTO' | 'STOP'; status: 'DRAFT' | 'CONFIRMED'; summary: string
 }
 type TemplateResponse = {
-  status: 'READY_TO_CONFIRM' | 'NEEDS_CLARIFICATION' | 'CHAT'; reply: string; template: DimensionTemplate | null
+  status: 'READY_TO_CONFIRM' | 'READY_TO_EXECUTE' | 'NEEDS_CLARIFICATION' | 'CHAT' | 'COMPLETED'; reply: string; template: DimensionTemplate | null
   unmappedTerms: string[]
   mappingIssues: { userTerm: string; reason: string; candidateDimensionIds: string[] }[]
 }
@@ -22,6 +22,11 @@ type AttributionState = {
   template: DimensionTemplate | null
   unmappedTerms: string[]
   mappingIssues: TemplateResponse['mappingIssues']
+}
+type AgentTemplateResponse = {
+  status: string
+  conversationId: string
+  viewModel: { type: 'attribution-template'; payload: TemplateResponse }
 }
 type ConversationDetail = {
   conversationId: string
@@ -196,9 +201,11 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
     event.preventDefault(); const content = message.trim(); if (!content || pending) return
     setPending(true); setError(''); setMessages((items) => [...items, { role: 'user', text: content }]); setMessage('')
     try {
-      const raw = await fetch('/api/attribution/template/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: CURRENT_USER_ID, conversationId, message: content, conversationHistory: [], currentTemplate: template, model: selectedModel }) })
+      const raw = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: CURRENT_USER_ID, conversationId, entryMode: 'ATTRIBUTION', action: 'MESSAGE', message: content, attributionTemplate: template, model: selectedModel }) })
       if (!raw.ok) throw new Error(await errorText(raw))
-      const result = await raw.json() as TemplateResponse
+      const agent = await raw.json() as AgentTemplateResponse
+      if (agent.viewModel.type !== 'attribution-template') throw new Error('Agent 返回了不支持的归因模板类型')
+      const result = agent.viewModel.payload
       const storedResponse: TemplateResponse = {
         status: result.status, reply: result.reply, template: result.template,
         unmappedTerms: result.unmappedTerms,
@@ -209,7 +216,8 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
         if (result.template) onTemplateChange?.(result.template)
       }
       setMessages((items) => [...items, { role: 'assistant', text: result.reply }])
-      localStorage.setItem(ACTIVE_CONVERSATION_KEY, conversationId)
+      setConversationId(agent.conversationId)
+      localStorage.setItem(ACTIVE_CONVERSATION_KEY, agent.conversationId)
       void refreshHistory()
       window.dispatchEvent(new Event('model-health-changed'))
     } catch (reason) { setError(reason instanceof Error ? reason.message : '分析模板理解失败') }
@@ -220,10 +228,15 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
     if (!template || !template.metricId || !template.currentPeriod || !template.comparisonPeriod) return
     setPending(true); setError('')
     try {
-      const raw = await fetch('/api/attribution/template/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: CURRENT_USER_ID, conversationId, template }) })
+      const raw = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: CURRENT_USER_ID, conversationId, entryMode: 'ATTRIBUTION', action: 'CONFIRM', message: '确认归因模板', model: selectedModel }) })
       if (!raw.ok) throw new Error(await errorText(raw))
-      const confirmed = await raw.json() as DimensionTemplate
-      setTemplate(confirmed); onTemplateChange?.(confirmed); setMessages((items) => [...items, { role: 'assistant', text: '模板已确认，可以开始归因分析。' }])
+      const agent = await raw.json() as AgentTemplateResponse
+      if (agent.viewModel.type !== 'attribution-template') throw new Error('Agent 返回了不支持的归因模板类型')
+      const confirmed = agent.viewModel.payload
+      if (!confirmed.template) throw new Error('Agent 未返回已确认的归因模板')
+      setConversationId(agent.conversationId)
+      setTemplate(confirmed.template); setResponse(confirmed); onTemplateChange?.(confirmed.template)
+      setMessages((items) => [...items, { role: 'assistant', text: confirmed.reply }])
       void refreshHistory()
     } catch (reason) { setError(reason instanceof Error ? reason.message : '确认模板失败') }
     finally { setPending(false) }

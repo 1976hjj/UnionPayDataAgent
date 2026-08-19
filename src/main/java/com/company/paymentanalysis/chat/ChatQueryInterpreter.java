@@ -132,9 +132,10 @@ public class ChatQueryInterpreter {
                 3. 所有字段 ID 只能使用动态元数据中的 ID；不要编造字段。
                 4. operator 只能是 EQUALS、NOT_EQUALS、IN、BETWEEN、GREATER、GREATER_EQUALS、LESS、LESS_EQUALS；direction 只能是 ASC、DESC。
                 5. 用户明确说出的每个时间、地区、机构、渠道、交易类型等限制都必须进入 dimensionFilters，不能只写在 explanation 中。
-                5.1 用户消息中附带的“语义清单”是第一阶段提取结果：其中每个 metrics、groups、filters、sorts 项都必须在最终 JSON 中有对应项，不得遗漏；resolvedValues 是已计算好的确定时间值，直接使用。
+                5.1 用户消息中附带的“语义清单”是第一阶段提取结果：其中每个 metrics、groups、filters、sorts 项都必须在最终 JSON 中有对应项，不得遗漏。
+                5.2 时间由服务端控制：语义清单中出现 resolvedDimensionId、resolvedOperator、resolvedValues 时，只能使用这三个值生成时间过滤；不得编造时间字段。最终仍以服务端覆盖结果为准。
                 6. dimensionIds 只放用户明确要求“按、各、每、分组、趋势”等展示粒度的维度。时间范围本身不是分组；用户只说“近N天/月”时不要自动增加时间分组或排序。
-                7. 单点时间用 EQUALS，连续时间范围用 BETWEEN。最近N天/月包含当前日/月：结束值为当前日/月，开始值为向前推N-1个日/月；日期格式为yyyy-MM-dd，月份格式为yyyy-MM。
+                7. 单点时间用 EQUALS，连续时间范围用 BETWEEN；多个明确对比时间点可用 IN。最近N天/月包含当前日/月：结束值为当前日/月，开始值为向前推N-1个日/月；日期格式为yyyy-MM-dd，月份格式为yyyy-MM。
                 8. 地名、国家、地区、洲际等成员值必须映射到语义最接近的地域维度并成为过滤条件。未明确说发卡方时优先选择受理或收单地域维度；明确说发卡方时选择发卡地域维度。
                 9. 只有用户明确提出升序、降序、排名、最高、最低等要求时才生成 sorts，不得自行增加时间升序。
                 10. 输出前核对 explanation：其中出现的每个时间和范围限制都必须存在于 dimensionFilters；出现的分组和排序必须分别存在于 dimensionIds 和 sorts。
@@ -281,7 +282,7 @@ public class ChatQueryInterpreter {
         }
         List<DimensionFilter> filters = new java.util.ArrayList<>();
         for (DimensionFilter filter : action.dimensionFilters()) {
-            if (!isTimeDimension(filter.dimensionId())) {
+            if (!isTimeDimension(filter.dimensionId()) && !isUnrecognizedTimeAlias(filter)) {
                 filters.add(filter);
             }
         }
@@ -329,6 +330,24 @@ public class ChatQueryInterpreter {
                 RelativeTimeResolver.YEAR_FIELD,
                 RelativeTimeResolver.MONTH_FIELD,
                 RelativeTimeResolver.DAY_FIELD).contains(dimensionId);
+    }
+
+    /**
+     * When server parsing recognized time, discard an LLM-invented time-like
+     * field instead of allowing it to invalidate an otherwise safe request.
+     * Valid catalog fields are never removed here.
+     */
+    private static boolean isUnrecognizedTimeAlias(DimensionFilter filter) {
+        if (filter == null || QueryMetadataCatalog.isDimension(filter.dimensionId())) {
+            return false;
+        }
+        String fieldId = filter.dimensionId() == null ? "" : filter.dimensionId().toLowerCase(java.util.Locale.ROOT);
+        return fieldId.contains("date")
+                || fieldId.contains("time")
+                || fieldId.contains("month")
+                || fieldId.contains("year")
+                || fieldId.contains("day")
+                || fieldId.endsWith("_dt");
     }
 
     private void validateTimeFilter(DimensionFilter filter) {

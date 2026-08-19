@@ -22,7 +22,6 @@ type Limits = {
 }
 type AttributionMetadata = { metrics: Metric[]; dimensions: Dimension[]; limits: Limits }
 type FilterOperator = 'EQUALS' | 'IN' | 'NOT_EQUALS' | 'NOT_IN' | 'GREATER' | 'GREATER_EQUALS' | 'LESS' | 'LESS_EQUALS' | 'BETWEEN' | 'CONTAINS'
-type FilterDraft = { key: number; dimensionId: string; operator: FilterOperator; value: string }
 type TemplateInput = {
   metricId: string
   currentPeriod: string
@@ -31,10 +30,6 @@ type TemplateInput = {
   filters: { dimensionId: string; operator: FilterOperator; values: string[] }[]
   levels: { level: number; dimensions: { dimensionId: string }[] }[]
   continuationMode: 'AUTO' | 'STOP'
-}
-type AnalysisPlan = {
-  levels: { level: number; dimensionIds: string[] }[]
-  continueExploration: boolean
 }
 type OverallEvidence = {
   currentValue: number
@@ -133,34 +128,6 @@ type SmartBiCall = {
   error: string | null
 }
 type WorkflowEvent = WorkflowStep & { reasoningStep: ReasoningStep | null; smartBiCall?: SmartBiCall | null }
-type AttributionStreamItem = {
-  type: 'event' | 'result' | 'error'
-  event: WorkflowEvent | null
-  result: AttributionResponse | null
-  message: string | null
-}
-
-function mergeStreamEvent(events: WorkflowEvent[], incoming: WorkflowEvent): WorkflowEvent[] {
-  let runningIndex = -1
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const candidate = events[index]
-    const matches = incoming.status === 'FAILED'
-      ? candidate.status === 'RUNNING'
-      : candidate.node === incoming.node && candidate.status === 'RUNNING'
-    if (matches) {
-      runningIndex = index
-      break
-    }
-  }
-  if (incoming.status === 'RUNNING' || runningIndex < 0) return [...events, incoming]
-
-  // A controller-level failure belongs to the last active node, not a duplicate card.
-  const previous = events[runningIndex]
-  const replacement = incoming.status === 'FAILED' && incoming.node === 'workflow'
-    ? { ...incoming, node: previous.node, name: previous.name }
-    : incoming
-  return events.map((event, index) => index === runningIndex ? replacement : event)
-}
 type QueryTrace = {
   stage: string
   dimensionCode: string | null
@@ -184,6 +151,11 @@ type AttributionResponse = {
   executionEngine: string
   workflowSteps: WorkflowStep[]
   smartBiQueries: QueryTrace[]
+}
+type AgentAttributionResponse = {
+  status: string
+  conversationId: string
+  viewModel: { type: 'attribution-result'; payload: AttributionResponse }
 }
 
 const EMPTY_LIMITS: Limits = {
@@ -404,8 +376,6 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
   const [maxQueries, setMaxQueries] = useState(8)
   const [topN, setTopN] = useState(5)
   const [maxBranches, setMaxBranches] = useState(2)
-  const [filters, setFilters] = useState<FilterDraft[]>([])
-  const [analysisPlan, setAnalysisPlan] = useState<AnalysisPlan | null>(null)
   const [templateStatus, setTemplateStatus] = useState<'DRAFT' | 'CONFIRMED' | null>(null)
   const [pending, setPending] = useState(false)
   const [streamEvents, setStreamEvents] = useState<WorkflowEvent[]>([])
@@ -439,115 +409,51 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
     return () => { active = false }
   }, [])
 
-  function addFilter() {
-    const firstDimension = metadata?.dimensions[0]?.id
-    if (!firstDimension) return
-    setFilters((items) => [...items, { key: Date.now(), dimensionId: firstDimension, operator: 'EQUALS', value: '' }])
-  }
-
-  function updateFilter(key: number, patch: Partial<FilterDraft>) {
-    setFilters((items) => items.map((item) => item.key === key ? { ...item, ...patch } : item))
-  }
-
   function applyTemplate(template: TemplateInput) {
     if (template.metricId) setMetricId(template.metricId)
     if (template.currentPeriod) setCurrentPeriod(template.currentPeriod)
     if (template.comparisonPeriod) setComparisonPeriod(template.comparisonPeriod)
-    setFilters((template.filters ?? []).map((filter, index) => ({
-      key: Date.now() + index,
-      dimensionId: filter.dimensionId,
-      operator: filter.operator,
-      value: filter.values.join(','),
-    })))
     setTemplateStatus(template.status)
-    if (template.status !== 'CONFIRMED' || !template.levels?.length) {
-      setAnalysisPlan(null)
-      return
+    if (template.status === 'CONFIRMED' && template.levels?.length) {
+      setMaxDepth((value) => Math.max(value, template.levels.length))
     }
-    setAnalysisPlan({
-      levels: template.levels.map((level) => ({
-        level: level.level,
-        dimensionIds: level.dimensions.map((dimension) => dimension.dimensionId),
-      })),
-      continueExploration: template.continuationMode === 'AUTO',
-    })
-    setMaxDepth((value) => Math.max(value, template.levels.length))
   }
 
   async function submit(event?: FormEvent) {
     event?.preventDefault()
     setCopied(false)
     if (!metricId || !currentPeriod || !comparisonPeriod) return setError('请完整填写度量与对比周期')
-    if (templateStatus === 'DRAFT') return setError('请先确认归因模板再开始分析')
+    if (templateStatus !== 'CONFIRMED') return setError('请先确认归因模板再开始分析')
     if (currentPeriod <= comparisonPeriod) return setError('当前周期必须晚于对比周期')
-    const emptyFilter = filters.find((filter) => !filter.value.trim())
-    if (emptyFilter) return setError('维度过滤值不能为空')
     setError('')
     setStreamFailure('')
     setStreamEvents([])
     setPending(true)
     setResult(null)
     try {
-      const response = await fetch('/api/attribution/analyze/stream', {
+      const response = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: 'demo-user',
           conversationId,
-          metricId,
-          currentPeriod,
-          comparisonPeriod,
-          analysisPlan,
-          maxDepth,
-          maxQueries,
-          topN,
-          maxBranches,
+          entryMode: 'ATTRIBUTION',
+          action: 'EXECUTE',
+          message: '开始归因分析',
           model: selectedModel,
-          dimensionFilters: filters.map((filter) => ({
-            dimensionId: filter.dimensionId,
-            operator: filter.operator,
-            values: ['IN', 'NOT_IN', 'BETWEEN'].includes(filter.operator)
-              ? filter.value.split(/[,，]/).map((value) => value.trim()).filter(Boolean)
-              : [filter.value.trim()],
-          })),
+          attributionExecutionOptions: { maxDepth, maxQueries, topN, maxBranches },
         }),
       })
       if (!response.ok) throw new Error(await responseError(response))
-      if (!response.body) throw new Error('浏览器不支持归因过程流式响应')
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let completed = false
-      const handleItem = (item: AttributionStreamItem) => {
-        if (item.type === 'event' && item.event) {
-          setStreamEvents((events) => mergeStreamEvent(events, item.event!))
-          return
-        }
-        if (item.type === 'result' && item.result) {
-          completed = true
-          setResult(item.result)
-          if (conversationId) window.dispatchEvent(new CustomEvent('unified-conversation-changed', { detail: conversationId }))
-          return
-        }
-        if (item.type === 'error') {
-          if (item.event) setStreamEvents((events) => mergeStreamEvent(events, item.event!))
-          throw new Error(item.message || '归因分析执行失败')
-        }
-      }
-      while (true) {
-        const { value, done } = await reader.read()
-        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-        for (const line of lines) {
-          if (line.trim()) handleItem(JSON.parse(line) as AttributionStreamItem)
-        }
-        if (done) break
-      }
-      if (buffer.trim()) handleItem(JSON.parse(buffer) as AttributionStreamItem)
-      if (!completed) throw new Error('归因过程未返回最终结果')
+      const agent = await response.json() as AgentAttributionResponse
+      if (agent.viewModel.type !== 'attribution-result') throw new Error('Agent 返回了不支持的归因结果类型')
+      const agentResult = agent.viewModel.payload
+      setResult(agentResult)
+      setStreamEvents(agentResult.workflowSteps.map((step) => ({ ...step, reasoningStep: null })))
+      if (agent.conversationId) window.dispatchEvent(new CustomEvent('unified-conversation-changed', { detail: agent.conversationId }))
       setTab('report')
       window.dispatchEvent(new Event('model-health-changed'))
+      return
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : '归因分析请求失败'
       setError(message)
@@ -589,7 +495,7 @@ export default function AttributionPage({ selectedModel }: { selectedModel: stri
             <label>每维展示 TopN <input type="number" min="1" max={limits.hardTopN} value={topN} onChange={(event) => setTopN(Number(event.target.value))} /><small>最多 {limits.hardTopN} 项</small></label>
           </div>
           {error && <div className="validation-box" role="alert"><span>• {error}</span></div>}
-          <div className="form-actions"><button className="primary-button" disabled={pending || !metadata || templateStatus === 'DRAFT'} type="button" onClick={() => void submit()}>{pending ? 'Agent 分析中…' : templateStatus === 'DRAFT' ? '请先确认模板' : '开始归因分析'}</button></div>
+          <div className="form-actions"><button className="primary-button" disabled={pending || !metadata || templateStatus !== 'CONFIRMED'} type="button" onClick={() => void submit()}>{pending ? 'Agent 分析中…' : templateStatus !== 'CONFIRMED' ? '请先确认模板' : '开始归因分析'}</button></div>
           {pending && <div className="attribution-running" aria-live="polite"><i /><div><strong>正在执行智能归因</strong><span>总体查询 → 维度假设 → 并行取证 → 动态下钻 → 生成报告</span></div></div>}
         </div>
 

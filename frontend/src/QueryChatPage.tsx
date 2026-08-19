@@ -130,6 +130,12 @@ type Message = {
   status?: ChatResponse['status'] | null
 }
 
+type AgentResponse = {
+  status: string
+  conversationId: string
+  viewModel: { type: 'query'; payload: ChatResponse }
+}
+
 type ConversationSummary = {
   conversationId: string
   title: string
@@ -514,25 +520,28 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
     setPending(true)
 
     try {
-      const response = await fetch('/api/chat/query', {
+      const response = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: CURRENT_USER_ID,
-          sessionId: conversationId,
+          conversationId,
           message,
-          context,
+          entryMode: 'BI_CHAT',
           model: selectedModel,
-          confirmed,
+          action: confirmed ? 'CONFIRM' : 'MESSAGE',
+          queryContext: context,
         }),
       })
       if (!response.ok) {
         const detail = await response.json().catch(() => null) as { detail?: string } | null
         throw new Error(detail?.detail || '对话服务暂不可用')
       }
-      const data = await response.json() as ChatResponse
-      setConversationId(data.conversationId)
-      localStorage.setItem(ACTIVE_CONVERSATION_KEY, data.conversationId)
+      const agent = await response.json() as AgentResponse
+      if (agent.viewModel.type !== 'query') throw new Error('Agent 返回了不支持的查数结果类型')
+      const data = agent.viewModel.payload
+      setConversationId(agent.conversationId)
+      localStorage.setItem(ACTIVE_CONVERSATION_KEY, agent.conversationId)
       setContext(data.context)
       setMessages((current) => [...current, {
         id: userId + 1,

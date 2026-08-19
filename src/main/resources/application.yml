@@ -100,9 +100,9 @@ llm:
       thinking-supported: false
       max-tokens: ${DEEPSEEK_V4_FLASH_MAX_TOKENS:${DEEPSEEK_V4_FALSH_MAX_TOKENS:1024}}
       temperature: ${DEEPSEEK_V4_FLASH_TEMPERATURE:0.0}
-    - id: glm-4.7
-      display-name: GLM-4.7（本机）
-      model: ${GLM_47_MODEL:glm-4.7}
+    - id: glm-5.2
+      display-name: GLM-5.2（本机）
+      model: ${GLM_52_MODEL:glm-5.2}
       base-url: ${ZHIPU_LLM_BASE_URL:https://open.bigmodel.cn}
       chat-path: /api/paas/v4/chat/completions
       json-mode: true

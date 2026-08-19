@@ -115,6 +115,29 @@ class ChatQueryInterpreterTest {
     }
 
     @Test
+    void serverResolvedExplicitMonthsOverrideAnInventedModelTimeField() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metrics":["承兑笔数"],"groups":["卡性质"],"filters":[],"sorts":[],"clears":[]}
+                        """, List.of()),
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metricIds":["acpt_cnt_m"],"dimensionIds":["card_attr_def"],
+                         "dimensionFilters":[{"dimensionId":"trans_month","operator":"IN","values":["2026-03","2026-04"]}],
+                         "sorts":[],"explanation":"按卡性质对比两个月的承兑笔数"}
+                        """, List.of()));
+
+        var result = interpreter(llm).interpret(
+                new ChatRequest("user", "session", "2026.3对比2026.4月 度量承兑笔数 从卡性质分析",
+                        QueryContext.empty(), "company-model", false),
+                QueryContext.empty());
+
+        assertThat(result.action().dimensionFilters()).containsExactly(
+                new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
+                        "sett_dt_Month2", "IN", List.of("2026-03", "2026-04")));
+    }
+
+    @Test
     void rejectsAValueWhoseDatePrecisionDoesNotMatchTheTimeField() {
         OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
         when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(

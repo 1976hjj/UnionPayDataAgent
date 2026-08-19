@@ -1,0 +1,139 @@
+package com.company.paymentanalysis.agent;
+
+import com.company.paymentanalysis.attribution.AttributionTemplateInterpreter;
+import com.company.paymentanalysis.attribution.AttributionExecutionService;
+import com.company.paymentanalysis.attribution.AttributionModels.AnalysisLevel;
+import com.company.paymentanalysis.attribution.AttributionModels.AnalysisPlan;
+import com.company.paymentanalysis.attribution.AttributionModels.AttributionRequest;
+import com.company.paymentanalysis.attribution.AttributionModels.AttributionResponse;
+import com.company.paymentanalysis.attribution.AttributionModels.DimensionFilter;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.DimensionLayer;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.DimensionTemplate;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateChatRequest;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateChatResponse;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConversationState;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateFilter;
+import com.company.paymentanalysis.chat.AttributionConversationRouterService;
+import com.company.paymentanalysis.chat.ChatConversationMemoryService;
+import java.util.List;
+import org.springframework.stereotype.Service;
+
+/** Phase-one adapter for the existing attribution-template conversation. */
+@Service
+public class AttributionSkill implements AgentSkill {
+
+    private final AttributionConversationRouterService conversationRouter;
+    private final AttributionTemplateInterpreter templateInterpreter;
+    private final ChatConversationMemoryService memoryService;
+    private final AttributionExecutionService executionService;
+
+    public AttributionSkill(
+            AttributionConversationRouterService conversationRouter,
+            AttributionTemplateInterpreter templateInterpreter,
+            ChatConversationMemoryService memoryService,
+            AttributionExecutionService executionService) {
+        this.conversationRouter = conversationRouter;
+        this.templateInterpreter = templateInterpreter;
+        this.memoryService = memoryService;
+        this.executionService = executionService;
+    }
+
+    @Override
+    public AgentEntryMode entryMode() {
+        return AgentEntryMode.ATTRIBUTION;
+    }
+
+    @Override
+    public AgentResponse execute(AgentRequest request, AgentContext context) {
+        if (context.action() == AgentAction.CONFIRM) {
+            return confirm(context);
+        }
+        if (context.action() == AgentAction.EXECUTE) {
+            return executeConfirmedTemplate(request, context);
+        }
+        TemplateChatResponse response = conversationRouter.respond(new TemplateChatRequest(
+                context.userId(), context.conversationId(), request.message(), List.of(),
+                context.attributionTemplate(), context.model()));
+        return new AgentResponse(
+                response.status(), "CHAT".equals(response.status()) ? "CHAT" : "ATTRIBUTION",
+                response.reply(), context.conversationId(),
+                new AgentViewModel("attribution-template", response));
+    }
+
+    private AgentResponse confirm(AgentContext context) {
+        TemplateConversationState state = memoryService.snapshot(
+                        context.userId(), context.conversationId(),
+                        ChatConversationMemoryService.ConversationScope.ATTRIBUTION)
+                .map(ChatConversationMemoryService.ConversationSnapshot::attributionState)
+                .orElseThrow(() -> new IllegalArgumentException("当前会话没有可确认的归因模板"));
+        if (state == null || state.template() == null) {
+            throw new IllegalArgumentException("当前会话没有可确认的归因模板");
+        }
+        DimensionTemplate confirmed = templateInterpreter.confirm(state.template());
+        memoryService.saveAttributionState(context.userId(), context.conversationId(),
+                new TemplateConversationState("READY_TO_EXECUTE", confirmed,
+                        state.unmappedTerms(), state.mappingIssues()));
+        TemplateChatResponse response = new TemplateChatResponse(
+                "READY_TO_EXECUTE", "归因模板已确认，可以开始执行归因分析。", confirmed,
+                state.unmappedTerms(), state.mappingIssues(), null, null);
+        return new AgentResponse(
+                response.status(), "ATTRIBUTION", response.reply(),
+                context.conversationId(), new AgentViewModel("attribution-template", response));
+    }
+
+    private AgentResponse executeConfirmedTemplate(AgentRequest request, AgentContext context) {
+        TemplateConversationState state = attributionState(context);
+        DimensionTemplate template = state.template();
+        if (!"READY_TO_EXECUTE".equals(state.status()) || !"CONFIRMED".equals(template.status())) {
+            throw new IllegalArgumentException("请先确认归因模板，再开始归因分析");
+        }
+        AttributionResponse response = executionService.execute(toRequest(template, request, context)).response();
+        memoryService.saveAttributionState(context.userId(), context.conversationId(),
+                new TemplateConversationState("COMPLETED", template,
+                        state.unmappedTerms(), state.mappingIssues()));
+        String reply = response.report() == null || response.report().summary() == null
+                ? "归因分析已执行完成。" : response.report().summary();
+        return new AgentResponse(response.status(), "ATTRIBUTION", reply,
+                context.conversationId(), new AgentViewModel("attribution-result", response));
+    }
+
+    private TemplateConversationState attributionState(AgentContext context) {
+        TemplateConversationState state = memoryService.snapshot(
+                        context.userId(), context.conversationId(),
+                        ChatConversationMemoryService.ConversationScope.ATTRIBUTION)
+                .map(ChatConversationMemoryService.ConversationSnapshot::attributionState)
+                .orElseThrow(() -> new IllegalArgumentException("当前会话没有可确认的归因模板"));
+        if (state == null || state.template() == null) {
+            throw new IllegalArgumentException("当前会话没有可确认的归因模板");
+        }
+        return state;
+    }
+
+    private AttributionRequest toRequest(DimensionTemplate template, AgentRequest request, AgentContext context) {
+        List<DimensionFilter> filters = template.filters().stream()
+                .map(this::toFilter)
+                .toList();
+        List<AnalysisLevel> levels = template.levels().stream()
+                .map(this::toLevel)
+                .toList();
+        AnalysisPlan plan = levels.isEmpty() ? null
+                : new AnalysisPlan(levels, "AUTO".equals(template.continuationMode()));
+        AttributionExecutionOptions options = request.attributionExecutionOptions();
+        return new AttributionRequest(
+                template.metricId(), template.currentPeriod(), template.comparisonPeriod(), filters, plan,
+                options == null ? null : options.maxDepth(),
+                options == null ? null : options.maxQueries(),
+                options == null ? null : options.topN(),
+                options == null ? null : options.maxBranches(),
+                context.model(), context.userId(), context.conversationId());
+    }
+
+    private DimensionFilter toFilter(TemplateFilter filter) {
+        return new DimensionFilter(filter.dimensionId(), filter.operator(), filter.values());
+    }
+
+    private AnalysisLevel toLevel(DimensionLayer level) {
+        return new AnalysisLevel(level.level(), level.dimensions().stream()
+                .map(item -> item.dimensionId()).toList());
+    }
+}

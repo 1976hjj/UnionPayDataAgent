@@ -24,7 +24,7 @@ const INITIAL_DEPENDENCIES: DependencyStatus[] = [
 
 const FALLBACK_MODELS: ModelOption[] = [
   { id: 'deepseek-v4-flash', displayName: 'DeepSeek-V4-Flash（公司）' },
-  { id: 'glm-4.7', displayName: 'GLM-4.7（本机）' },
+  { id: 'glm-5.2', displayName: 'GLM-5.2（本机）' },
   { id: 'glm-4.6-fp8', displayName: 'GLM-4.6-FP8（公司）' },
 ]
 const MODEL_STORAGE_KEY = 'payment-analysis:selected-model'

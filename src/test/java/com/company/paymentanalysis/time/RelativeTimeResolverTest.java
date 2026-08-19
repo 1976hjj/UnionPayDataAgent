@@ -47,6 +47,15 @@ class RelativeTimeResolverTest {
     }
 
     @Test
+    void canonicalizesExplicitMonthComparisonWithoutAskingTheModelForAFieldId() {
+        assertThat(resolver.resolveQueryTime("2026.3对比2026.4月")).hasValueSatisfying(time -> {
+            assertThat(time.dimensionId()).isEqualTo(RelativeTimeResolver.MONTH_FIELD);
+            assertThat(time.operator()).isEqualTo("IN");
+            assertThat(time.values()).containsExactly("2026-03", "2026-04");
+        });
+    }
+
+    @Test
     void resolvesLabeledAttributionPeriodsWithoutAskingTheModelToGuessDates() {
         var periods = resolver.resolveAttributionPeriods(
                 "", "", "当前周期，本月；对比周期，上月");
