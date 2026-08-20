@@ -68,10 +68,15 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
     public RetrievedMetadata retrieveForQuery(String userMessage, String semanticIntent) {
         try {
             JsonNode intent = objectMapper.readTree(semanticIntent);
+            List<String> filters = filterTerms(intent.path("filterTerms"));
+            List<String> dimensions = textItems(intent.path("groupTerms"));
+            for (JsonNode item : intent.path("filterTerms")) {
+                add(dimensions, item.path("dimensionTerm").asText());
+            }
             return retrieve(new RetrievalPlan(
-                    textItems(intent.path("metrics")),
-                    textItems(intent.path("groups")),
-                    filterTerms(intent.path("filters"))), userMessage);
+                    textItems(intent.path("metricTerms")),
+                    dimensions,
+                    filters), userMessage);
         } catch (RuntimeException | java.io.IOException ignored) {
             return RetrievedMetadata.empty();
         }
@@ -324,11 +329,6 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
     private List<String> filterTerms(JsonNode node) {
         List<String> result = new ArrayList<>();
         for (JsonNode item : node) {
-            // Time is resolved deterministically by the shared time parser;
-            // sending it to the business value-domain index only adds noise.
-            if ("TIME".equals(item.path("category").asText(""))) {
-                continue;
-            }
             String context = item.path("dimensionTerm").asText(item.path("raw").asText(""));
             List<String> values = textItems(item.path("values"));
             if (values.isEmpty()) {
@@ -447,6 +447,7 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
                 return 1.0;
             }
             if (scope == VALUE && StringUtils.hasText(value)
+                    && !normalizedQuery.matches(".*\\d{4,}.*")
                     && normalizedQuery.contains(normalize(value)) && normalize(value).length() >= 2) {
                 return 0.98;
             }

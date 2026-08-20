@@ -50,13 +50,20 @@ public class ConversationRouterService {
         ConversationSnapshot snapshot = memoryService.snapshot(request.userId(), request.sessionId())
                 .orElse(new ConversationSnapshot(request.context(), List.of(), List.of()));
         QueryContext context = request.context() == null ? snapshot.context() : request.context();
-        Route route = route(request, context, snapshot);
+        String pendingQueryIntent = request.pendingQueryIntent() == null || request.pendingQueryIntent().isBlank()
+                ? snapshot.pendingQueryIntent() : request.pendingQueryIntent();
+        ChatRequest effectiveRequest = new ChatRequest(
+                request.userId(), request.sessionId(), request.message(), context, request.model(),
+                request.confirmed(), pendingQueryIntent);
+        // A short answer to our own clarification (for example only a metric name)
+        // must stay in the query workflow even when it does not look like a new query.
+        Route route = pendingQueryIntent == null || pendingQueryIntent.isBlank()
+                ? route(request, context, snapshot)
+                : Route.QUERY;
         if (route == Route.QUERY) {
-            return queryWorkflow.query(new ChatRequest(
-                    request.userId(), request.sessionId(), request.message(), context,
-                    request.model(), request.confirmed()));
+            return queryWorkflow.query(effectiveRequest);
         }
-        return conversationalResponse(request, context, snapshot);
+        return conversationalResponse(effectiveRequest, context, snapshot);
     }
 
     private Route route(ChatRequest request, QueryContext context, ConversationSnapshot snapshot) {

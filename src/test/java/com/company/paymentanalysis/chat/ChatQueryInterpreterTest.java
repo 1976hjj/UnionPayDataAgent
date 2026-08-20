@@ -1,7 +1,6 @@
 package com.company.paymentanalysis.chat;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -23,6 +22,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class ChatQueryInterpreterTest {
@@ -30,14 +30,16 @@ class ChatQueryInterpreterTest {
     @Test
     void acceptsACompleteProductionQueryStateFromAnOpenAiCompatibleModel() {
         OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
-        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model")))
-                .thenReturn(new LlmResultMessage("company-model", "assistant", """
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant",
+                        "{\"metricTerms\":[\"人民币总金额\"],\"groupTerms\":[\"月\"],\"filterTerms\":[],\"sortTerms\":[],\"unmappedTerms\":[]}", List.of()),
+                new LlmResultMessage("company-model", "assistant", """
                         {
                           "metricIds":["trans_rmb_amt_m"],
                           "dimensionIds":["sett_dt_Month2"],
                           "dimensionFilters":[{"dimensionId":"acq_mkt_ch","operator":"IN","values":["上海","北京"]}],
                           "sorts":[{"fieldId":"trans_rmb_amt_m","direction":"DESC"}],
-                          "explanation":"按月查看上海和北京的人民币总金额。"
+                          "unresolvedItems":[]
                         }
                         """, List.of()));
 
@@ -59,10 +61,10 @@ class ChatQueryInterpreterTest {
         OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
         when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
                 new LlmResultMessage("company-model", "assistant",
-                        "{\"metrics\":[\"人民币总金额\"],\"groups\":[\"卡品牌\"],\"filters\":[],\"sorts\":[],\"clears\":[]}", List.of()),
+                        "{\"metricTerms\":[\"人民币总金额\"],\"groupTerms\":[\"卡品牌\"],\"filterTerms\":[],\"sortTerms\":[],\"unmappedTerms\":[]}", List.of()),
                 new LlmResultMessage("company-model", "assistant", """
                         {"metricIds":["trans_rmb_amt_m"],"dimensionIds":["brand"],
-                         "dimensionFilters":[],"sorts":[],"explanation":"按卡品牌查看人民币总金额"}
+                         "dimensionFilters":[],"sorts":[],"unresolvedItems":[]}
                         """, List.of()));
         MetadataRetrievalTool retrieval = new MetadataRetrievalTool() {
             @Override
@@ -89,71 +91,66 @@ class ChatQueryInterpreterTest {
         verify(llm, times(2)).completeWithMessage(messagesCaptor.capture(), anyString(), eq("company-model"));
         String mappingSystemPrompt = messagesCaptor.getAllValues().get(1).get(0).content();
         assertThat(mappingSystemPrompt).contains("metricCandidates", "trans_rmb_amt_m", "brand");
-        assertThat(mappingSystemPrompt).doesNotContain("acpt_cnt_m");
+        assertThat(mappingSystemPrompt).contains("完整允许度量字段");
     }
 
     @Test
-    void serverResolvedYesterdayOverridesAnIncorrectModelTimeField() {
-        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
-        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
-                new LlmResultMessage("company-model", "assistant", """
-                        {"metrics":["原币承兑金额"],"groups":[],"filters":[],"sorts":[],"clears":[]}
-                        """, List.of()),
-                new LlmResultMessage("company-model", "assistant", """
-                        {"metricIds":["acpt_trans_amt_m"],"dimensionIds":[],
-                         "dimensionFilters":[{"dimensionId":"sett_dt_Year2","operator":"EQUALS","values":["2026-08-04"]}],
-                         "sorts":[],"explanation":"昨天的原币承兑金额"}
-                        """, List.of()));
-
-        var result = interpreter(llm).interpret(
-                new ChatRequest("user", "session", "昨天原币承兑金额", QueryContext.empty(), "company-model", false),
-                QueryContext.empty());
-
-        assertThat(result.action().dimensionFilters()).containsExactly(
-                new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
-                        "sett_dt_Day2", "EQUALS", List.of("2026-08-03")));
-    }
-
-    @Test
-    void serverResolvedExplicitMonthsOverrideAnInventedModelTimeField() {
-        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
-        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
-                new LlmResultMessage("company-model", "assistant", """
-                        {"metrics":["承兑笔数"],"groups":["卡性质"],"filters":[],"sorts":[],"clears":[]}
-                        """, List.of()),
-                new LlmResultMessage("company-model", "assistant", """
-                        {"metricIds":["acpt_cnt_m"],"dimensionIds":["card_attr_def"],
-                         "dimensionFilters":[{"dimensionId":"trans_month","operator":"IN","values":["2026-03","2026-04"]}],
-                         "sorts":[],"explanation":"按卡性质对比两个月的承兑笔数"}
-                        """, List.of()));
-
-        var result = interpreter(llm).interpret(
-                new ChatRequest("user", "session", "2026.3对比2026.4月 度量承兑笔数 从卡性质分析",
-                        QueryContext.empty(), "company-model", false),
-                QueryContext.empty());
-
-        assertThat(result.action().dimensionFilters()).containsExactly(
-                new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
-                        "sett_dt_Month2", "IN", List.of("2026-03", "2026-04")));
-    }
-
-    @Test
-    void rejectsAValueWhoseDatePrecisionDoesNotMatchTheTimeField() {
+    void mapsComparisonMonthsWithoutAQuerySpecificRepairPass() {
         OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
         when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
                 new LlmResultMessage("company-model", "assistant",
-                        "{\"metrics\":[],\"groups\":[],\"filters\":[],\"sorts\":[],\"clears\":[]}", List.of()),
+                        "{\"metricTerms\":[\"业务数据\"],\"groupTerms\":[\"月\"],\"filterTerms\":[{\"dimensionTerm\":\"月\",\"operator\":\"IN\",\"values\":[\"2025-04\",\"2025-05\"],\"context\":\"对比去年5月和4月\"}],\"sortTerms\":[],\"unmappedTerms\":[]}", List.of()),
                 new LlmResultMessage("company-model", "assistant", """
-                        {"metricIds":["trans_rmb_amt_m"],"dimensionIds":[],
-                         "dimensionFilters":[{"dimensionId":"sett_dt_Year2","operator":"EQUALS","values":["2026-08-04"]}],
-                         "sorts":[],"explanation":"错误日期格式"}
+                        {"metricIds":[],"dimensionIds":["sett_dt_Month2"],
+                         "dimensionFilters":[{"dimensionId":"sett_dt_Month2","operator":"IN","values":["2025-04","2025-05"]}],
+                         "sorts":[],"unresolvedItems":["业务数据"]}
                         """, List.of()));
 
-        assertThatThrownBy(() -> interpreter(llm).interpret(
-                new ChatRequest("user", "session", "测试", QueryContext.empty(), "company-model", false),
-                QueryContext.empty()))
-                .isInstanceOf(ChatQueryInterpreter.QueryInterpretationException.class)
-                .hasMessageContaining("年字段只接受 yyyy 格式");
+        var result = interpreter(llm).interpret(
+                new ChatRequest("user", "session", "对比去年5月和4月业务数据", QueryContext.empty(), "company-model", false),
+                QueryContext.empty());
+
+        assertThat(result.action().dimensionIds()).containsExactly("sett_dt_Month2");
+        assertThat(result.action().dimensionFilters().get(0).values())
+                .containsExactly("2025-04", "2025-05");
+        verify(llm, times(2)).completeWithMessage(anyList(), anyString(), eq("company-model"));
+    }
+
+    @Test
+    void firstStageReturnsOneCompleteSemanticIntentWhenPendingIntentExists() throws Exception {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant",
+                        "{\"metricTerms\":[\"总交易笔数\"],\"groupTerms\":[],\"filterTerms\":[{\"dimensionTerm\":\"vcc\",\"operator\":\"EQUALS\",\"values\":[\"vcc\"],\"context\":\"vcc\"}],\"sortTerms\":[],\"unmappedTerms\":[]}", List.of()),
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metricIds":["trans_cnt_m"],"dimensionIds":[],"dimensionFilters":[],"sorts":[],
+                         "unresolvedItems":["vcc"]}
+                        """, List.of()));
+        AtomicReference<String> retrievedIntent = new AtomicReference<>();
+        MetadataRetrievalTool retrieval = new MetadataRetrievalTool() {
+            @Override
+            public RetrievedMetadata retrieveForQuery(String message, String semanticIntent) {
+                retrievedIntent.set(semanticIntent);
+                return new RetrievedMetadata(
+                        List.of(new MetadataCandidate(Scope.METRIC, "trans_cnt_m", "总交易笔数", "", "", 1, "mock")),
+                        List.of(), List.of(), true);
+            }
+
+            @Override
+            public RetrievedMetadata retrieveForAttribution(String message, String semanticIntent) {
+                return RetrievedMetadata.empty();
+            }
+        };
+        String pending = "{\"metricTerms\":[],\"groupTerms\":[],\"filterTerms\":[{\"dimensionTerm\":\"vcc\","
+                + "\"operator\":\"EQUALS\",\"values\":[\"vcc\"],\"context\":\"vcc\"}],\"sortTerms\":[],\"unmappedTerms\":[]}";
+
+        interpreter(llm, retrieval).interpret(
+                new ChatRequest("user", "session", "总交易笔数", QueryContext.empty(), "company-model", false, pending),
+                QueryContext.empty(), pending);
+
+        var merged = new ObjectMapper().readTree(retrievedIntent.get());
+        assertThat(merged.path("metricTerms").get(0).asText()).isEqualTo("总交易笔数");
+        assertThat(merged.path("filterTerms").get(0).path("dimensionTerm").asText()).isEqualTo("vcc");
     }
 
     private ChatQueryInterpreter interpreter(OpenAiCompatibleLlmClient llm) {

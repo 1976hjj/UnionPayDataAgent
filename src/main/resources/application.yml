@@ -108,8 +108,8 @@ llm:
       json-mode: true
       thinking-supported: true
       thinking-enabled: false
-      max-tokens: ${GLM_47_MAX_TOKENS:1024}
-      temperature: ${GLM_47_TEMPERATURE:0.0}
+      max-tokens: ${GLM_52_MAX_TOKENS:1024}
+      temperature: ${GLM_52_TEMPERATURE:0.0}
     - id: glm-4.6-fp8
       display-name: GLM-4.6-FP8（公司）
       model: ${GLM_46_MODEL:glm-4.6-fp8}

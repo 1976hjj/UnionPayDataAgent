@@ -1,5 +1,6 @@
 package com.company.paymentanalysis.ragflow;
 
+import com.company.paymentanalysis.query.QueryMetadataCatalog;
 import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.MetadataCandidate;
 import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.RetrievedMetadata;
 
@@ -17,7 +18,9 @@ public final class RetrievedMetadataPrompt {
         append(result, "metricCandidates", metadata.metrics());
         append(result, "dimensionCandidates", metadata.dimensions());
         append(result, "filterValueCandidates", metadata.values());
-        result.append("Only select field IDs present in these candidates. A value candidate supplies a filter value and its owning dimensionId.");
+        result.append("Only select field IDs present in these candidates. ")
+                .append("For non-time filters, a value candidate supplies the allowed value and its owning dimensionId. ")
+                .append("For time dimensions, normalize the user-authored time using the current date and the field format hint.");
         return result.toString();
     }
 
@@ -28,8 +31,14 @@ public final class RetrievedMetadataPrompt {
                     .append("; name=").append(candidate.fieldName())
                     .append("; value=").append(candidate.value())
                     .append("; description=").append(candidate.description())
+                    .append(promptHint(candidate.fieldId()))
                     .append("; score=").append(String.format(java.util.Locale.ROOT, "%.2f", candidate.score()))
                     .append('\n');
         }
+    }
+
+    private static String promptHint(String fieldId) {
+        String hint = QueryMetadataCatalog.promptHint(fieldId);
+        return hint.isBlank() ? "" : " | fieldHint=" + hint;
     }
 }

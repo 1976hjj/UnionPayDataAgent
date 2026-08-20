@@ -40,9 +40,9 @@ public final class QueryMetadataCatalog {
             metric("sh_cg_num_hb", "当日商户数（有成功交易）环比"));
 
     private static final Map<String, FieldDefinition> DIMENSIONS = orderedMap(
-            dimension("sett_dt_Year2", "年"),
-            dimension("sett_dt_Month2", "月"),
-            dimension("sett_dt_Day2", "日"),
+            dimension("sett_dt_Year2", "年", "时间筛选/分组字段；过滤值格式 yyyy"),
+            dimension("sett_dt_Month2", "月", "时间筛选/分组字段；过滤值格式 yyyy-MM"),
+            dimension("sett_dt_Day2", "日", "时间筛选/分组字段；过滤值格式 yyyy-MM-dd"),
             dimension("acq_reg_ch", "收单分公司"),
             dimension("acq_mkt_ch", "收单市场", "收单侧境内外市场、国家或区域；海外或洲际且未指定发卡方时优先"),
             dimension("acq_reg_cde", "收单市场代码"),
@@ -134,6 +134,11 @@ public final class QueryMetadataCatalog {
     public static String displayName(String id) {
         FieldDefinition definition = METRICS.containsKey(id) ? METRICS.get(id) : DIMENSIONS.get(id);
         return definition == null ? id : definition.displayName();
+    }
+
+    public static String promptHint(String id) {
+        FieldDefinition definition = METRICS.containsKey(id) ? METRICS.get(id) : DIMENSIONS.get(id);
+        return definition == null ? "" : definition.promptHint();
     }
 
     public static String smartBiField(String id) {

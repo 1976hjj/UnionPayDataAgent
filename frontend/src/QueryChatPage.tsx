@@ -684,25 +684,15 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
                     <div className="artifact-source-note">引用分析产物：{message.derivedFromArtifactIds.join('、')}</div>
                   )}
                   {message.result && <ResultTable result={message.result} />}
-                  {message.executionEngine && message.workflowSteps && (
-                    <WorkflowTrace
-                      engine={message.executionEngine}
-                      steps={message.workflowSteps}
-                      plan={message.queryPlan}
-                      queryAction={message.queryAction}
-                      queryExplanation={message.queryExplanation}
-                      llmMessage={message.llmMessage}
-                    />
-                  )}
-                  {message.status === 'confirming' && (
+                  {message.queryAction && (message.status === 'clarifying' || message.status === 'confirming') && (
                     <div className="query-confirm-actions">
                       <button
                         className="confirm-query-button"
-                        disabled={pending}
+                        disabled={pending || message.status !== 'confirming'}
                         type="button"
                         onClick={() => void sendMessage('确认执行', true)}
                       >
-                        确认执行
+                        {message.status === 'confirming' ? '确认执行' : '请先补齐必填项'}
                       </button>
                       <button
                         disabled={pending}
@@ -711,7 +701,9 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
                       >
                         继续修改
                       </button>
-                      <span>确认前不会调用 SmartBI</span>
+                      <span>{message.status === 'confirming'
+                        ? '确认前不会调用 SmartBI'
+                        : '还有必填项未补齐，暂不能执行'}</span>
                     </div>
                   )}
                   {message.suggestions && message.suggestions.length > 0 && (

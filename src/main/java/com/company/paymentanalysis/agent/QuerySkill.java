@@ -30,15 +30,23 @@ public class QuerySkill implements AgentSkill {
     @Override
     public AgentResponse execute(AgentRequest request, AgentContext context) {
         QueryContext restoredContext = context.queryContext();
+        String pendingQueryIntent = null;
         try {
-            restoredContext = memoryService.restoreContext(context.userId(), context.conversationId())
-                    .orElse(context.queryContext());
+            var snapshot = memoryService.snapshot(context.userId(), context.conversationId());
+            if (snapshot.isPresent()) {
+                restoredContext = snapshot.get().context();
+                pendingQueryIntent = snapshot.get().pendingQueryIntent();
+            } else {
+                restoredContext = memoryService.restoreContext(context.userId(), context.conversationId())
+                        .orElse(context.queryContext());
+            }
         } catch (ChatMemoryUnavailableException ignored) {
             // The existing controller has the same graceful degradation behavior.
         }
         ChatResponse response = conversationRouter.respond(new ChatRequest(
                 context.userId(), context.conversationId(), request.message(), restoredContext,
-                context.model(), context.confirmed() || context.action() == AgentAction.CONFIRM));
+                context.model(), context.confirmed() || context.action() == AgentAction.CONFIRM,
+                pendingQueryIntent));
         try {
             memoryService.saveTurn(context.userId(), context.conversationId(), request.message(), response);
         } catch (ChatMemoryUnavailableException ignored) {

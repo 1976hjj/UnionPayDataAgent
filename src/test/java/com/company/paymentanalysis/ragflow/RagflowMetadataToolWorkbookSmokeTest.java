@@ -31,8 +31,9 @@ class RagflowMetadataToolWorkbookSmokeTest {
                 RestClient.builder(), new ObjectMapper());
 
         RetrievedMetadata result = tool.retrieveForQuery("按卡品牌看乌拉圭的人民币总金额", """
-                {"metrics":["人民币总金额"],"groups":["卡品牌"],
-                 "filters":[{"raw":"收单市场","values":["乌拉圭"]}]}
+                {"metricTerms":["人民币总金额"],"groupTerms":["卡品牌"],
+                 "filterTerms":[{"dimensionTerm":"收单市场","operator":"EQUALS","values":["乌拉圭"],"context":"乌拉圭"}],
+                 "sortTerms":[],"unmappedTerms":[]}
                 """);
 
         assertThat(result.metrics()).extracting(candidate -> candidate.fieldId())

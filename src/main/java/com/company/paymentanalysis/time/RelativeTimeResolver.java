@@ -1,13 +1,11 @@
 package com.company.paymentanalysis.time;
 
 import java.time.Clock;
-import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -20,12 +18,8 @@ public final class RelativeTimeResolver {
     public static final String MONTH_FIELD = "sett_dt_Month2";
     public static final String DAY_FIELD = "sett_dt_Day2";
 
-    private static final Pattern RECENT_N = Pattern.compile("(?:最近|近)\\s*(\\d+)\\s*(天|日|个月|月|年)");
     private static final Pattern EXPLICIT_MONTH = Pattern.compile(
             "(20\\d{2})\\s*(?:年|[-/.])\\s*(0?[1-9]|1[0-2])(?:月)?");
-    private static final Pattern EXPLICIT_DAY = Pattern.compile(
-            "(20\\d{2})\\s*(?:年|[-/.])\\s*(0?[1-9]|1[0-2])\\s*(?:月|[-/.])\\s*(0?[1-9]|[12]\\d|3[01])(?:日)?");
-    private static final Pattern EXPLICIT_YEAR = Pattern.compile("(?<!\\d)(20\\d{2})年(?!\\d)");
     private static final Pattern MONTH_ONLY = Pattern.compile("(?<!\\d)(1[0-2]|[1-9])月");
 
     private static final String MONTH_REFERENCE =
@@ -47,155 +41,6 @@ public final class RelativeTimeResolver {
         return LocalDate.now(clock);
     }
 
-    public Optional<ResolvedRange> resolveRange(String unit, int count) {
-        if (count < 1 || count > 10_000) return Optional.empty();
-        LocalDate today = today();
-        List<String> values = switch (unit == null ? "" : unit.toUpperCase(Locale.ROOT)) {
-            case "DAY" -> count == 1
-                    ? List.of(today.toString())
-                    : List.of(today.minusDays(count - 1L).toString(), today.toString());
-            case "MONTH" -> {
-                YearMonth end = YearMonth.from(today);
-                yield count == 1
-                        ? List.of(end.toString())
-                        : List.of(end.minusMonths(count - 1L).toString(), end.toString());
-            }
-            case "YEAR" -> count == 1
-                    ? List.of(Integer.toString(today.getYear()))
-                    : List.of(Integer.toString(today.getYear() - count + 1), Integer.toString(today.getYear()));
-            default -> List.of();
-        };
-        return values.isEmpty()
-                ? Optional.empty()
-                : Optional.of(new ResolvedRange(values.size() == 1 ? "EQUALS" : "BETWEEN", values));
-    }
-
-    /**
-     * Resolves the relative-time phrase from the user message, rather than trusting
-     * a model's lossy {@code unit + count} representation.  For example, both
-     * "今天" and "昨天" used to arrive as DAY + 1, which is not sufficient to
-     * determine a date.
-     */
-    public Optional<ResolvedQueryTime> resolveQueryTime(
-            String raw, String semanticKind, String unit, int count) {
-        String text = raw == null ? "" : raw.replaceAll("\\s+", "").trim();
-        LocalDate today = today();
-
-        Optional<ResolvedQueryTime> explicit = resolveExplicitTime(text);
-        if (explicit.isPresent()) {
-            return explicit;
-        }
-
-        if (containsAny(text, "今年至今", "本年至今", "年初至今", "年初到今", "YTD")) {
-            return Optional.of(range(DAY_FIELD, today.withDayOfYear(1), today));
-        }
-        if (containsAny(text, "本月至今", "当月至今", "月初至今", "月初到今", "MTD")) {
-            return Optional.of(range(DAY_FIELD, today.withDayOfMonth(1), today));
-        }
-        if (containsAny(text, "昨天", "昨日")) {
-            return Optional.of(single(DAY_FIELD, today.minusDays(1)));
-        }
-        if (containsAny(text, "前天")) {
-            return Optional.of(single(DAY_FIELD, today.minusDays(2)));
-        }
-        if (containsAny(text, "今天", "今日", "当日")) {
-            return Optional.of(single(DAY_FIELD, today));
-        }
-        if (containsAny(text, "上个月", "上月")) {
-            return Optional.of(single(MONTH_FIELD, YearMonth.from(today).minusMonths(1).toString()));
-        }
-        if (containsAny(text, "本月", "这个月", "当月")) {
-            return Optional.of(single(MONTH_FIELD, YearMonth.from(today).toString()));
-        }
-        if (containsAny(text, "去年")) {
-            return Optional.of(single(YEAR_FIELD, Integer.toString(today.getYear() - 1)));
-        }
-        if (containsAny(text, "今年", "本年", "当年")) {
-            return Optional.of(single(YEAR_FIELD, Integer.toString(today.getYear())));
-        }
-
-        Matcher recent = RECENT_N.matcher(text);
-        if (recent.find()) {
-            int parsedCount;
-            try {
-                parsedCount = Integer.parseInt(recent.group(1));
-            } catch (NumberFormatException ignored) {
-                return Optional.empty();
-            }
-            return resolveRecent(recent.group(2), parsedCount);
-        }
-
-        return resolveSemanticKind(semanticKind, unit, count);
-    }
-
-    /**
-     * Explicit dates are canonicalized by the server before an LLM can select a
-     * field ID. Multiple mentioned points intentionally use IN instead of a
-     * range: “2026-03 对比 2026-04” means two comparable periods, not every
-     * period between them.
-     */
-    private Optional<ResolvedQueryTime> resolveExplicitTime(String text) {
-        List<String> days = explicitDays(text);
-        if (!days.isEmpty()) {
-            return Optional.of(points(DAY_FIELD, days));
-        }
-        List<YearMonth> months = explicitMonths(text);
-        if (!months.isEmpty()) {
-            return Optional.of(points(MONTH_FIELD, months.stream().map(YearMonth::toString).toList()));
-        }
-        List<String> years = explicitYears(text);
-        return years.isEmpty() ? Optional.empty() : Optional.of(points(YEAR_FIELD, years));
-    }
-
-    private static ResolvedQueryTime points(String fieldId, List<String> values) {
-        return new ResolvedQueryTime(fieldId, values.size() == 1 ? "EQUALS" : "IN", values);
-    }
-
-    /** Parses a query's original user message without requiring an LLM time slot. */
-    public Optional<ResolvedQueryTime> resolveQueryTime(String message) {
-        return resolveQueryTime(message, "", "", 0);
-    }
-
-    private Optional<ResolvedQueryTime> resolveRecent(String unitText, int count) {
-        if (count < 1 || count > 10_000) {
-            return Optional.empty();
-        }
-        LocalDate today = today();
-        return switch (unitText) {
-            case "天", "日" -> Optional.of(count == 1
-                    ? single(DAY_FIELD, today)
-                    : range(DAY_FIELD, today.minusDays(count - 1L), today));
-            case "个月", "月" -> {
-                YearMonth end = YearMonth.from(today);
-                yield Optional.of(count == 1
-                        ? single(MONTH_FIELD, end.toString())
-                        : range(MONTH_FIELD, end.minusMonths(count - 1L).toString(), end.toString()));
-            }
-            case "年" -> Optional.of(count == 1
-                    ? single(YEAR_FIELD, Integer.toString(today.getYear()))
-                    : range(YEAR_FIELD, Integer.toString(today.getYear() - count + 1), Integer.toString(today.getYear())));
-            default -> Optional.empty();
-        };
-    }
-
-    private Optional<ResolvedQueryTime> resolveSemanticKind(String semanticKind, String unit, int count) {
-        String kind = semanticKind == null ? "" : semanticKind.trim().toUpperCase(Locale.ROOT);
-        LocalDate today = today();
-        return switch (kind) {
-            case "TODAY" -> Optional.of(single(DAY_FIELD, today));
-            case "YESTERDAY" -> Optional.of(single(DAY_FIELD, today.minusDays(1)));
-            case "CURRENT_MONTH_TO_DATE" -> Optional.of(range(DAY_FIELD, today.withDayOfMonth(1), today));
-            case "CURRENT_YEAR_TO_DATE" -> Optional.of(range(DAY_FIELD, today.withDayOfYear(1), today));
-            default -> resolveRange(unit, count).map(range -> new ResolvedQueryTime(
-                    switch (unit == null ? "" : unit.toUpperCase(Locale.ROOT)) {
-                        case "DAY" -> DAY_FIELD;
-                        case "MONTH" -> MONTH_FIELD;
-                        case "YEAR" -> YEAR_FIELD;
-                        default -> "";
-                    }, range.operator(), range.values()));
-        };
-    }
-
     private static boolean containsAny(String text, String... phrases) {
         for (String phrase : phrases) {
             if (text.contains(phrase)) {
@@ -203,22 +48,6 @@ public final class RelativeTimeResolver {
             }
         }
         return false;
-    }
-
-    private static ResolvedQueryTime single(String fieldId, LocalDate value) {
-        return single(fieldId, value.toString());
-    }
-
-    private static ResolvedQueryTime single(String fieldId, String value) {
-        return new ResolvedQueryTime(fieldId, "EQUALS", List.of(value));
-    }
-
-    private static ResolvedQueryTime range(String fieldId, LocalDate start, LocalDate end) {
-        return range(fieldId, start.toString(), end.toString());
-    }
-
-    private static ResolvedQueryTime range(String fieldId, String start, String end) {
-        return new ResolvedQueryTime(fieldId, "BETWEEN", List.of(start, end));
     }
 
     public Optional<String> resolveMonthReference(String value) {
@@ -302,37 +131,6 @@ public final class RelativeTimeResolver {
         return result;
     }
 
-    private static List<String> explicitDays(String text) {
-        List<String> result = new ArrayList<>();
-        Matcher matcher = EXPLICIT_DAY.matcher(text);
-        while (matcher.find()) {
-            try {
-                String value = LocalDate.of(
-                        Integer.parseInt(matcher.group(1)),
-                        Integer.parseInt(matcher.group(2)),
-                        Integer.parseInt(matcher.group(3))).toString();
-                if (!result.contains(value)) {
-                    result.add(value);
-                }
-            } catch (DateTimeException | NumberFormatException ignored) {
-                // An invalid explicit date must be clarified, not normalized by guesswork.
-            }
-        }
-        return result;
-    }
-
-    private static List<String> explicitYears(String text) {
-        List<String> result = new ArrayList<>();
-        Matcher matcher = EXPLICIT_YEAR.matcher(text);
-        while (matcher.find()) {
-            String value = matcher.group(1);
-            if (!result.contains(value)) {
-                result.add(value);
-            }
-        }
-        return result;
-    }
-
     private List<YearMonth> monthOnlyReferences(String text) {
         List<YearMonth> result = new ArrayList<>();
         Matcher matcher = MONTH_ONLY.matcher(text);
@@ -358,14 +156,6 @@ public final class RelativeTimeResolver {
     private String resolveLabeled(String text, Pattern pattern) {
         Matcher matcher = pattern.matcher(text);
         return matcher.find() ? resolveMonthReference(matcher.group(1)).orElse(null) : null;
-    }
-
-    public record ResolvedRange(String operator, List<String> values) {
-        public ResolvedRange { values = List.copyOf(values); }
-    }
-
-    public record ResolvedQueryTime(String dimensionId, String operator, List<String> values) {
-        public ResolvedQueryTime { values = List.copyOf(values); }
     }
 
     public record ResolvedPeriodPair(String currentPeriod, String comparisonPeriod) {

@@ -164,16 +164,22 @@ public class ChatQueryController {
     }
 
     public record ChatRequest(
-            String userId, String sessionId, String message, QueryContext context, String model, boolean confirmed)
+            String userId, String sessionId, String message, QueryContext context, String model, boolean confirmed,
+            String pendingQueryIntent)
             implements Serializable {
 
         public ChatRequest(String userId, String sessionId, String message, QueryContext context) {
-            this(userId, sessionId, message, context, null, false);
+            this(userId, sessionId, message, context, null, false, null);
         }
 
         public ChatRequest(
                 String userId, String sessionId, String message, QueryContext context, boolean confirmed) {
-            this(userId, sessionId, message, context, null, confirmed);
+            this(userId, sessionId, message, context, null, confirmed, null);
+        }
+
+        public ChatRequest(
+                String userId, String sessionId, String message, QueryContext context, String model, boolean confirmed) {
+            this(userId, sessionId, message, context, model, confirmed, null);
         }
     }
 
@@ -181,7 +187,8 @@ public class ChatQueryController {
             String status, String reply, List<String> suggestions, QueryContext context, QueryResult result,
             String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
             String conversationId, QueryAction queryAction, String queryExplanation,
-            LlmResultMessage llmMessage, List<String> derivedFromArtifactIds) implements Serializable {
+            LlmResultMessage llmMessage, List<String> derivedFromArtifactIds,
+            String pendingQueryIntent) implements Serializable {
 
         public ChatResponse {
             derivedFromArtifactIds = derivedFromArtifactIds == null
@@ -194,7 +201,17 @@ public class ChatQueryController {
                 String conversationId, QueryAction queryAction, String queryExplanation,
                 LlmResultMessage llmMessage) {
             this(status, reply, suggestions, context, result, executionEngine, workflowSteps,
-                    queryPlan, conversationId, queryAction, queryExplanation, llmMessage, List.of());
+                    queryPlan, conversationId, queryAction, queryExplanation, llmMessage, List.of(), null);
+        }
+
+        public ChatResponse(
+                String status, String reply, List<String> suggestions, QueryContext context, QueryResult result,
+                String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
+                String conversationId, QueryAction queryAction, String queryExplanation,
+                LlmResultMessage llmMessage, List<String> derivedFromArtifactIds) {
+            this(status, reply, suggestions, context, result, executionEngine, workflowSteps,
+                    queryPlan, conversationId, queryAction, queryExplanation, llmMessage,
+                    derivedFromArtifactIds, null);
         }
     }
 

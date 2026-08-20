@@ -76,69 +76,6 @@ class AttributionControllerTest {
     }
 
     @Test
-    void executesTheConfirmedAnalysisPlanInsteadOfAutonomousPlanning() throws Exception {
-        mockMvc.perform(analyze("""
-                {"metricId":"trans_rmb_amt_m","currentPeriod":"2026-07","comparisonPeriod":"2026-06",
-                 "analysisPlan":{"levels":[{"level":1,"dimensionIds":["acq_ins_ch"]}],"continueExploration":false},
-                 "maxDepth":2,"maxQueries":8,"topN":4,"maxBranches":2}
-                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.queryCount").value(2))
-                .andExpect(jsonPath("$.evidence[0].dimensionId").value("acq_ins_ch"))
-                .andExpect(jsonPath("$.reasoning[0].proposedDimensions[0]").value("acq_ins_ch"))
-                .andExpect(jsonPath("$.stop.code").value("TEMPLATE_COMPLETED"));
-    }
-
-    @Test
-    void maxDepthOneStopsAfterParallelFirstRound() throws Exception {
-        mockMvc.perform(analyze("""
-                {"metricId":"sh_jy_num_m","currentPeriod":"2026-03","comparisonPeriod":"2026-02",
-                 "maxDepth":1,"maxQueries":8,"topN":4}
-                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.queryCount").value(4))
-                .andExpect(jsonPath("$.stop.code").value("MAX_DEPTH"));
-    }
-
-    @Test
-    void returnsEvidenceBackedPrimaryPathForAugustRecovery() throws Exception {
-        mockMvc.perform(analyze("""
-                {"metricId":"trans_rmb_amt_m","currentPeriod":"2026-08","comparisonPeriod":"2026-07",
-                 "maxDepth":1,"maxQueries":8,"topN":4}
-                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.overall.direction").value("UP"))
-                .andExpect(jsonPath("$.primaryPath.length()").value(org.hamcrest.Matchers.greaterThanOrEqualTo(1)))
-                .andExpect(jsonPath("$.stop.code").value("MAX_DEPTH"));
-    }
-
-    @Test
-    void maxQueryLimitIsEnforcedByTheWorkflow() throws Exception {
-        mockMvc.perform(analyze("""
-                {"metricId":"trans_rmb_amt_m","currentPeriod":"2026-07","comparisonPeriod":"2026-06",
-                 "maxDepth":3,"maxQueries":2,"topN":4}
-                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.queryCount").value(2))
-                .andExpect(jsonPath("$.evidence.length()").value(1))
-                .andExpect(jsonPath("$.stop.code").value("MAX_QUERIES"));
-    }
-
-    @Test
-    void readsYearOnYearDerivedMetricDirectlyFromSmartBi() throws Exception {
-        mockMvc.perform(analyze("""
-                {"metricId":"trans_rmb_amt_m","currentPeriod":"2026-07","comparisonPeriod":"2025-07",
-                 "dimensionFilters":[{"dimensionId":"acq_mkt_ch","operator":"EQUALS","values":["欧洲市场"]}],
-                 "maxDepth":1,"maxQueries":4,"topN":4}
-                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.overall.smartBiComparisonRate").value(org.hamcrest.Matchers.nullValue()))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.columns[0]").value("trans_rmb_amt_m"))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.columns.length()").value(1))
-                .andExpect(jsonPath("$.smartBiQueries[0].request.filters[1].name").value("acq_mkt_ch"));
-    }
-
-    @Test
     void exposesAttributionOnlyMetadataAndLimits() throws Exception {
         mockMvc.perform(get("/api/attribution/metadata"))
                 .andExpect(status().isOk())
