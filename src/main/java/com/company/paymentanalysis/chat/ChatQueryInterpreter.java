@@ -97,7 +97,8 @@ public class ChatQueryInterpreter {
                 ParsedQueryAction parsed = parseAndValidate(
                         mapped.content(), parsedIntent, currentAction, retrievedMetadata);
                 return new QueryActionResult(
-                        parsed.action(), parsed.explanation(), mapped, semanticIntent, parsed.unresolvedItems());
+                        parsed.action(), parsed.explanation(), mapped, semanticIntent,
+                        parsed.unresolvedItems(), parsed.pendingResolutions());
             } catch (JsonProcessingException | RuntimeException mappingError) {
                 throw new QueryInterpretationException(
                         "QUERY_STATE_VALIDATION",
@@ -145,7 +146,7 @@ public class ChatQueryInterpreter {
                 5. 无分组时 dimensionIds=[]；无过滤时 dimensionFilters=[]；无排序时 sorts=[]。
                 6. 在输出前自行核对：每项历史意图和本轮要求均已映射、明确移除，或进入 unresolvedItems。
                 8. 单值过滤使用 EQUALS；多个离散值使用 IN；连续起止范围使用 BETWEEN。不得为了通过格式校验而删除用户明确要求的条件。
-                9. 只接受有直接元数据依据且唯一的映射。无法映射或存在多个合理候选时不要猜，把用户原词逐项放入 unresolvedItems；全部映射完成时返回 []。
+                9. 优先使用检索候选；若候选未召回、但完整允许字段中存在唯一且合理的映射，仍可输出该字段，系统会要求用户确认。无法映射或存在多个合理候选时不要猜，把用户原词逐项放入 unresolvedItems；全部映射完成时返回 []。
                 10. 一个独立度量原词最多映射一个度量字段。模糊总称不能展开成一组度量；无法唯一确定时 metricIds 不增加字段，并把该原词放入 unresolvedItems。
 
                 动态元数据候选：
@@ -221,9 +222,7 @@ public class ChatQueryInterpreter {
                 textList(root.path("unresolvedItems"), "unresolvedItems"));
         int metricTermCount = (int) semanticIntent.metricTerms().stream()
                 .filter(StringUtils::hasText).distinct().count();
-        boolean unsupportedMetric = action.metricIds().stream()
-                .anyMatch(id -> !hasMetricEvidence(id, semanticIntent.metricTerms(), retrievedMetadata));
-        if (action.metricIds().size() > metricTermCount || unsupportedMetric) {
+        if (action.metricIds().size() > metricTermCount) {
             action = new QueryAction(
                     currentAction.metricIds(), action.dimensionIds(), action.dimensionFilters(), action.sorts());
             semanticIntent.metricTerms().stream()
@@ -231,24 +230,80 @@ public class ChatQueryInterpreter {
                     .filter(term -> !unresolvedItems.contains(term))
                     .forEach(unresolvedItems::add);
         }
+        List<PendingResolution> pendingResolutions = pendingResolutions(
+                action, semanticIntent, retrievedMetadata);
         String explanation = unresolvedItems.isEmpty()
-                ? "已按元数据完成查询条件映射。"
+                ? pendingResolutions.isEmpty()
+                        ? "已按元数据完成查询条件映射。"
+                        : "存在待用户确认的弱证据映射。"
                 : "未找到元数据映射：" + String.join("、", unresolvedItems) + "。";
-        return new ParsedQueryAction(validate(action), explanation, List.copyOf(unresolvedItems));
+        return new ParsedQueryAction(
+                validate(action), explanation, List.copyOf(unresolvedItems), pendingResolutions);
     }
 
-    private boolean hasMetricEvidence(
-            String metricId, List<String> metricTerms, RetrievedMetadata retrievedMetadata) {
-        if (retrievedMetadata != null && retrievedMetadata.metrics().stream()
-                .anyMatch(candidate -> metricId.equals(candidate.fieldId()))) {
+    private List<PendingResolution> pendingResolutions(
+            QueryAction action, RawSemanticIntent semanticIntent, RetrievedMetadata retrievedMetadata) {
+        List<PendingResolution> pending = new java.util.ArrayList<>();
+        addWeakFieldResolutions(
+                pending, "度量", action.metricIds(), semanticIntent.metricTerms(), retrievedMetadata);
+        addWeakFieldResolutions(
+                pending, "分组维度", action.dimensionIds(), semanticIntent.groupTerms(), retrievedMetadata);
+        for (int index = 0; index < action.dimensionFilters().size(); index++) {
+            DimensionFilter filter = action.dimensionFilters().get(index);
+            String term = index < semanticIntent.filterTerms().size()
+                    ? semanticIntent.filterTerms().get(index).dimensionTerm() : "筛选维度";
+            if (!hasFieldEvidence(filter.dimensionId(), evidenceTerms(term), retrievedMetadata)) {
+                pending.add(new PendingResolution(
+                        "筛选维度", term, filter.dimensionId(), QueryMetadataCatalog.displayName(filter.dimensionId()),
+                        "本次 RAG 未召回该字段，请确认是否按此条件查询"));
+            }
+        }
+        for (int index = 0; index < action.sorts().size(); index++) {
+            SortSpec sort = action.sorts().get(index);
+            String term = index < semanticIntent.sortTerms().size()
+                    ? semanticIntent.sortTerms().get(index).fieldTerm() : "排序字段";
+            if (!hasFieldEvidence(sort.fieldId(), evidenceTerms(term), retrievedMetadata)) {
+                pending.add(new PendingResolution(
+                        "排序字段", term, sort.fieldId(), QueryMetadataCatalog.displayName(sort.fieldId()),
+                        "本次 RAG 未召回该字段，请确认是否按此字段排序"));
+            }
+        }
+        return List.copyOf(pending);
+    }
+
+    private void addWeakFieldResolutions(
+            List<PendingResolution> pending, String type, List<String> fieldIds,
+            List<String> terms, RetrievedMetadata retrievedMetadata) {
+        for (int index = 0; index < fieldIds.size(); index++) {
+            String fieldId = fieldIds.get(index);
+            String term = index < terms.size() ? terms.get(index) : type;
+            if (!hasFieldEvidence(fieldId, evidenceTerms(term), retrievedMetadata)) {
+                pending.add(new PendingResolution(
+                        type, term, fieldId, QueryMetadataCatalog.displayName(fieldId),
+                        "本次 RAG 未召回该字段，请确认是否按此字段查询"));
+            }
+        }
+    }
+
+    private boolean hasFieldEvidence(
+            String fieldId, List<String> terms, RetrievedMetadata retrievedMetadata) {
+        if (retrievedMetadata != null
+                && ((QueryMetadataCatalog.isMetric(fieldId) && retrievedMetadata.metrics().stream()
+                        .anyMatch(candidate -> fieldId.equals(candidate.fieldId())))
+                    || (QueryMetadataCatalog.isDimension(fieldId) && retrievedMetadata.dimensions().stream()
+                        .anyMatch(candidate -> fieldId.equals(candidate.fieldId()))))) {
             return true;
         }
-        String displayName = normalizeTerm(QueryMetadataCatalog.displayName(metricId));
-        return metricTerms.stream().filter(StringUtils::hasText)
+        String displayName = normalizeTerm(QueryMetadataCatalog.displayName(fieldId));
+        return terms.stream().filter(StringUtils::hasText)
                 .map(this::normalizeTerm)
                 .anyMatch(term -> term.equals(displayName)
                         || (term.length() >= 2 && displayName.contains(term))
                         || (displayName.length() >= 2 && term.contains(displayName)));
+    }
+
+    private List<String> evidenceTerms(String term) {
+        return StringUtils.hasText(term) ? List.of(term) : List.of();
     }
 
     private String normalizeTerm(String value) {
@@ -421,7 +476,9 @@ public class ChatQueryInterpreter {
         }
     }
 
-    private record ParsedQueryAction(QueryAction action, String explanation, List<String> unresolvedItems) {
+    private record ParsedQueryAction(
+            QueryAction action, String explanation, List<String> unresolvedItems,
+            List<PendingResolution> pendingResolutions) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = false)
@@ -452,12 +509,19 @@ public class ChatQueryInterpreter {
 
     public record QueryActionResult(
             QueryAction action, String explanation, LlmResultMessage llmMessage,
-            String semanticIntent, List<String> unresolvedItems) {
+            String semanticIntent, List<String> unresolvedItems, List<PendingResolution> pendingResolutions) {
         public QueryActionResult {
             explanation = explanation == null ? "" : explanation.trim();
             semanticIntent = semanticIntent == null ? "" : semanticIntent.trim();
             unresolvedItems = unresolvedItems == null ? List.of() : List.copyOf(unresolvedItems);
+            pendingResolutions = pendingResolutions == null ? List.of() : List.copyOf(pendingResolutions);
         }
+    }
+
+    /** A catalog-valid mapping that needs explicit user approval because retrieval did not evidence it. */
+    public record PendingResolution(
+            String type, String originalTerm, String fieldId, String fieldName, String reason)
+            implements Serializable {
     }
 
     public static final class QueryInterpretationException extends IllegalArgumentException {

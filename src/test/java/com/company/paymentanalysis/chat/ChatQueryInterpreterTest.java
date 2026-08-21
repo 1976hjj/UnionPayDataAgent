@@ -153,6 +153,46 @@ class ChatQueryInterpreterTest {
         assertThat(merged.path("filterTerms").get(0).path("dimensionTerm").asText()).isEqualTo("vcc");
     }
 
+    @Test
+    void keepsCatalogValidMetricAsPendingConfirmationWhenRetrievalDoesNotEvidenceIt() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant",
+                        "{\"metricTerms\":[\"承兑笔数\",\"承兑人民币金额\"],\"groupTerms\":[],\"filterTerms\":[],\"sortTerms\":[],\"unmappedTerms\":[]}", List.of()),
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metricIds":["acpt_cnt_m","acpt_trans_rmb_amt_m"],"dimensionIds":[],
+                         "dimensionFilters":[],"sorts":[],"unresolvedItems":[]}
+                        """, List.of()));
+        MetadataRetrievalTool retrieval = new MetadataRetrievalTool() {
+            @Override
+            public RetrievedMetadata retrieveForQuery(String message, String semanticIntent) {
+                return new RetrievedMetadata(
+                        List.of(new MetadataCandidate(
+                                Scope.METRIC, "acpt_cnt_m", "承兑笔数", "", "", 1, "mock")),
+                        List.of(), List.of(), true);
+            }
+
+            @Override
+            public RetrievedMetadata retrieveForAttribution(String message, String semanticIntent) {
+                return RetrievedMetadata.empty();
+            }
+        };
+
+        var result = interpreter(llm, retrieval).interpret(
+                new ChatRequest("user", "session", "查承兑笔数和承兑人民币金额", QueryContext.empty(),
+                        "company-model", false),
+                QueryContext.empty());
+
+        assertThat(result.action().metricIds()).containsExactly("acpt_cnt_m", "acpt_trans_rmb_amt_m");
+        assertThat(result.unresolvedItems()).isEmpty();
+        assertThat(result.pendingResolutions()).singleElement().satisfies(pending -> {
+            assertThat(pending.type()).isEqualTo("度量");
+            assertThat(pending.originalTerm()).isEqualTo("承兑人民币金额");
+            assertThat(pending.fieldId()).isEqualTo("acpt_trans_rmb_amt_m");
+            assertThat(pending.fieldName()).isEqualTo("人民币承兑金额");
+        });
+    }
+
     private ChatQueryInterpreter interpreter(OpenAiCompatibleLlmClient llm) {
         return interpreter(llm, MetadataRetrievalTool.noOp());
     }

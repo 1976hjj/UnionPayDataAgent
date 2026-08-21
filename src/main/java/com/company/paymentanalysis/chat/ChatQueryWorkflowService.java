@@ -7,6 +7,7 @@ import static org.bsc.langgraph4j.action.AsyncNodeAction.node_async;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryActionResult;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryInterpretationException;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.PendingResolution;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatQueryPlan;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatRequest;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatResponse;
@@ -51,6 +52,7 @@ public class ChatQueryWorkflowService {
     private static final String QUERY_EXPLANATION = "queryExplanation";
     private static final String PENDING_QUERY_INTENT = "pendingQueryIntent";
     private static final String UNRESOLVED_ITEMS = "unresolvedItems";
+    private static final String PENDING_RESOLUTIONS = "pendingResolutions";
     private static final String SMARTBI_REQUEST = "smartBiRequest";
     private static final String SMARTBI_RESPONSE = "smartBiResponse";
     private static final String LLM_MESSAGE = "llmMessage";
@@ -243,6 +245,7 @@ public class ChatQueryWorkflowService {
                     QUERY_ACTION, QueryAction.fromContext(required(state, CONTEXT)),
                     QUERY_EXPLANATION, "用户已确认页面中的查询条件，本轮直接复用，不再次调用大模型。",
                     UNRESOLVED_ITEMS, List.of(),
+                    PENDING_RESOLUTIONS, List.of(),
                     LLM_MESSAGE, new LlmResultMessage(
                             interpreter.engineLabel(request.model()), "system",
                     "显式确认请求：复用页面已展示的 QueryContext，不再次调用 LLM。",
@@ -260,6 +263,7 @@ public class ChatQueryWorkflowService {
                 PENDING_QUERY_INTENT, result.unresolvedItems().isEmpty() && !result.action().metricIds().isEmpty()
                         ? "" : result.semanticIntent(),
                 UNRESOLVED_ITEMS, result.unresolvedItems(),
+                PENDING_RESOLUTIONS, result.pendingResolutions(),
                 QUERY_EXPLANATION, result.explanation(),
                 LLM_MESSAGE, result.llmMessage(),
                 STEPS, appendStep(state, new WorkflowStep(
@@ -286,10 +290,17 @@ public class ChatQueryWorkflowService {
             missing.add("排序字段对应的度量或分组维度");
         }
         String status = missing.isEmpty() ? "ready" : "clarifying";
+        List<PendingResolution> pendingResolutions = state.<List<PendingResolution>>value(PENDING_RESOLUTIONS)
+                .orElseGet(List::of);
         String detail = missing.isEmpty()
-                ? unresolved.isEmpty()
-                        ? "查询必填项完整，可以生成 SmartBI JSON"
-                        : "查询必填项完整；未映射的可选条件不阻塞确认：" + String.join("、", unresolved)
+                ? pendingResolutions.isEmpty()
+                        ? unresolved.isEmpty()
+                                ? "查询必填项完整，可以生成 SmartBI JSON"
+                                : "查询必填项完整；未识别的可选条件不纳入本次查询："
+                                        + String.join("、", unresolved)
+                        : "查询必填项完整；存在 " + pendingResolutions.size() + " 个待用户确认的弱证据映射"
+                                + (unresolved.isEmpty()
+                                        ? "" : "；未识别的可选条件不纳入本次查询：" + String.join("、", unresolved))
                 : "仍需补充：" + String.join("、", missing);
         return Map.of(
                 STATUS, status,
@@ -385,10 +396,12 @@ public class ChatQueryWorkflowService {
         String responseStatus = executed ? "completed" : ready ? "confirming" : "clarifying";
         QueryContext responseContext = context;
         List<String> unresolvedItems = state.<List<String>>value(UNRESOLVED_ITEMS).orElseGet(List::of);
+        List<PendingResolution> pendingResolutions = state.<List<PendingResolution>>value(PENDING_RESOLUTIONS)
+                .orElseGet(List::of);
         String reply = executed
                 ? result.summary()
                 : ready
-                        ? confirmationSummary(context, unresolvedItems)
+                        ? confirmationSummary(context, pendingResolutions, unresolvedItems)
                         : clarificationReply(chatRequest, responseContext, validationIssues);
         List<WorkflowStep> steps = appendFinalStep(state, new WorkflowStep(
                 "generateChatResponse",
@@ -502,7 +515,8 @@ public class ChatQueryWorkflowService {
                 + "；排序：" + context.sorts().size();
     }
 
-    private String confirmationSummary(QueryContext context, List<String> unresolvedItems) {
+    private String confirmationSummary(
+            QueryContext context, List<PendingResolution> pendingResolutions, List<String> unresolvedItems) {
         String metrics = context.metricIds().stream()
                 .map(QueryMetadataCatalog::displayName)
                 .reduce((left, right) -> left + "、" + right).orElse("无");
@@ -522,9 +536,16 @@ public class ChatQueryWorkflowService {
                 : context.sorts().stream().map(sort ->
                         fieldDisplayName(sort.fieldId()) + " " + sort.direction())
                         .reduce((left, right) -> left + "；" + right).orElse("无");
+        String pending = pendingResolutions == null || pendingResolutions.isEmpty()
+                ? ""
+                : "；待确认映射=" + pendingResolutions.stream()
+                        .map(item -> item.type() + "“" + item.originalTerm() + "”建议按“"
+                                + item.fieldName() + "”处理（" + item.reason() + "）")
+                        .distinct()
+                        .reduce((left, right) -> left + "；" + right).orElse("无");
         String ignored = unresolvedItems == null || unresolvedItems.isEmpty()
                 ? ""
-                : "；未找到的可选条件=" + unresolvedItems.stream()
+                : "；未识别的可选条件=" + unresolvedItems.stream()
                         .filter(org.springframework.util.StringUtils::hasText)
                         .distinct()
                         .reduce((left, right) -> left + "、" + right).orElse("无")
@@ -533,6 +554,7 @@ public class ChatQueryWorkflowService {
                 + "；分组维度=" + dimensions
                 + "；维度过滤=" + filters
                 + "；排序=" + sorts
+                + pending
                 + ignored
                 + "。确认后才会调用 SmartBI。";
     }
@@ -636,6 +658,7 @@ public class ChatQueryWorkflowService {
                 Map.entry(CONTEXT, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(PENDING_QUERY_INTENT, Channels.base(() -> "")),
                 Map.entry(UNRESOLVED_ITEMS, Channels.base((Supplier<List<String>>) List::of)),
+                Map.entry(PENDING_RESOLUTIONS, Channels.base((Supplier<List<PendingResolution>>) List::of)),
                 Map.entry(QUERY_ACTION, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(QUERY_EXPLANATION, Channels.base(() -> "")),
                 Map.entry(SMARTBI_REQUEST, Channels.base((Supplier<Object>) Map::of)),
