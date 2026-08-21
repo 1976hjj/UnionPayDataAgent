@@ -6,6 +6,7 @@ import com.company.paymentanalysis.attribution.AttributionModels.EffectiveReques
 import com.company.paymentanalysis.attribution.AttributionWorkflowService.WorkflowObserver;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService;
 import com.company.paymentanalysis.chat.ConversationArtifact.VerifiedFact;
+import com.company.paymentanalysis.permission.DataPermissionService;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
@@ -24,14 +25,17 @@ public class AttributionExecutionService {
     private final AttributionRequestValidator requestValidator;
     private final AttributionWorkflowService workflowService;
     private final ChatConversationMemoryService memoryService;
+    private final DataPermissionService permissionService;
 
     public AttributionExecutionService(
             AttributionRequestValidator requestValidator,
             AttributionWorkflowService workflowService,
-            ChatConversationMemoryService memoryService) {
+            ChatConversationMemoryService memoryService,
+            DataPermissionService permissionService) {
         this.requestValidator = requestValidator;
         this.workflowService = workflowService;
         this.memoryService = memoryService;
+        this.permissionService = permissionService;
     }
 
     public ExecutedAttribution execute(AttributionRequest request) {
@@ -39,7 +43,9 @@ public class AttributionExecutionService {
     }
 
     public ExecutedAttribution execute(AttributionRequest request, WorkflowObserver observer) {
-        EffectiveRequest effectiveRequest = requestValidator.validate(request);
+        EffectiveRequest validatedRequest = requestValidator.validate(request);
+        EffectiveRequest effectiveRequest = validatedRequest.withPermissionScope(
+                permissionService.resolveRequiredScope(validatedRequest.loginUsername()));
         AttributionResponse response = workflowService.analyze(effectiveRequest, observer);
         saveConversationArtifact(request, effectiveRequest, response);
         return new ExecutedAttribution(effectiveRequest, response);

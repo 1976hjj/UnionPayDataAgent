@@ -26,7 +26,7 @@ class AttributionControllerTest {
     @Test
     void returnsBoundedBranchAttributionForJulyDecline() throws Exception {
         mockMvc.perform(analyze("""
-                {"metricId":"trans_rmb_amt_m","currentPeriod":"2026-07","comparisonPeriod":"2026-06",
+                {"userId":"demo-user","metricId":"trans_rmb_amt_m","currentPeriod":"2026-07","comparisonPeriod":"2026-06",
                  "dimensionFilters":[],"maxDepth":2,"maxQueries":8,"topN":4,"maxBranches":2}
                 """))
                 .andExpect(status().isOk())

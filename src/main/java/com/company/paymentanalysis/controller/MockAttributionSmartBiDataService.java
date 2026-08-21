@@ -68,10 +68,10 @@ public class MockAttributionSmartBiDataService {
             Map.entry("sh_cg_num_m", decimal("72000")));
 
     private static final Map<String, List<String>> REPRESENTATIVE_MEMBERS = Map.ofEntries(
-            Map.entry("acq_reg_ch", members("上海分公司", "广东分公司", "北京分公司", "四川分公司")),
+            Map.entry("acq_reg_ch", members(mainland(), "广东分公司", "北京分公司", "四川分公司")),
             Map.entry("acq_mkt_ch", members("欧洲市场", "亚太市场", "境内市场", "北美市场")),
             Map.entry("acq_reg_cde", members("EU", "AP", "CN", "NA")),
-            Map.entry("iss_dq_ch", members("上海发卡分公司", "广东发卡分公司", "北京发卡分公司", "境外发卡分公司")),
+            Map.entry("iss_dq_ch", members(mainland(), "广东发卡分公司", "北京发卡分公司", "境外发卡分公司")),
             Map.entry("iss_sc_ch", members("英国", "中国大陆", "法国", "美国")),
             Map.entry("iss_reg_cde", members("GB", "CN", "FR", "US")),
             Map.entry("reg_nm_lvl_1", members("上海", "广东", "北京", "四川")),
@@ -367,6 +367,7 @@ public class MockAttributionSmartBiDataService {
                 case "sett_dt_Year2" -> String.valueOf(period.getYear());
                 case "sett_dt_Month2" -> period.toString();
                 case "sett_dt_Day2" -> period.atDay(segment + 1).toString();
+                case "acq_reg_ch", "iss_dq_ch" -> mainland();
                 default -> REPRESENTATIVE_MEMBERS.getOrDefault(
                                 field,
                                 IntStream.rangeClosed(1, 4)
@@ -388,6 +389,10 @@ public class MockAttributionSmartBiDataService {
             }
             return Math.floorMod(field.hashCode() + acquiringIndex * 2 + issuingIndex, 4);
         }
+    }
+
+    private static String mainland() {
+        return String.valueOf(new char[]{0x4E2D, 0x56FD, 0x5927, 0x9646});
     }
 
     private static List<String> members(String... values) {

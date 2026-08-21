@@ -77,7 +77,8 @@ public class AttributionRequestValidator {
         AnalysisPlan analysisPlan = validateAnalysisPlan(request.analysisPlan(), filters, maxDepth, maxQueries);
         return new EffectiveRequest(
                 request.metricId(), current.toString(), comparison.toString(), filters, analysisPlan,
-                maxDepth, maxQueries, topN, maxBranches, llmClient.resolveSelection(request.model()));
+                maxDepth, maxQueries, topN, maxBranches, llmClient.resolveSelection(request.model()),
+                request.userId());
     }
 
     private AnalysisPlan validateAnalysisPlan(

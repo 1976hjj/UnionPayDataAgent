@@ -3,6 +3,7 @@ package com.company.paymentanalysis.attribution;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -10,7 +11,8 @@ import static org.mockito.Mockito.when;
 
 import com.company.paymentanalysis.attribution.AttributionModels.DimensionFilter;
 import com.company.paymentanalysis.attribution.AttributionModels.EffectiveRequest;
-import com.company.paymentanalysis.smartbi.SmartBiClient;
+import com.company.paymentanalysis.smartbi.AuthorizedSmartBiClient;
+import com.company.paymentanalysis.smartbi.AuthorizedSmartBiClient.PreparedQuery;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryResponse;
 import com.company.paymentanalysis.smartbi.SmartBiProperties;
@@ -25,23 +27,22 @@ class AttributionQueryServiceTest {
 
     @Test
     void queriesEachPeriodSeparatelyUsingTheSameFlatFilterShapeAsChatQueries() {
-        SmartBiClient client = mock(SmartBiClient.class);
-        when(client.query(any())).thenAnswer(invocation -> response(invocation.getArgument(0)));
+        AuthorizedSmartBiClient client = passThroughClient();
         AttributionQueryService service = new AttributionQueryService(
                 client, new SmartBiProperties(
                         "dataset", false, "http://localhost", "http://smartbi", "user", "password"));
         EffectiveRequest request = new EffectiveRequest(
                 "trans_rmb_amt_m", "2026-07", "2026-06",
                 List.of(new DimensionFilter("acq_mkt_ch", "EQUALS", List.of("欧洲市场"))),
-                2, 8, 4, 2, null);
+                null, 2, 8, 4, 2, null, "demo-user");
 
         List<AttributionQueryService.SmartBiCall> events = new ArrayList<>();
         var execution = service.queryOverall(request, events::add);
 
-        ArgumentCaptor<QueryRequest> captor = ArgumentCaptor.forClass(QueryRequest.class);
+        ArgumentCaptor<PreparedQuery> captor = ArgumentCaptor.forClass(PreparedQuery.class);
         verify(client, times(2)).query(captor.capture());
-        QueryRequest current = captor.getAllValues().get(0);
-        QueryRequest comparison = captor.getAllValues().get(1);
+        QueryRequest current = captor.getAllValues().get(0).request();
+        QueryRequest comparison = captor.getAllValues().get(1).request();
 
         assertThat(current.columns()).containsExactly("trans_rmb_amt_m");
         assertThat(comparison.columns()).containsExactly("trans_rmb_amt_m");
@@ -63,14 +64,16 @@ class AttributionQueryServiceTest {
 
     @Test
     void keepsTheRequestAndErrorWhenSmartBiFails() {
-        SmartBiClient client = mock(SmartBiClient.class);
-        when(client.query(any())).thenThrow(new IllegalStateException("SmartBI timeout"));
+        AuthorizedSmartBiClient client = mock(AuthorizedSmartBiClient.class);
+        when(client.prepare(anyString(), any())).thenAnswer(invocation ->
+                new PreparedQuery(invocation.getArgument(0), invocation.getArgument(1)));
+        when(client.query(any(PreparedQuery.class))).thenThrow(new IllegalStateException("SmartBI timeout"));
         AttributionQueryService service = new AttributionQueryService(
                 client, new SmartBiProperties(
                         "dataset", false, "http://localhost", "http://smartbi", "user", "password"));
         EffectiveRequest request = new EffectiveRequest(
                 "trans_rmb_amt_m", "2026-07", "2026-06", List.of(),
-                2, 8, 4, 2, null);
+                null, 2, 8, 4, 2, null, "demo-user");
         List<AttributionQueryService.SmartBiCall> events = new ArrayList<>();
 
         assertThatThrownBy(() -> service.queryOverall(request, events::add))
@@ -88,5 +91,14 @@ class AttributionQueryServiceTest {
         row.put("sett_dt_Month2", request.filters().get(0).values().get(0));
         row.put("trans_rmb_amt_m", new BigDecimal("100"));
         return new QueryResponse("request-" + request.filters().get(0).values().get(0), List.of(row), Map.of());
+    }
+
+    private AuthorizedSmartBiClient passThroughClient() {
+        AuthorizedSmartBiClient client = mock(AuthorizedSmartBiClient.class);
+        when(client.prepare(anyString(), any())).thenAnswer(invocation ->
+                new PreparedQuery(invocation.getArgument(0), invocation.getArgument(1)));
+        when(client.query(any(PreparedQuery.class))).thenAnswer(invocation ->
+                response(invocation.<PreparedQuery>getArgument(0).request()));
+        return client;
     }
 }

@@ -43,7 +43,7 @@ class AgentControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "userId":"agent-user",
+                                  "loginusername":"agent-user",
                                   "conversationId":"agent-query",
                                   "entryMode":"BI_CHAT",
                                   "message":"查询交易笔数",

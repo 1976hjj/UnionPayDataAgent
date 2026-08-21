@@ -1,7 +1,9 @@
 package com.company.paymentanalysis.attribution;
 
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
+import com.company.paymentanalysis.permission.PermissionScope;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryTrace;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.util.List;
@@ -22,7 +24,7 @@ public final class AttributionModels {
             Integer topN,
             Integer maxBranches,
             String model,
-            String userId,
+            @JsonAlias({"loginusername", "loginUsername"}) String userId,
             String conversationId) implements Serializable {
 
         public AttributionRequest {
@@ -56,14 +58,39 @@ public final class AttributionModels {
             int maxQueries,
             int topN,
             int maxBranches,
-            String model) implements Serializable {
+            String model,
+            String loginUsername,
+            PermissionScope permissionScope) implements Serializable {
+
+        public EffectiveRequest(
+                String metricId, String currentPeriod, String comparisonPeriod,
+                List<DimensionFilter> dimensionFilters, AnalysisPlan analysisPlan,
+                int maxDepth, int maxQueries, int topN, int maxBranches, String model,
+                String loginUsername) {
+            this(metricId, currentPeriod, comparisonPeriod, dimensionFilters, analysisPlan,
+                    maxDepth, maxQueries, topN, maxBranches, model, loginUsername, null);
+        }
+
+        public EffectiveRequest(
+                String metricId, String currentPeriod, String comparisonPeriod,
+                List<DimensionFilter> dimensionFilters, AnalysisPlan analysisPlan,
+                int maxDepth, int maxQueries, int topN, int maxBranches, String model) {
+            this(metricId, currentPeriod, comparisonPeriod, dimensionFilters, analysisPlan,
+                    maxDepth, maxQueries, topN, maxBranches, model, null, null);
+        }
 
         public EffectiveRequest(
                 String metricId, String currentPeriod, String comparisonPeriod,
                 List<DimensionFilter> dimensionFilters, int maxDepth, int maxQueries,
                 int topN, int maxBranches, String model) {
             this(metricId, currentPeriod, comparisonPeriod, dimensionFilters, null,
-                    maxDepth, maxQueries, topN, maxBranches, model);
+                    maxDepth, maxQueries, topN, maxBranches, model, null, null);
+        }
+
+        public EffectiveRequest withPermissionScope(PermissionScope scope) {
+            return new EffectiveRequest(
+                    metricId, currentPeriod, comparisonPeriod, dimensionFilters, analysisPlan,
+                    maxDepth, maxQueries, topN, maxBranches, model, loginUsername, scope);
         }
     }
 

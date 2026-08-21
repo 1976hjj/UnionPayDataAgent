@@ -2,3 +2,14 @@
 # their synthetic requests out of the business audit trail.
 process-audit:
   enabled: false
+
+spring:
+  datasource:
+    url: jdbc:sqlite:target/test-permissions.db
+    driver-class-name: org.sqlite.JDBC
+  sql:
+    init:
+      mode: always
+      encoding: UTF-8
+      schema-locations: classpath:db/permission-schema.sql
+      data-locations: classpath:db/permission-data.sql,classpath:db/permission-test-data.sql

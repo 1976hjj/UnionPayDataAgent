@@ -16,7 +16,7 @@ import com.company.paymentanalysis.controller.ChatQueryController.QueryResult;
 import com.company.paymentanalysis.controller.ChatQueryController.ResultColumn;
 import com.company.paymentanalysis.controller.ChatQueryController.WorkflowStep;
 import com.company.paymentanalysis.query.QueryMetadataCatalog;
-import com.company.paymentanalysis.smartbi.SmartBiClient;
+import com.company.paymentanalysis.smartbi.AuthorizedSmartBiClient;
 import com.company.paymentanalysis.smartbi.SmartBiModels.Filter;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryResponse;
@@ -71,7 +71,7 @@ public class ChatQueryWorkflowService {
 
     private final ChatQueryInterpreter interpreter;
     private final SmartBiQueryBuilder queryBuilder;
-    private final SmartBiClient smartBiClient;
+    private final AuthorizedSmartBiClient smartBiClient;
     private final ObjectMapper objectMapper;
     private final ClarificationPlanner clarificationPlanner;
     private final CompiledGraph<ChatState> graph;
@@ -79,7 +79,7 @@ public class ChatQueryWorkflowService {
     public ChatQueryWorkflowService(
             ChatQueryInterpreter interpreter,
             SmartBiQueryBuilder queryBuilder,
-            SmartBiClient smartBiClient,
+            AuthorizedSmartBiClient smartBiClient,
             ObjectMapper objectMapper,
             ClarificationPlanner clarificationPlanner) throws GraphStateException {
         this.interpreter = interpreter;
@@ -309,14 +309,7 @@ public class ChatQueryWorkflowService {
         }
         QueryContext context = required(state, CONTEXT);
         QueryRequest request = queryBuilder.build(context);
-        ChatQueryPlan plan = new ChatQueryPlan(
-                "Mock SmartBI",
-                request.dataSetId(),
-                displayRows(request),
-                displayColumns(context),
-                request.filters().stream().map(this::displayFilter).toList(),
-                SmartBiSqlPreview.from(request),
-                request);
+        ChatQueryPlan plan = queryPlan(context, request);
         return Map.of(
                 SMARTBI_REQUEST, request,
                 PLAN, plan,
@@ -343,11 +336,14 @@ public class ChatQueryWorkflowService {
                     "executeSmartBiQuery", "调用 SmartBI 接口", "等待用户确认，尚未调用 SmartBI")));
         }
         QueryRequest request = required(state, SMARTBI_REQUEST);
-        QueryResponse response = smartBiClient.query(request);
+        var preparedQuery = smartBiClient.prepare(chatRequest.userId(), request);
+        request = preparedQuery.request();
+        QueryResponse response = smartBiClient.query(preparedQuery);
         QueryResult result = toQueryResult(required(state, CONTEXT), request, response);
         return Map.of(
                 SMARTBI_RESPONSE, response,
                 RESULT, result,
+                PLAN, queryPlan(required(state, CONTEXT), request),
                 STEPS, appendStep(state, new WorkflowStep(
                         "executeSmartBiQuery",
                         "调用 SmartBI 接口",
@@ -457,6 +453,17 @@ public class ChatQueryWorkflowService {
             return decimal.stripTrailingZeros().toPlainString();
         }
         return value == null ? "" : value.toString();
+    }
+
+    private ChatQueryPlan queryPlan(QueryContext context, QueryRequest request) {
+        return new ChatQueryPlan(
+                "Mock SmartBI",
+                request.dataSetId(),
+                displayRows(request),
+                displayColumns(context),
+                request.filters().stream().map(this::displayFilter).toList(),
+                SmartBiSqlPreview.from(request),
+                request);
     }
 
     private List<String> displayRows(QueryRequest request) {

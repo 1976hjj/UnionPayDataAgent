@@ -1,6 +1,19 @@
 spring:
   application:
     name: payment-analysis
+  datasource:
+    url: ${PERMISSION_JDBC_URL:jdbc:sqlite:permissions.db}
+    driver-class-name: ${PERMISSION_JDBC_DRIVER:org.sqlite.JDBC}
+    username: ${PERMISSION_JDBC_USERNAME:}
+    password: ${PERMISSION_JDBC_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${PERMISSION_DB_POOL_SIZE:2}
+  sql:
+    init:
+      mode: ${PERMISSION_DB_INIT_MODE:always}
+      encoding: UTF-8
+      schema-locations: classpath:db/permission-schema.sql
+      data-locations: classpath:db/permission-data.sql
   mvc:
     async:
       # Keep the stream alive while a real LLM completes several reasoning rounds.

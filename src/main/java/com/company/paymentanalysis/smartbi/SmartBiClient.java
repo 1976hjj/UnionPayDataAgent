@@ -44,7 +44,7 @@ public class SmartBiClient {
         this.auditLog = auditLog;
     }
 
-    public QueryResponse query(QueryRequest request) {
+    QueryResponse query(QueryRequest request) {
         auditLog.event("smartbi.request", java.util.Map.of(
                 "mock", properties.mockEnabled(), "request", request));
         try {

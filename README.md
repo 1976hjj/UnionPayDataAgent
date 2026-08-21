@@ -250,6 +250,19 @@ SMARTBI_AUTHORIZATION=
 SmartBI 原始 `CellData` 会在客户端适配层转换成按 `columnLabels` 命名的行数据，
 LangGraph4j 流程和前端无需感知 HTTP 返回格式。
 
+### 数据权限
+
+本地默认使用 `permissions.db`。`permission_dimension` 定义启用且必配的权限维度，
+`user_data_scope` 按 OA `loginusername + dimension_id + dimension_value` 保存授权值。
+当前启用 `acq_reg_ch`（收单分公司）和 `iss_dq_ch`（发卡分公司），示例用户均授权“中国大陆”。
+
+同维度多值生成 `IN`，单值生成 `EQUALS`，不同维度与业务条件统一使用 `AND`。
+账号缺少任一必配维度时不会调用 SmartBI。新增发卡市场等权限时，在维度目录登记字段后，
+向 `permission_dimension` 和 `user_data_scope` 增加数据即可，不需要修改查询流程。
+
+切换 Vertica 时设置 `PERMISSION_JDBC_URL`、驱动和账号，并将
+`PERMISSION_DB_INIT_MODE=never`，表结构由生产数据库变更脚本管理。
+
 查日志命令
 Get-Content .\logs\process-audit.jsonl |
   ForEach-Object { $_ | ConvertFrom-Json } |
