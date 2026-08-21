@@ -86,7 +86,16 @@ public class AttributionTemplateInterpreter {
                     + "\"requestsStopAfterTemplate\":false,\"metricTerm\":\"\",\"currentPeriod\":\"\","
                     + "\"comparisonPeriod\":\"\",\"filterTerms\":[],\"unmappedTerms\":[]}";
             LlmResultMessage intentMessage = complete(intentMessages, mockIntent, request.model());
-            RawSemanticIntent semanticIntent = parseSemanticIntent(intentMessage.content());
+            RawSemanticIntent semanticIntent;
+            try {
+                semanticIntent = parseSemanticIntent(intentMessage.content());
+            } catch (JsonProcessingException | IllegalArgumentException exception) {
+                return recoveryResponse(
+                        current,
+                        "模型返回的语义清单格式不可用，已保留当前模板，请调整描述或重试。",
+                        intentMessage,
+                        null);
+            }
             RelativeTimeResolver.ResolvedPeriodPair resolvedPeriods = resolveAuthoritativePeriods(request, current);
             semanticIntent = semanticIntent.withAuthoritativePeriods(resolvedPeriods);
             RetrievedMetadata retrievedMetadata = metadataRetrievalTool.retrieveForAttribution(
@@ -100,15 +109,26 @@ public class AttributionTemplateInterpreter {
                     "自由探索", "AUTO", "", "", "", List.of(), List.of(), "AUTO",
                     "未识别到明确分析维度，保持自由探索。", List.of(), List.of()));
             LlmResultMessage mappingMessage = complete(mappingMessages, mockMapped, request.model());
-            RawMappedTemplate mapped = parseMappedTemplate(mappingMessage.content());
-            mapped = mapped.withAuthoritativePeriods(resolvedPeriods).withValidPeriods();
-            DimensionTemplate template = validateMapped(mapped);
+            RawMappedTemplate mapped;
+            MappedNormalization normalized;
+            try {
+                mapped = parseMappedTemplate(mappingMessage.content()).withAuthoritativePeriods(resolvedPeriods);
+                normalized = normalizeMapped(mapped);
+            } catch (JsonProcessingException | IllegalArgumentException exception) {
+                return recoveryResponse(
+                        current,
+                        "模型返回的模板格式不可用，已保留当前模板，请调整描述或重试。",
+                        intentMessage,
+                        mappingMessage);
+            }
+            DimensionTemplate template = normalized.template();
             String status = hasRequiredAnalysisInputs(template)
                     ? "READY_TO_CONFIRM"
                     : "NEEDS_CLARIFICATION";
-            String reply = reply(request, current, template, mapped, retrievedMetadata, status);
+            String reply = reply(request, current, template, normalized, retrievedMetadata, status);
             return new TemplateChatResponse(
-                    status, reply, template, mapped.unmappedTerms(), mapped.mappingIssues(),
+                    status, reply, template, normalized.unmappedTerms(), normalized.mappingIssues(),
+                    normalized.warnings(),
                     intentMessage, mappingMessage);
         } catch (JsonProcessingException | RuntimeException exception) {
             throw new IllegalArgumentException("分析层级模板解析失败：" + conciseMessage(exception), exception);
@@ -212,27 +232,143 @@ public class AttributionTemplateInterpreter {
                 + "\n用户本轮要求：" + request.message();
     }
 
-    private DimensionTemplate validateMapped(RawMappedTemplate raw) {
-        for (MappingIssue issue : raw.mappingIssues()) {
-            if (issue == null || !StringUtils.hasText(issue.userTerm()) || !StringUtils.hasText(issue.reason())
-                    || issue.candidateDimensionIds().stream().anyMatch(id -> !AttributionCatalog.isDimension(id))) {
-                throw new IllegalArgumentException("mappingIssues包含不合法的歧义映射");
-            }
+    private MappedNormalization normalizeMapped(RawMappedTemplate raw) {
+        LinkedHashSet<String> warnings = new LinkedHashSet<>();
+
+        String metricId = safeText(raw.metricId());
+        if (!metricId.isEmpty() && !AttributionCatalog.isMetric(metricId)) {
+            warnings.add("模型返回的度量不在白名单中，已忽略该度量。");
+            metricId = "";
         }
-        String metricName = StringUtils.hasText(raw.metricId()) && AttributionCatalog.isMetric(raw.metricId())
-                ? AttributionCatalog.metricName(raw.metricId()) : "";
-        DimensionTemplate template = new DimensionTemplate(
-                raw.name(), raw.mode(), raw.metricId(), metricName, raw.currentPeriod(), raw.comparisonPeriod(),
-                raw.filters().stream().map(item -> new TemplateFilter(
-                        item.dimensionId(), AttributionCatalog.dimension(item.dimensionId()).name(),
-                        item.userTerm(), item.operator(), item.values(), item.rationale(), item.confidence())).toList(),
-                raw.levels().stream().map(layer -> new DimensionLayer(layer.level(), layer.dimensions().stream()
-                        .map(item -> new DimensionSelection(
-                                item.dimensionId(), AttributionCatalog.dimension(item.dimensionId()).name(),
-                                item.userTerm(), item.rationale(), AttributionCatalog.dimension(item.dimensionId()).mappingHint(),
-                                item.confidence())).toList())).toList(),
-                raw.continuationMode(), "DRAFT", raw.summary());
-        return validateTemplate(template, "DRAFT");
+
+        String currentPeriod = normalizeRecoverablePeriod(raw.currentPeriod(), "当前周期", warnings);
+        String comparisonPeriod = normalizeRecoverablePeriod(raw.comparisonPeriod(), "对比周期", warnings);
+
+        java.util.ArrayList<TemplateFilter> filters = new java.util.ArrayList<>();
+        for (RawFilter item : raw.filters()) {
+            if (!isValidFilter(item)) {
+                warnings.add("模型返回了不合法的过滤条件，已忽略该项，其余条件已保留。");
+                continue;
+            }
+            String operator = item.operator().trim().toUpperCase();
+            AttributionDimension definition = AttributionCatalog.dimension(item.dimensionId());
+            filters.add(new TemplateFilter(
+                    item.dimensionId(), definition.name(), safeText(item.userTerm()), operator,
+                    item.values().stream().map(String::trim).toList(), safeText(item.rationale()), item.confidence()));
+        }
+
+        LinkedHashSet<String> dimensionIds = new LinkedHashSet<>();
+        java.util.ArrayList<DimensionLayer> levels = new java.util.ArrayList<>();
+        boolean layerStructureChanged = false;
+        boolean dimensionRemoved = false;
+        for (RawLayer rawLayer : raw.levels()) {
+            if (rawLayer == null) {
+                layerStructureChanged = true;
+                continue;
+            }
+            java.util.ArrayList<DimensionSelection> dimensions = new java.util.ArrayList<>();
+            for (RawDimension item : rawLayer.dimensions()) {
+                if (!isValidDimension(item) || !dimensionIds.add(item.dimensionId())) {
+                    dimensionRemoved = true;
+                    continue;
+                }
+                if (dimensions.size() >= 5) {
+                    dimensionRemoved = true;
+                    continue;
+                }
+                AttributionDimension definition = AttributionCatalog.dimension(item.dimensionId());
+                dimensions.add(new DimensionSelection(
+                        item.dimensionId(), definition.name(), safeText(item.userTerm()), safeText(item.rationale()),
+                        definition.mappingHint(), item.confidence()));
+            }
+            if (dimensions.isEmpty()) {
+                layerStructureChanged = true;
+                continue;
+            }
+            if (levels.size() >= 3) {
+                layerStructureChanged = true;
+                continue;
+            }
+            int normalizedLevel = levels.size() + 1;
+            if (rawLayer.level() != normalizedLevel) layerStructureChanged = true;
+            levels.add(new DimensionLayer(normalizedLevel, List.copyOf(dimensions)));
+        }
+        if (dimensionRemoved) {
+            warnings.add("模型返回了非法、重复或超量的分析维度，已移除异常项并保留其余维度。");
+        }
+        if (layerStructureChanged) {
+            warnings.add("模型返回的分析层级不连续、为空或超过三层，已按原顺序重新整理。");
+        }
+
+        String continuationMode;
+        String mode;
+        if (levels.isEmpty()) {
+            mode = "AUTO";
+            continuationMode = "AUTO";
+        } else if ("STOP".equals(raw.continuationMode())) {
+            mode = "USER_DEFINED";
+            continuationMode = "STOP";
+        } else {
+            mode = "HYBRID";
+            continuationMode = "AUTO";
+        }
+        if (!mode.equals(raw.mode()) || !continuationMode.equals(raw.continuationMode())) {
+            warnings.add(levels.isEmpty()
+                    ? "模型返回空分析层级但指定了自定义模式，已调整为自由探索。"
+                    : "模型返回的模板模式与分析层级不一致，已按层级和后续策略自动调整。");
+        }
+
+        java.util.ArrayList<MappingIssue> mappingIssues = new java.util.ArrayList<>();
+        for (MappingIssue issue : raw.mappingIssues()) {
+            if (issue == null || !StringUtils.hasText(issue.userTerm()) || !StringUtils.hasText(issue.reason())) {
+                warnings.add("模型返回了格式不完整的映射提示，已忽略该项。");
+                continue;
+            }
+            List<String> candidates = issue.candidateDimensionIds().stream()
+                    .filter(AttributionCatalog::isDimension).distinct().toList();
+            if (candidates.size() != issue.candidateDimensionIds().size()) {
+                warnings.add("模型返回的映射候选包含非白名单字段，已移除异常候选。");
+            }
+            mappingIssues.add(new MappingIssue(
+                    issue.userTerm().trim(), issue.reason().trim(), candidates));
+        }
+
+        DimensionTemplate candidate = new DimensionTemplate(
+                raw.name(), mode, metricId, "", currentPeriod, comparisonPeriod,
+                List.copyOf(filters), List.copyOf(levels), continuationMode, "DRAFT", raw.summary());
+        DimensionTemplate template = validateTemplate(candidate, "DRAFT");
+        List<String> unmappedTerms = raw.unmappedTerms().stream()
+                .filter(StringUtils::hasText).map(String::trim).distinct().toList();
+        return new MappedNormalization(
+                template, unmappedTerms, List.copyOf(mappingIssues), List.copyOf(warnings));
+    }
+
+    private boolean isValidFilter(RawFilter item) {
+        if (item == null || !AttributionCatalog.isDimension(item.dimensionId())
+                || !StringUtils.hasText(item.operator()) || !CONFIDENCES.contains(item.confidence())
+                || item.values().isEmpty() || item.values().stream().anyMatch(value -> !StringUtils.hasText(value))) {
+            return false;
+        }
+        String operator = item.operator().trim().toUpperCase();
+        return FILTER_OPERATORS.contains(operator)
+                && (!"BETWEEN".equals(operator) || item.values().size() == 2);
+    }
+
+    private boolean isValidDimension(RawDimension item) {
+        return item != null && AttributionCatalog.isDimension(item.dimensionId())
+                && CONFIDENCES.contains(item.confidence());
+    }
+
+    private String normalizeRecoverablePeriod(
+            String value, String label, LinkedHashSet<String> warnings) {
+        String normalized = normalizePeriod(value);
+        if (!StringUtils.hasText(normalized)) return "";
+        try {
+            return YearMonth.parse(normalized).toString();
+        } catch (RuntimeException exception) {
+            warnings.add("模型返回的" + label + "格式不合法，已清空并等待补充。");
+            return "";
+        }
     }
 
     private DimensionTemplate validateTemplate(DimensionTemplate template, String status) {
@@ -319,11 +455,27 @@ public class AttributionTemplateInterpreter {
         return YearMonth.parse(template.currentPeriod()).isAfter(YearMonth.parse(template.comparisonPeriod()));
     }
 
+    private TemplateChatResponse recoveryResponse(
+            DimensionTemplate current,
+            String warning,
+            LlmResultMessage intentMessage,
+            LlmResultMessage mappingMessage) {
+        return new TemplateChatResponse(
+                "NEEDS_CLARIFICATION",
+                warning,
+                current,
+                List.of(),
+                List.of(),
+                List.of(warning),
+                intentMessage,
+                mappingMessage);
+    }
+
     private String reply(
             TemplateChatRequest request,
             DimensionTemplate previous,
             DimensionTemplate current,
-            RawMappedTemplate mapped,
+            MappedNormalization normalized,
             RetrievedMetadata retrievedMetadata,
             String status) {
         List<String> changes = describeChanges(previous, current);
@@ -344,8 +496,8 @@ public class AttributionTemplateInterpreter {
             needs.add(new ClarificationPlanner.MissingItem("periodOrder", "当前周期需晚于对比周期"));
         }
         java.util.LinkedHashSet<String> mappingTerms = new java.util.LinkedHashSet<>();
-        mapped.mappingIssues().forEach(issue -> mappingTerms.add(issue.userTerm()));
-        mappingTerms.addAll(mapped.unmappedTerms());
+        normalized.mappingIssues().forEach(issue -> mappingTerms.add(issue.userTerm()));
+        mappingTerms.addAll(normalized.unmappedTerms());
         mappingTerms.forEach(term -> needs.add(new ClarificationPlanner.MissingItem(
                 "mapping:" + term, term + "的字段归属")));
         String clarification = clarificationPlanner.plan(new ClarificationPlanner.ClarificationRequest(
@@ -506,6 +658,13 @@ public class AttributionTemplateInterpreter {
     private String conciseMessage(Throwable throwable) {
         String message = throwable.getMessage() == null ? throwable.getClass().getSimpleName() : throwable.getMessage();
         return message.replaceAll("[\\r\\n\\t]+", " ").trim();
+    }
+
+    private record MappedNormalization(
+            DimensionTemplate template,
+            List<String> unmappedTerms,
+            List<MappingIssue> mappingIssues,
+            List<String> warnings) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

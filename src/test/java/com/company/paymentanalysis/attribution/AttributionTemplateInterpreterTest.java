@@ -167,7 +167,7 @@ class AttributionTemplateInterpreterTest {
     }
 
     @Test
-    void rejectsAFieldOutsideTheAttributionCatalog() {
+    void dropsAFieldOutsideTheAttributionCatalogAndKeepsTheRest() {
         OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
         when(llm.completeWithMessage(anyList(), anyString(), eq("company-model")))
                 .thenReturn(message("""
@@ -181,10 +181,80 @@ class AttributionTemplateInterpreterTest {
                         "continuationMode":"STOP","summary":"非法字段","unmappedTerms":[],"mappingIssues":[]}
                         """));
 
-        assertThatThrownBy(() -> interpreter(llm).interpret(new TemplateChatRequest(
-                "user", "conversation", "按未知维度分析", List.of(), DimensionTemplate.auto(), "company-model")))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("分析层级模板解析失败");
+        var result = interpreter(llm).interpret(new TemplateChatRequest(
+                "user", "conversation", "按未知维度分析", List.of(), DimensionTemplate.auto(), "company-model"));
+
+        assertThat(result.status()).isEqualTo("NEEDS_CLARIFICATION");
+        assertThat(result.template().metricId()).isEqualTo("trans_cnt_m");
+        assertThat(result.template().levels()).isEmpty();
+        assertThat(result.template().mode()).isEqualTo("AUTO");
+        assertThat(result.template().continuationMode()).isEqualTo("AUTO");
+        assertThat(result.warnings()).contains(
+                "模型返回了非法、重复或超量的分析维度，已移除异常项并保留其余维度。",
+                "模型返回空分析层级但指定了自定义模式，已调整为自由探索。");
+    }
+
+    @Test
+    void normalizesAnEmptyUserDefinedTemplateAndPreservesValidFilters() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model")))
+                .thenReturn(message("""
+                        {"analysisTerms":[],"explicitOrder":true,"requestsAutoExploration":false,
+                        "requestsStopAfterTemplate":false,"metricTerm":"承兑笔数和同比",
+                        "currentPeriod":"2025-08","comparisonPeriod":"","filterTerms":[
+                          {"dimensionTerm":"发卡","operator":"EQUALS","values":["澳门"],"context":"发卡为澳门"},
+                          {"dimensionTerm":"发卡机构名称","operator":"EQUALS","values":["工行澳门"],"context":"发卡机构名称为工行澳门"},
+                          {"dimensionTerm":"二维码主扫","operator":"EQUALS","values":["二维码主扫"],"context":"二维码主扫"}],
+                        "unmappedTerms":[]}
+                        """))
+                .thenReturn(message("""
+                        {"name":"承兑笔数同比变化原因分析","mode":"USER_DEFINED","metricId":"acpt_cnt_m",
+                        "currentPeriod":"2025-08","comparisonPeriod":"","filters":[
+                          {"dimensionId":"iss_sc_ch","userTerm":"发卡","operator":"EQUALS","values":["澳门"],"rationale":"发卡市场","confidence":"HIGH"},
+                          {"dimensionId":"ins_ins_ch","userTerm":"发卡机构名称","operator":"EQUALS","values":["工行澳门"],"rationale":"发卡机构","confidence":"HIGH"},
+                          {"dimensionId":"JYJZ_NAME","userTerm":"二维码主扫","operator":"EQUALS","values":["二维码主扫"],"rationale":"交易介质","confidence":"HIGH"}],
+                        "levels":[],"continuationMode":"STOP","summary":"指定筛选条件后分析变化原因",
+                        "unmappedTerms":[],"mappingIssues":[]}
+                        """));
+
+        var result = interpreter(llm).interpret(new TemplateChatRequest(
+                "user", "conversation",
+                "2025年8月1日 发卡为澳门 发卡机构名称为工行澳门 二维码主扫 承兑笔数和同比 变化原因",
+                List.of(), DimensionTemplate.auto(), "company-model"));
+
+        assertThat(result.status()).isEqualTo("NEEDS_CLARIFICATION");
+        assertThat(result.template().mode()).isEqualTo("AUTO");
+        assertThat(result.template().continuationMode()).isEqualTo("AUTO");
+        assertThat(result.template().filters()).hasSize(3);
+        assertThat(result.template().metricId()).isEqualTo("acpt_cnt_m");
+        assertThat(result.template().currentPeriod()).isEqualTo("2025-08");
+        assertThat(result.template().comparisonPeriod()).isEmpty();
+        assertThat(result.warnings()).containsExactly(
+                "模型返回空分析层级但指定了自定义模式，已调整为自由探索。");
+    }
+
+    @Test
+    void keepsTheCurrentTemplateWhenMappedJsonCannotBeParsed() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model")))
+                .thenReturn(message("""
+                        {"analysisTerms":[],"explicitOrder":false,"requestsAutoExploration":true,
+                        "requestsStopAfterTemplate":false,"metricTerm":"总交易笔数",
+                        "currentPeriod":"2026-07","comparisonPeriod":"2026-06",
+                        "filterTerms":[],"unmappedTerms":[]}
+                        """))
+                .thenReturn(message("{not-json"));
+        DimensionTemplate current = new DimensionTemplate(
+                "现有模板", "AUTO", "trans_cnt_m", "总交易笔数", "2026-07", "2026-06",
+                List.of(), List.of(), "AUTO", "DRAFT", "现有自由探索模板");
+
+        var result = interpreter(llm).interpret(new TemplateChatRequest(
+                "user", "conversation", "继续调整", List.of(), current, "company-model"));
+
+        assertThat(result.status()).isEqualTo("NEEDS_CLARIFICATION");
+        assertThat(result.template()).isEqualTo(current);
+        assertThat(result.warnings()).containsExactly(
+                "模型返回的模板格式不可用，已保留当前模板，请调整描述或重试。");
     }
 
     @Test

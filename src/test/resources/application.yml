@@ -1,0 +1,4 @@
+# Spring tests inherit the main configuration unless overridden here.  Keep
+# their synthetic requests out of the business audit trail.
+process-audit:
+  enabled: false

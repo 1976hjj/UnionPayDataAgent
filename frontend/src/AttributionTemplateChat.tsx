@@ -14,6 +14,7 @@ type TemplateResponse = {
   status: 'READY_TO_CONFIRM' | 'READY_TO_EXECUTE' | 'NEEDS_CLARIFICATION' | 'CHAT' | 'COMPLETED'; reply: string; template: DimensionTemplate | null
   unmappedTerms: string[]
   mappingIssues: { userTerm: string; reason: string; candidateDimensionIds: string[] }[]
+  warnings: string[]
 }
 type ChatMessage = { role: 'user' | 'assistant'; text: string }
 type ConversationSummary = { conversationId: string; title: string; updatedAt: string; messageCount: number }
@@ -22,6 +23,7 @@ type AttributionState = {
   template: DimensionTemplate | null
   unmappedTerms: string[]
   mappingIssues: TemplateResponse['mappingIssues']
+  warnings: string[]
 }
 type AgentTemplateResponse = {
   status: string
@@ -97,6 +99,7 @@ function TemplateArtifact({ template, response, pending, onConfirm, onReset, onC
         <button className={template.continuationMode === 'AUTO' ? 'selected' : ''} type="button" disabled={pending || template.status === 'CONFIRMED'} onClick={() => onContinuationChange('AUTO')}>继续自由探索</button>
       </div>}
       {!!response?.mappingIssues.length && <div className="chat-template-warning"><strong>映射提示（不影响确认）</strong>{response.mappingIssues.map((issue) => <p key={issue.userTerm}><b>{issue.userTerm}</b>：{issue.reason}</p>)}</div>}
+      {!!response?.warnings.length && <div className="chat-template-warning"><strong>系统修正（已保留其他有效内容）</strong>{response.warnings.map((warning, index) => <p key={`${warning}-${index}`}>{warning}</p>)}</div>}
       <div className="chat-template-actions"><button type="button" onClick={onReset}>重新开始</button><button className="primary-button" type="button" onClick={onConfirm} disabled={pending || !requiredReady || template.status === 'CONFIRMED'}>{template.status === 'CONFIRMED' ? '已确认' : !requiredReady ? '请在对话中补充度量和周期' : '确认模板'}</button></div>
     </footer>
   </section>
@@ -185,6 +188,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
         template: state.template,
         unmappedTerms: state.unmappedTerms,
         mappingIssues: state.mappingIssues,
+        warnings: state.warnings ?? [],
       } : null)
       setMessage(''); setError(''); setHistoryOpen(false)
       localStorage.setItem(ACTIVE_CONVERSATION_KEY, detail.conversationId)
@@ -210,6 +214,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
         status: result.status, reply: result.reply, template: result.template,
         unmappedTerms: result.unmappedTerms,
         mappingIssues: result.mappingIssues,
+        warnings: result.warnings ?? [],
       }
       if (result.status !== 'CHAT') {
         setTemplate(result.template); setResponse(storedResponse)
@@ -253,6 +258,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
           template: nextTemplate,
           unmappedTerms: nextResponse.unmappedTerms,
           mappingIssues: nextResponse.mappingIssues,
+          warnings: nextResponse.warnings,
         },
       }),
     })
@@ -299,6 +305,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
       template: next,
       unmappedTerms,
       mappingIssues,
+      warnings: response?.warnings ?? [],
     }
     setTemplate(next)
     setResponse(nextResponse)
@@ -324,6 +331,7 @@ export default function AttributionTemplateChat({ selectedModel, executionContro
       template: next,
       unmappedTerms,
       mappingIssues,
+      warnings: response?.warnings ?? [],
     }
     setTemplate(next)
     setResponse(nextResponse)

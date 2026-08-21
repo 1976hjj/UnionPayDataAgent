@@ -72,10 +72,10 @@ public class AttributionSkill implements AgentSkill {
         DimensionTemplate confirmed = templateInterpreter.confirm(state.template());
         memoryService.saveAttributionState(context.userId(), context.conversationId(),
                 new TemplateConversationState("READY_TO_EXECUTE", confirmed,
-                        state.unmappedTerms(), state.mappingIssues()));
+                        state.unmappedTerms(), state.mappingIssues(), state.warnings()));
         TemplateChatResponse response = new TemplateChatResponse(
                 "READY_TO_EXECUTE", "归因模板已确认，可以开始执行归因分析。", confirmed,
-                state.unmappedTerms(), state.mappingIssues(), null, null);
+                state.unmappedTerms(), state.mappingIssues(), state.warnings(), null, null);
         return new AgentResponse(
                 response.status(), "ATTRIBUTION", response.reply(),
                 context.conversationId(), new AgentViewModel("attribution-template", response));
@@ -90,7 +90,7 @@ public class AttributionSkill implements AgentSkill {
         AttributionResponse response = executionService.execute(toRequest(template, request, context)).response();
         memoryService.saveAttributionState(context.userId(), context.conversationId(),
                 new TemplateConversationState("COMPLETED", template,
-                        state.unmappedTerms(), state.mappingIssues()));
+                        state.unmappedTerms(), state.mappingIssues(), state.warnings()));
         String reply = response.report() == null || response.report().summary() == null
                 ? "归因分析已执行完成。" : response.report().summary();
         return new AgentResponse(response.status(), "ATTRIBUTION", reply,

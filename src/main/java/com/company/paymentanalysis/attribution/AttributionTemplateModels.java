@@ -98,12 +98,25 @@ public final class AttributionTemplateModels {
             DimensionTemplate template,
             List<String> unmappedTerms,
             List<MappingIssue> mappingIssues,
+            List<String> warnings,
             LlmResultMessage intentMessage,
             LlmResultMessage mappingMessage) implements Serializable {
 
         public TemplateChatResponse {
             unmappedTerms = unmappedTerms == null ? List.of() : List.copyOf(unmappedTerms);
             mappingIssues = mappingIssues == null ? List.of() : List.copyOf(mappingIssues);
+            warnings = warnings == null ? List.of() : List.copyOf(warnings);
+        }
+
+        public TemplateChatResponse(
+                String status,
+                String reply,
+                DimensionTemplate template,
+                List<String> unmappedTerms,
+                List<MappingIssue> mappingIssues,
+                LlmResultMessage intentMessage,
+                LlmResultMessage mappingMessage) {
+            this(status, reply, template, unmappedTerms, mappingIssues, List.of(), intentMessage, mappingMessage);
         }
     }
 
@@ -112,16 +125,27 @@ public final class AttributionTemplateModels {
             String status,
             DimensionTemplate template,
             List<String> unmappedTerms,
-            List<MappingIssue> mappingIssues) implements Serializable {
+            List<MappingIssue> mappingIssues,
+            List<String> warnings) implements Serializable {
 
         public TemplateConversationState {
             unmappedTerms = unmappedTerms == null ? List.of() : List.copyOf(unmappedTerms);
             mappingIssues = mappingIssues == null ? List.of() : List.copyOf(mappingIssues);
+            warnings = warnings == null ? List.of() : List.copyOf(warnings);
+        }
+
+        public TemplateConversationState(
+                String status,
+                DimensionTemplate template,
+                List<String> unmappedTerms,
+                List<MappingIssue> mappingIssues) {
+            this(status, template, unmappedTerms, mappingIssues, List.of());
         }
 
         public static TemplateConversationState from(TemplateChatResponse response) {
             return new TemplateConversationState(
-                    response.status(), response.template(), response.unmappedTerms(), response.mappingIssues());
+                    response.status(), response.template(), response.unmappedTerms(), response.mappingIssues(),
+                    response.warnings());
         }
     }
 
