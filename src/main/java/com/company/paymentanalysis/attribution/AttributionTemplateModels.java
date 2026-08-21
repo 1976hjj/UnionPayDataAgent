@@ -149,10 +149,6 @@ public final class AttributionTemplateModels {
         }
     }
 
-    public record TemplateConfirmRequest(
-            String userId, String conversationId, DimensionTemplate template) implements Serializable {
-    }
-
     public record TemplateStateRequest(
             String userId, String conversationId, TemplateConversationState state) implements Serializable {
     }

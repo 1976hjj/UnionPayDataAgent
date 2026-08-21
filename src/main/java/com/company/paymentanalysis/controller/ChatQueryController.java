@@ -2,27 +2,21 @@ package com.company.paymentanalysis.controller;
 
 import com.company.paymentanalysis.chat.ChatConversationMemoryService;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService.ConversationScope;
-import com.company.paymentanalysis.audit.ProcessAuditLog;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService.ChatMemoryUnavailableException;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
-import com.company.paymentanalysis.chat.ConversationRouterService;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConversationState;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
-import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryRequest;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -32,75 +26,10 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/chat")
 public class ChatQueryController {
 
-    private final ConversationRouterService conversationRouter;
     private final ChatConversationMemoryService memoryService;
-    private final OpenAiCompatibleLlmClient llmClient;
-    private final ProcessAuditLog auditLog;
 
-    public ChatQueryController(
-            ConversationRouterService conversationRouter, ChatConversationMemoryService memoryService,
-            OpenAiCompatibleLlmClient llmClient, ProcessAuditLog auditLog) {
-        this.conversationRouter = conversationRouter;
+    public ChatQueryController(ChatConversationMemoryService memoryService) {
         this.memoryService = memoryService;
-        this.llmClient = llmClient;
-        this.auditLog = auditLog;
-    }
-
-    @PostMapping("/query")
-    public ChatResponse query(@RequestBody ChatRequest request) {
-        String message = request == null || request.message() == null ? "" : request.message().trim();
-        if (message.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "查询内容不能为空");
-        }
-        if (message.length() > 2000) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "对话内容不能超过2000字");
-        }
-        String userId = identifier(request.userId(), "demo-user");
-        String conversationId = identifier(request.sessionId(), UUID.randomUUID().toString());
-        String model;
-        try {
-            model = llmClient.resolveSelection(request.model());
-        } catch (IllegalArgumentException exception) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage());
-        }
-        try (ProcessAuditLog.AuditScope scope = auditLog.start("chat.query", Map.of(
-                "userId", userId,
-                "conversationId", conversationId,
-                "userInput", message,
-                "model", model,
-                "confirmed", request.confirmed(),
-                "clientContext", request.context() == null ? QueryContext.empty() : request.context()))) {
-        QueryContext restoredContext = request.context();
-        try {
-            restoredContext = memoryService.restoreContext(userId, conversationId).orElse(request.context());
-        } catch (ChatMemoryUnavailableException ignored) {
-            // Redis 不可用时仍允许当前浏览器继续查数，但不伪造持久化记忆。
-        }
-        ChatResponse response =
-                conversationRouter.respond(new ChatRequest(
-                        userId, conversationId, message, restoredContext, model, request.confirmed()));
-        try {
-            memoryService.saveTurn(userId, conversationId, message, response);
-        } catch (ChatMemoryUnavailableException ignored) {
-            // 依赖状态接口会向前端报告 Redis 故障。
-        }
-        scope.completed(Map.of(
-                "status", response.status(),
-                "assistantReply", response.reply(),
-                "conversationId", response.conversationId(),
-                "queryAction", response.queryAction() == null ? "" : response.queryAction().toString(),
-                "smartBiExecuted", response.result() != null,
-                "smartBiRowCount", response.result() == null ? 0 : response.result().rows().size(),
-                "conversationOutcome", querySucceeded(response) ? "success" : "failed"));
-        return response;
-        }
-    }
-
-    private boolean querySucceeded(ChatResponse response) {
-        return "completed".equals(response.status())
-                && response.result() != null
-                && response.result().rows() != null
-                && !response.result().rows().isEmpty();
     }
 
     @GetMapping("/conversations")

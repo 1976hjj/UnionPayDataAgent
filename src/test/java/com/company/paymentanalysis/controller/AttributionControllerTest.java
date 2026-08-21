@@ -63,16 +63,17 @@ class AttributionControllerTest {
                 || "REQUEST_VALIDATION".equals(fact.source()));
         assertThat(artifact.modelNarrative()).contains("摘要=");
 
-        mockMvc.perform(post("/api/chat/query")
+        mockMvc.perform(post("/api/agent/chat")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"userId":"attribution-user","sessionId":"attribution-follow-up",
-                                 "message":"把刚才归因改写成一段业务汇报","context":
+                                {"userId":"attribution-user","conversationId":"attribution-follow-up",
+                                 "entryMode":"BI_CHAT","action":"MESSAGE",
+                                 "message":"把刚才归因改写成一段业务汇报","queryContext":
                                  {"metricIds":[],"dimensionIds":[],"dimensionFilters":[],"sorts":[]}}
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.derivedFromArtifactIds.length()").value(0))
-                .andExpect(jsonPath("$.result").doesNotExist());
+                .andExpect(jsonPath("$.viewModel.payload.derivedFromArtifactIds.length()").value(0))
+                .andExpect(jsonPath("$.viewModel.payload.result").doesNotExist());
     }
 
     @Test
