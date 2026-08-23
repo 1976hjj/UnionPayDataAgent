@@ -402,7 +402,7 @@ public class ChatQueryWorkflowService {
                 ? result.summary()
                 : ready
                         ? confirmationSummary(context, pendingResolutions, unresolvedItems)
-                        : clarificationReply(chatRequest, responseContext, validationIssues);
+                        : clarificationReply(responseContext, validationIssues, unresolvedItems);
         List<WorkflowStep> steps = appendFinalStep(state, new WorkflowStep(
                 "generateChatResponse",
                 "生成查数回复",
@@ -560,7 +560,7 @@ public class ChatQueryWorkflowService {
     }
 
     private String clarificationReply(
-            ChatRequest request, QueryContext context, List<String> validationIssues) {
+            QueryContext context, List<String> validationIssues, List<String> unresolvedItems) {
         List<ClarificationPlanner.MissingItem> missing = validationIssues.stream()
                 .filter(org.springframework.util.StringUtils::hasText)
                 .map(item -> new ClarificationPlanner.MissingItem("query:" + item, item))
@@ -570,9 +570,24 @@ public class ChatQueryWorkflowService {
                 .map(label -> label.replaceFirst("^待澄清条件：", ""))
                 .distinct()
                 .toList();
-        return labels.isEmpty()
-                ? "未找到可执行的查询条件，请补充后重试。"
-                : "未找到：" + String.join("、", labels) + "。请补充或换一种说法。";
+        String recognizedScope = context == null || context.dimensionFilters().isEmpty()
+                ? ""
+                : "已识别查询范围：" + context.dimensionFilters().stream()
+                        .map(filter -> QueryMetadataCatalog.displayName(filter.dimensionId())
+                                + " " + filter.operator() + " " + String.join("、", filter.values()))
+                        .reduce((left, right) -> left + "；" + right)
+                        .orElse("") + "。";
+        String unresolved = unresolvedItems == null || unresolvedItems.isEmpty()
+                ? ""
+                : "未理解的词：" + unresolvedItems.stream()
+                        .filter(org.springframework.util.StringUtils::hasText)
+                        .distinct()
+                        .reduce((left, right) -> left + "、" + right)
+                        .orElse("") + "。";
+        String missingReply = labels.isEmpty()
+                ? "请补充后重试。"
+                : "还需要补充：" + String.join("、", labels) + "。请明确要查询的指标或换一种说法。";
+        return recognizedScope + unresolved + missingReply;
     }
 
     private List<String> queryMetricCandidates() {
@@ -592,7 +607,10 @@ public class ChatQueryWorkflowService {
             return List.of("再加上交易笔数", "增加地区维度", "清空维度看汇总");
         }
         return context.metricIds().isEmpty()
-                ? List.of("查交易金额", "查交易笔数", "查支付成功率")
+                ? QueryMetadataCatalog.metricIds().stream()
+                        .limit(3)
+                        .map(id -> "查" + QueryMetadataCatalog.displayName(id))
+                        .toList()
                 : List.of("查本月", "查最近7天", "查近半年");
     }
 

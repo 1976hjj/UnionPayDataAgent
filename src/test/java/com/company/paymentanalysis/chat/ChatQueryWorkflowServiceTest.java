@@ -85,4 +85,41 @@ class ChatQueryWorkflowServiceTest {
         assertThat(response.queryPlan()).isNotNull();
         verify(smartBiClient, never()).prepare(anyString(), any());
     }
+
+    @Test
+    void explainsRecognizedFiltersAndTheSpecificUnresolvedTermsWhenMetricIsMissing() throws Exception {
+        ChatQueryInterpreter interpreter = mock(ChatQueryInterpreter.class);
+        AuthorizedSmartBiClient smartBiClient = mock(AuthorizedSmartBiClient.class);
+        QueryAction action = new QueryAction(
+                List.of(), List.of(), List.of(
+                        new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
+                                "sett_dt_Year2", "EQUALS", List.of("2026")),
+                        new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
+                                "acq_mkt_ch", "EQUALS", List.of("香港"))),
+                List.of());
+        when(interpreter.interpret(any(ChatRequest.class), any(QueryContext.class))).thenReturn(
+                new QueryActionResult(
+                        action, "未找到元数据映射：交易质量、整体。",
+                        new LlmResultMessage("test-model", "assistant", "{}", List.of()),
+                        "{}", List.of("交易质量", "整体"), List.of()));
+        when(interpreter.engineLabel(anyString())).thenReturn("test-model");
+
+        ChatQueryWorkflowService service = new ChatQueryWorkflowService(
+                interpreter,
+                new SmartBiQueryBuilder(new SmartBiProperties("dataset", true, "", "", "", "")),
+                smartBiClient,
+                new ObjectMapper(),
+                ClarificationPlanner.noOp());
+
+        var response = service.query(new ChatRequest(
+                "demo-user", "session", "今年香港市场的整体交易质量情况", QueryContext.empty(),
+                "test-model", false));
+
+        assertThat(response.status()).isEqualTo("clarifying");
+        assertThat(response.reply()).contains("年 EQUALS 2026", "收单市场 EQUALS 香港", "交易质量、整体", "度量");
+        assertThat(response.suggestions())
+                .containsExactly("查总交易笔数", "查原币总金额", "查人民币总金额");
+        verify(smartBiClient, never()).prepare(anyString(), any());
+        verify(smartBiClient, never()).query(any());
+    }
 }

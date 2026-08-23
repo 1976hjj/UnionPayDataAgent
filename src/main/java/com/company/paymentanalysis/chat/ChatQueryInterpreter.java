@@ -148,6 +148,7 @@ public class ChatQueryInterpreter {
                 8. 单值过滤使用 EQUALS；多个离散值使用 IN；连续起止范围使用 BETWEEN。不得为了通过格式校验而删除用户明确要求的条件。
                 9. 优先使用检索候选；若候选未召回、但完整允许字段中存在唯一且合理的映射，仍可输出该字段，系统会要求用户确认。无法映射或存在多个合理候选时不要猜，把用户原词逐项放入 unresolvedItems；全部映射完成时返回 []。
                 10. 一个独立度量原词最多映射一个度量字段。模糊总称不能展开成一组度量；无法唯一确定时 metricIds 不增加字段，并把该原词放入 unresolvedItems。
+                11. 时间字段和值的精度必须严格一致。xxxx_Year 的每个值只能是 yyyy；xxxx_Month 的每个值只能是 yyyy-MM；xxxx_Day 的每个值只能是 yyyy-MM-dd。不要把日期范围填入年或月字段。
 
                 动态元数据候选：
                 %s
@@ -185,7 +186,7 @@ public class ChatQueryInterpreter {
 
     private String intentSystemPrompt() {
         return """
-                你是查询语义清单提取器。做法与归因解析第一阶段一致：结合当前查询状态、上轮未映射语义和本轮要求，输出修改后的完整语义目标；不选择数据库字段 ID，不发明业务含义。
+                你是查询语义清单提取器。结合当前查询状态、上轮未映射语义和本轮要求，输出修改后的完整语义目标；不选择数据库字段 ID，不发明业务含义。
                 只返回 JSON，固定结构：
                 {"metricTerms":["度量原词"],"groupTerms":["分组维度原词"],"filterTerms":[{"dimensionTerm":"过滤维度原词","operator":"EQUALS|NOT_EQUALS|IN|BETWEEN|GREATER|GREATER_EQUALS|LESS|LESS_EQUALS","values":["用户原值"],"context":"过滤条件原句"}],"sortTerms":[{"fieldTerm":"排序字段原词","direction":"ASC|DESC"}],"unmappedTerms":[]}
 
@@ -195,6 +196,7 @@ public class ChatQueryInterpreter {
                 3. filterTerms.dimensionTerm 表示用户所指的过滤维度，values 只放用户给出的值，context 保留原句。不要把长编号拆成短数字，也不要根据编号内容猜字段。
                 4. 相对时间允许根据当前日期换算成明确日期值，但不得选择字段 ID。例如“昨天”可输出 dimensionTerm=“日”、values=["yyyy-MM-dd"]；“对比去年5月和4月”同时是按月分组和月份过滤。
                 5. 无法判断属于哪个槽位的原词放入 unmappedTerms，不要硬塞进某个槽位；不使用的数组返回 []。
+                6. 时间粒度必须先与用户原话一致。“今年/本年”或明确的“2026年”必须输出 dimensionTerm="年"、operator="EQUALS"、values=["2026"]；不要把完整年份写成 ["2026-01-01","2026-12-31"] 的 BETWEEN。只有用户明确要求按日或给出日期起止范围时，才输出日粒度日期值。
                 """;
     }
 
