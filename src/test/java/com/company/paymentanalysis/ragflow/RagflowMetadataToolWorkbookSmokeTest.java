@@ -26,7 +26,7 @@ class RagflowMetadataToolWorkbookSmokeTest {
 
         RagflowMetadataTool tool = new RagflowMetadataTool(
                 new RagflowProperties(false, true, "", "/api/v1/retrieval", "", List.of(),
-                        new RagflowProperties.DocumentIds("", "", ""), 0.2, 0.3, "", 50, 1, 5,
+                        new RagflowProperties.DocumentIds("", "", "", ""), 0.2, 0.3, "", 50, 1, 5,
                         new RagflowProperties.MockFiles(metrics.toString(), dimensions.toString(), values.toString())),
                 RestClient.builder(), new ObjectMapper());
 
@@ -42,5 +42,38 @@ class RagflowMetadataToolWorkbookSmokeTest {
         assertThat(result.dimensions()).extracting(candidate -> candidate.fieldId()).contains("brand");
         assertThat(result.values()).extracting(candidate -> candidate.fieldId()).contains("acq_mkt_ch");
         assertThat(result.values()).extracting(candidate -> candidate.value()).contains("乌拉圭");
+    }
+
+    @Test
+    void retrievesARealValueFromACompoundMetricPhrase() {
+        Path metrics = ROOT.resolve("度量表.xlsx");
+        Path dimensions = ROOT.resolve("维度表.xlsx");
+        Path values = ROOT.resolve("维度值域.xlsx");
+        Assumptions.assumeTrue(Files.isRegularFile(metrics)
+                && Files.isRegularFile(dimensions) && Files.isRegularFile(values));
+
+        RagflowMetadataTool tool = new RagflowMetadataTool(
+                new RagflowProperties(false, true, "", "/api/v1/retrieval", "", List.of(),
+                        new RagflowProperties.DocumentIds("", "", "", ""), 0.2, 0.3, "", 50, 1, 5,
+                        new RagflowProperties.MockFiles(metrics.toString(), dimensions.toString(), values.toString())),
+                RestClient.builder(), new ObjectMapper());
+
+        RetrievedMetadata result = tool.retrieveForQuery("查VISA双标芯片卡的POS交易笔数和金额", """
+                {"searchTerms":[
+                   {"text":"VISA双标芯片卡","context":"查VISA双标芯片卡的POS交易笔数和金额"},
+                   {"text":"POS交易笔数","context":"查VISA双标芯片卡的POS交易笔数和金额"}],
+                 "metricTerms":["POS交易笔数","POS交易金额"],"groupTerms":[],
+                 "filterTerms":[],"sortTerms":[],"unmappedTerms":[]}
+                """);
+
+        assertThat(result.values()).anySatisfy(candidate -> {
+            assertThat(candidate.fieldId()).isEqualTo("trans_nms");
+            assertThat(candidate.value()).isEqualTo("POS");
+            assertThat(candidate.queryTerm()).isIn("POS交易笔数", "POS交易金额");
+        });
+        assertThat(result.values()).noneSatisfy(candidate -> {
+            assertThat(candidate.fieldId()).isEqualTo("resp_cde");
+            assertThat(candidate.value()).isEqualTo("SA");
+        });
     }
 }

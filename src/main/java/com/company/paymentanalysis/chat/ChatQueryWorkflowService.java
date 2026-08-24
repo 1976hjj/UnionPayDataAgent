@@ -8,6 +8,7 @@ import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryActionResult;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryInterpretationException;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.PendingResolution;
+import com.company.paymentanalysis.chat.ChatQueryInterpreter.AmbiguousResolution;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatQueryPlan;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatRequest;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatResponse;
@@ -24,6 +25,7 @@ import com.company.paymentanalysis.smartbi.SmartBiModels.QueryResponse;
 import com.company.paymentanalysis.smartbi.SmartBiQueryBuilder;
 import com.company.paymentanalysis.smartbi.SmartBiSqlPreview;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
+import com.company.paymentanalysis.semantic.BusinessSemanticProcessor.AppliedSemanticRule;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -53,6 +55,8 @@ public class ChatQueryWorkflowService {
     private static final String PENDING_QUERY_INTENT = "pendingQueryIntent";
     private static final String UNRESOLVED_ITEMS = "unresolvedItems";
     private static final String PENDING_RESOLUTIONS = "pendingResolutions";
+    private static final String AMBIGUOUS_RESOLUTIONS = "ambiguousResolutions";
+    private static final String APPLIED_SEMANTIC_RULES = "appliedSemanticRules";
     private static final String SMARTBI_REQUEST = "smartBiRequest";
     private static final String SMARTBI_RESPONSE = "smartBiResponse";
     private static final String LLM_MESSAGE = "llmMessage";
@@ -246,6 +250,8 @@ public class ChatQueryWorkflowService {
                     QUERY_EXPLANATION, "用户已确认页面中的查询条件，本轮直接复用，不再次调用大模型。",
                     UNRESOLVED_ITEMS, List.of(),
                     PENDING_RESOLUTIONS, List.of(),
+                    AMBIGUOUS_RESOLUTIONS, List.of(),
+                    APPLIED_SEMANTIC_RULES, List.of(),
                     LLM_MESSAGE, new LlmResultMessage(
                             interpreter.engineLabel(request.model()), "system",
                     "显式确认请求：复用页面已展示的 QueryContext，不再次调用 LLM。",
@@ -264,6 +270,8 @@ public class ChatQueryWorkflowService {
                         ? "" : result.semanticIntent(),
                 UNRESOLVED_ITEMS, result.unresolvedItems(),
                 PENDING_RESOLUTIONS, result.pendingResolutions(),
+                AMBIGUOUS_RESOLUTIONS, result.ambiguousResolutions(),
+                APPLIED_SEMANTIC_RULES, result.appliedSemanticRules(),
                 QUERY_EXPLANATION, result.explanation(),
                 LLM_MESSAGE, result.llmMessage(),
                 STEPS, appendStep(state, new WorkflowStep(
@@ -289,9 +297,9 @@ public class ChatQueryWorkflowService {
         if (context.sorts().stream().anyMatch(sort -> !selectedFields.contains(sort.fieldId()))) {
             missing.add("排序字段对应的度量或分组维度");
         }
-        String status = missing.isEmpty() ? "ready" : "clarifying";
         List<PendingResolution> pendingResolutions = state.<List<PendingResolution>>value(PENDING_RESOLUTIONS)
                 .orElseGet(List::of);
+        String status = missing.isEmpty() ? "ready" : "clarifying";
         String detail = missing.isEmpty()
                 ? pendingResolutions.isEmpty()
                         ? unresolved.isEmpty()
@@ -398,11 +406,14 @@ public class ChatQueryWorkflowService {
         List<String> unresolvedItems = state.<List<String>>value(UNRESOLVED_ITEMS).orElseGet(List::of);
         List<PendingResolution> pendingResolutions = state.<List<PendingResolution>>value(PENDING_RESOLUTIONS)
                 .orElseGet(List::of);
+        List<AmbiguousResolution> ambiguousResolutions =
+                state.<List<AmbiguousResolution>>value(AMBIGUOUS_RESOLUTIONS).orElseGet(List::of);
         String reply = executed
                 ? result.summary()
                 : ready
-                        ? confirmationSummary(context, pendingResolutions, unresolvedItems)
-                        : clarificationReply(responseContext, validationIssues, unresolvedItems);
+                        ? confirmationSummary(context, pendingResolutions, unresolvedItems, ambiguousResolutions)
+                        : clarificationReply(
+                                responseContext, validationIssues, unresolvedItems, ambiguousResolutions);
         List<WorkflowStep> steps = appendFinalStep(state, new WorkflowStep(
                 "generateChatResponse",
                 "生成查数回复",
@@ -423,7 +434,7 @@ public class ChatQueryWorkflowService {
                 required(state, QUERY_EXPLANATION),
                 converted(state, LLM_MESSAGE, LlmResultMessage.class),
                 List.of(),
-                "clarifying".equals(responseStatus)
+                !ambiguousResolutions.isEmpty() || "clarifying".equals(responseStatus)
                         ? state.<String>value(PENDING_QUERY_INTENT).orElse(chatRequest.pendingQueryIntent())
                         : null);
     }
@@ -499,24 +510,9 @@ public class ChatQueryWorkflowService {
         return new QueryFilter(name, filter.operation(), filter.values());
     }
 
-    private String contextSummary(QueryContext context) {
-        String metrics = context.metricIds().isEmpty()
-                ? "未指定度量"
-                : context.metricIds().stream()
-                        .map(QueryMetadataCatalog::displayName)
-                        .reduce((a, b) -> a + "、" + b).orElse("");
-        String dimensions = context.dimensionIds().isEmpty()
-                ? "不分组"
-                : context.dimensionIds().stream()
-                        .map(QueryMetadataCatalog::displayName)
-                        .reduce((a, b) -> a + "、" + b).orElse("");
-        return "度量：" + metrics + "；维度：" + dimensions
-                + "；维度过滤：" + context.dimensionFilters().size()
-                + "；排序：" + context.sorts().size();
-    }
-
     private String confirmationSummary(
-            QueryContext context, List<PendingResolution> pendingResolutions, List<String> unresolvedItems) {
+            QueryContext context, List<PendingResolution> pendingResolutions, List<String> unresolvedItems,
+            List<AmbiguousResolution> ambiguousResolutions) {
         String metrics = context.metricIds().stream()
                 .map(QueryMetadataCatalog::displayName)
                 .reduce((left, right) -> left + "、" + right).orElse("无");
@@ -543,24 +539,34 @@ public class ChatQueryWorkflowService {
                                 + item.fieldName() + "”处理（" + item.reason() + "）")
                         .distinct()
                         .reduce((left, right) -> left + "；" + right).orElse("无");
-        String ignored = unresolvedItems == null || unresolvedItems.isEmpty()
+        Set<String> ambiguousTerms = ambiguousResolutions == null ? Set.of() : ambiguousResolutions.stream()
+                .map(AmbiguousResolution::originalTerm)
+                .filter(org.springframework.util.StringUtils::hasText)
+                .collect(java.util.stream.Collectors.toSet());
+        List<String> ordinaryUnresolved = unresolvedItems == null ? List.of() : unresolvedItems.stream()
+                .filter(org.springframework.util.StringUtils::hasText)
+                .filter(item -> !ambiguousTerms.contains(item))
+                .distinct()
+                .toList();
+        String ignored = ordinaryUnresolved.isEmpty()
                 ? ""
-                : "；未识别的可选条件=" + unresolvedItems.stream()
-                        .filter(org.springframework.util.StringUtils::hasText)
-                        .distinct()
+                : "；未识别的可选条件=" + ordinaryUnresolved.stream()
                         .reduce((left, right) -> left + "、" + right).orElse("无")
                         + "（本次不纳入查询）";
+        String ambiguityHint = ambiguityHint(ambiguousResolutions);
         return "请确认本次查询参数：度量=" + metrics
                 + "；分组维度=" + dimensions
                 + "；维度过滤=" + filters
                 + "；排序=" + sorts
                 + pending
                 + ignored
+                + ambiguityHint
                 + "。确认后才会调用 SmartBI。";
     }
 
     private String clarificationReply(
-            QueryContext context, List<String> validationIssues, List<String> unresolvedItems) {
+            QueryContext context, List<String> validationIssues, List<String> unresolvedItems,
+            List<AmbiguousResolution> ambiguousResolutions) {
         List<ClarificationPlanner.MissingItem> missing = validationIssues.stream()
                 .filter(org.springframework.util.StringUtils::hasText)
                 .map(item -> new ClarificationPlanner.MissingItem("query:" + item, item))
@@ -584,10 +590,22 @@ public class ChatQueryWorkflowService {
                         .distinct()
                         .reduce((left, right) -> left + "、" + right)
                         .orElse("") + "。";
+        String ambiguities = ambiguityHint(ambiguousResolutions);
         String missingReply = labels.isEmpty()
                 ? "请补充后重试。"
                 : "还需要补充：" + String.join("、", labels) + "。请明确要查询的指标或换一种说法。";
-        return recognizedScope + unresolved + missingReply;
+        return recognizedScope + ambiguities + unresolved + missingReply;
+    }
+
+    private String ambiguityHint(List<AmbiguousResolution> ambiguousResolutions) {
+        if (ambiguousResolutions == null || ambiguousResolutions.isEmpty()) return "";
+        return ambiguousResolutions.stream()
+                .map(item -> "；“" + item.originalTerm() + "”暂未纳入查询，同时精确匹配到"
+                        + item.candidates().stream()
+                                .map(candidate -> "“" + candidate.fieldName() + "”")
+                                .reduce((left, right) -> left + "和" + right).orElse("")
+                        + "，如需加入请直接回复其中一个候选名称")
+                .reduce((left, right) -> left + right).orElse("");
     }
 
     private List<String> queryMetricCandidates() {
@@ -677,6 +695,8 @@ public class ChatQueryWorkflowService {
                 Map.entry(PENDING_QUERY_INTENT, Channels.base(() -> "")),
                 Map.entry(UNRESOLVED_ITEMS, Channels.base((Supplier<List<String>>) List::of)),
                 Map.entry(PENDING_RESOLUTIONS, Channels.base((Supplier<List<PendingResolution>>) List::of)),
+                Map.entry(AMBIGUOUS_RESOLUTIONS, Channels.base((Supplier<List<AmbiguousResolution>>) List::of)),
+                Map.entry(APPLIED_SEMANTIC_RULES, Channels.base((Supplier<List<AppliedSemanticRule>>) List::of)),
                 Map.entry(QUERY_ACTION, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(QUERY_EXPLANATION, Channels.base(() -> "")),
                 Map.entry(SMARTBI_REQUEST, Channels.base((Supplier<Object>) Map::of)),

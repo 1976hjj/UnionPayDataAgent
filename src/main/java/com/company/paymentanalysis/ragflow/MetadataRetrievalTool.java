@@ -25,7 +25,17 @@ public interface MetadataRetrievalTool {
 
     record MetadataCandidate(
             Scope scope, String fieldId, String fieldName, String value,
-            String description, double score, String source) {
+            String description, double score, String queryTerm, String source) {
+
+        public MetadataCandidate {
+            queryTerm = queryTerm == null ? "" : queryTerm;
+        }
+
+        public MetadataCandidate(
+                Scope scope, String fieldId, String fieldName, String value,
+                String description, double score, String source) {
+            this(scope, fieldId, fieldName, value, description, score, "", source);
+        }
     }
 
     record RetrievedMetadata(List<MetadataCandidate> metrics,

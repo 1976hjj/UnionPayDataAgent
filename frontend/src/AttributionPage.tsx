@@ -198,13 +198,6 @@ function directionLabel(direction: Direction) {
   return direction === 'UP' ? '上升' : direction === 'DOWN' ? '下降' : '持平'
 }
 
-function previousMonth(period: string) {
-  const [year, month] = period.split('-').map(Number)
-  if (!year || !month) return ''
-  const date = new Date(year, month - 2, 1)
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
-}
-
 async function responseError(response: Response) {
   try {
     const body = await response.json() as { detail?: string; message?: string; error?: string }

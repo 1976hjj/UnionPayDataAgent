@@ -21,7 +21,7 @@ public record RagflowProperties(
         int pageSize,
         MockFiles mockFiles) {
 
-    public record DocumentIds(String metrics, String dimensions, String values) {
+    public record DocumentIds(String metrics, String dimensions, String values, String businessSemantics) {
     }
 
     public record MockFiles(String metrics, String dimensions, String values) {

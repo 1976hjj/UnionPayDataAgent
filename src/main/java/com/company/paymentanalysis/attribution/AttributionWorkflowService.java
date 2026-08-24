@@ -26,7 +26,6 @@ import com.company.paymentanalysis.attribution.AttributionReasoner.ReflectionDec
 import com.company.paymentanalysis.attribution.AttributionReasoner.ReportDecision;
 import com.company.paymentanalysis.smartbi.SmartBiModels.QueryTrace;
 import java.io.Serializable;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;

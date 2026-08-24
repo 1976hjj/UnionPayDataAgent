@@ -113,6 +113,25 @@ class ChatConversationMemoryServiceTest {
     }
 
     @Test
+    void retainsPendingIntentWhileAmbiguityIsNonBlockingAndConfirmable() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        ChatConversationMemoryService service = new ChatConversationMemoryService(
+                redis, new ObjectMapper(), new ChatMemoryProperties(false, "test:chat:", 30, 50, 100, 20));
+        QueryContext context = new QueryContext(
+                List.of("transactionCount"), List.of(), List.of(), List.of());
+        String pendingIntent = "{\"unmappedTerms\":[\"东南亚\"]}";
+        ChatResponse response = new ChatResponse(
+                "confirming", "可直接确认；如需加入东南亚，请回复候选字段名。", List.of(), context,
+                null, "LangGraph4j -> LLM", List.of(), null, "conversation-ambiguous",
+                null, "查询可确认，同时保留非阻塞歧义候选。", null, List.of(), pendingIntent);
+
+        service.saveTurn("user-ambiguous", "conversation-ambiguous", "查东南亚交易", response);
+
+        assertThat(service.snapshot("user-ambiguous", "conversation-ambiguous").orElseThrow()
+                .pendingQueryIntent()).isEqualTo(pendingIntent);
+    }
+
+    @Test
     void keepsOnlyNewestMessagesAndArtifactsWithinConfiguredCapacity() {
         StringRedisTemplate redis = mock(StringRedisTemplate.class);
         ChatConversationMemoryService service = new ChatConversationMemoryService(

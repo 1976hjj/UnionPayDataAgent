@@ -3,6 +3,7 @@ package com.company.paymentanalysis.ragflow;
 import static com.company.paymentanalysis.ragflow.MetadataRetrievalTool.Scope.DIMENSION;
 import static com.company.paymentanalysis.ragflow.MetadataRetrievalTool.Scope.METRIC;
 import static com.company.paymentanalysis.ragflow.MetadataRetrievalTool.Scope.VALUE;
+import static com.company.paymentanalysis.semantic.BusinessSemanticNormalizer.RULE_GENERATED_CONTEXT;
 
 import com.company.paymentanalysis.attribution.AttributionCatalog;
 import com.company.paymentanalysis.query.QueryMetadataCatalog;
@@ -15,12 +16,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipFile;
@@ -32,7 +31,6 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
-import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 /**
@@ -45,6 +43,8 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
     private static final int METRIC_LIMIT = 3;
     private static final int DIMENSION_LIMIT = 5;
     private static final int VALUE_LIMIT = 5;
+    private static final Set<String> TIME_FILTER_TERMS = Set.of(
+            "年", "月", "日", "sett_dt_year2", "sett_dt_month2", "sett_dt_day2");
     private static final Pattern FIELD_ID = Pattern.compile(
             "(?:指标代码|字段代码|field[_\\s-]?id)\\s*[:：]\\s*([A-Za-z0-9_]+)", Pattern.CASE_INSENSITIVE);
     private static final Pattern FIELD_NAME = Pattern.compile(
@@ -68,18 +68,34 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
     public RetrievedMetadata retrieveForQuery(String userMessage, String semanticIntent) {
         try {
             JsonNode intent = objectMapper.readTree(semanticIntent);
-            List<String> filters = filterTerms(intent.path("filterTerms"));
-            List<String> dimensions = textItems(intent.path("groupTerms"));
-            for (JsonNode item : intent.path("filterTerms")) {
-                add(dimensions, item.path("dimensionTerm").asText());
-            }
-            return retrieve(new RetrievalPlan(
-                    textItems(intent.path("metricTerms")),
-                    dimensions,
-                    filters), userMessage);
+            return retrieve(queryPlan(intent));
         } catch (RuntimeException | java.io.IOException ignored) {
             return RetrievedMetadata.empty();
         }
+    }
+
+    RetrievalPlan queryPlan(JsonNode intent) {
+        List<String> filters = filterTerms(intent.path("filterTerms"));
+        List<String> metrics = textItems(intent.path("metricTerms"));
+        List<String> dimensions = textItems(intent.path("groupTerms"));
+        for (JsonNode item : intent.path("filterTerms")) {
+            add(dimensions, item.path("dimensionTerm").asText());
+        }
+
+        List<String> exploratory = new ArrayList<>();
+        textItems(intent.path("searchTerms")).forEach(term -> add(exploratory, term));
+        textItems(intent.path("unmappedTerms")).forEach(term -> add(exploratory, term));
+
+        // Slots remain the primary retrieval route, but they are not hard boundaries.
+        // Metric phrases may contain a real dimension value (for example "POS交易笔数"),
+        // while search/unmapped phrases need evidence from every metadata scope.
+        exploratory.forEach(term -> {
+            add(metrics, term);
+            add(dimensions, term);
+            add(filters, term);
+        });
+        textItems(intent.path("metricTerms")).forEach(term -> add(filters, term));
+        return new RetrievalPlan(metrics, dimensions, filters);
     }
 
     @Override
@@ -92,54 +108,73 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
             for (JsonNode item : intent.path("analysisTerms")) {
                 add(dimensions, item.path("term").asText());
             }
-            return retrieve(new RetrievalPlan(metrics, dimensions, filterTerms(intent.path("filterTerms"))), userMessage);
+            return retrieve(new RetrievalPlan(metrics, dimensions, filterTerms(intent.path("filterTerms"))));
         } catch (RuntimeException | java.io.IOException ignored) {
             return RetrievedMetadata.empty();
         }
     }
 
-    private RetrievedMetadata retrieve(RetrievalPlan plan, String userMessage) {
+    private RetrievedMetadata retrieve(RetrievalPlan plan) {
         boolean remote = properties.enabled() && !properties.mockEnabled();
         try {
-            List<MetadataCandidate> metrics = retrieveAll(METRIC, plan.metrics(), remote, userMessage, METRIC_LIMIT);
-            List<MetadataCandidate> dimensions = retrieveAll(DIMENSION, plan.dimensions(), remote, userMessage, DIMENSION_LIMIT);
-            List<MetadataCandidate> values = retrieveAll(VALUE, plan.filters(), remote, userMessage, VALUE_LIMIT);
+            List<MetadataCandidate> metrics = retrieveAll(METRIC, plan.metrics(), remote, METRIC_LIMIT);
+            List<MetadataCandidate> dimensions = retrieveAll(DIMENSION, plan.dimensions(), remote, DIMENSION_LIMIT);
+            List<MetadataCandidate> values = retrieveAll(VALUE, plan.filters(), remote, VALUE_LIMIT);
             return new RetrievedMetadata(metrics, dimensions, values, !remote);
         } catch (RuntimeException exception) {
             // A knowledge-base outage must not stop either existing conversation.
-            return retrieveWithMock(plan, userMessage, true);
+            return retrieveWithMock(plan, true);
         }
     }
 
-    private RetrievedMetadata retrieveWithMock(RetrievalPlan plan, String userMessage, boolean fallback) {
+    private RetrievedMetadata retrieveWithMock(RetrievalPlan plan, boolean fallback) {
         return new RetrievedMetadata(
-                retrieveAll(METRIC, plan.metrics(), false, userMessage, METRIC_LIMIT),
-                retrieveAll(DIMENSION, plan.dimensions(), false, userMessage, DIMENSION_LIMIT),
-                retrieveAll(VALUE, plan.filters(), false, userMessage, VALUE_LIMIT), fallback);
+                retrieveAll(METRIC, plan.metrics(), false, METRIC_LIMIT),
+                retrieveAll(DIMENSION, plan.dimensions(), false, DIMENSION_LIMIT),
+                retrieveAll(VALUE, plan.filters(), false, VALUE_LIMIT), fallback);
     }
 
     private List<MetadataCandidate> retrieveAll(
-            Scope scope, List<String> terms, boolean remote, String userMessage, int limit) {
-        Map<String, MetadataCandidate> unique = new LinkedHashMap<>();
+            Scope scope, List<String> terms, boolean remote, int limit) {
+        List<MetadataCandidate> all = new ArrayList<>();
         for (String term : terms) {
             List<MetadataCandidate> candidates = remote ? retrieveRemote(scope, term) : retrieveMock(scope, term);
             for (MetadataCandidate candidate : candidates) {
-                String key = candidate.scope() + "|" + candidate.fieldId() + "|" + candidate.value();
-                unique.merge(key, candidate, (left, right) -> left.score() >= right.score() ? left : right);
+                if (scope == VALUE && !ValueCandidateMatcher.matches(
+                        term, candidate.value(), candidate.description())) {
+                    continue;
+                }
+                all.add(candidate);
             }
         }
-        return unique.values().stream()
-                .sorted(Comparator.comparingDouble(MetadataCandidate::score).reversed()
-                        .thenComparing(MetadataCandidate::fieldId)
-                        .thenComparing(candidate -> candidate.value() == null ? "" : candidate.value()))
-                .limit(limit)
-                .toList();
+        return retainPerQueryTerm(all, limit);
+    }
+
+    /** Applies TopN independently to every source term so one term cannot evict another term's evidence. */
+    static List<MetadataCandidate> retainPerQueryTerm(
+            List<MetadataCandidate> candidates, int limitPerTerm) {
+        Map<String, Map<String, MetadataCandidate>> groups = new LinkedHashMap<>();
+        for (MetadataCandidate candidate : candidates) {
+            String term = candidate.queryTerm() == null ? "" : candidate.queryTerm().trim();
+            Map<String, MetadataCandidate> unique = groups.computeIfAbsent(term, ignored -> new LinkedHashMap<>());
+            String key = candidate.scope() + "|" + candidate.fieldId() + "|" + candidate.value();
+            unique.merge(key, candidate, (left, right) -> left.score() >= right.score() ? left : right);
+        }
+        List<MetadataCandidate> result = new ArrayList<>();
+        Comparator<MetadataCandidate> order = Comparator
+                .comparingDouble(MetadataCandidate::score).reversed()
+                .thenComparing(MetadataCandidate::fieldId)
+                .thenComparing(candidate -> candidate.value() == null ? "" : candidate.value());
+        for (Map<String, MetadataCandidate> group : groups.values()) {
+            group.values().stream().sorted(order).limit(Math.max(1, limitPerTerm)).forEach(result::add);
+        }
+        return List.copyOf(result);
     }
 
     private List<MetadataCandidate> retrieveMock(Scope scope, String term) {
         return index().stream()
                 .filter(entry -> entry.scope() == scope)
-                .map(entry -> entry.toCandidate(entry.score(term)))
+                .map(entry -> entry.toCandidate(entry.score(term), term))
                 .filter(candidate -> candidate.score() > 0)
                 .toList();
     }
@@ -184,9 +219,14 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
                 name = QueryMetadataCatalog.displayName(id);
             }
             String value = scope == VALUE ? first(FIELD_VALUE, content) : "";
+            String description = abbreviate(content);
+            String aliasEvidence = ValueCandidateMatcher.aliasEvidence(content);
+            if (StringUtils.hasText(aliasEvidence) && !description.contains(aliasEvidence)) {
+                description += "; " + aliasEvidence;
+            }
             result.add(new MetadataCandidate(
-                    scope, id, name, value, abbreviate(content), chunk.path("similarity").asDouble(0.5),
-                    "ragflow:" + documentId(scope)));
+                    scope, id, name, value, description, chunk.path("similarity").asDouble(0.5),
+                    question, "ragflow:" + documentId(scope)));
         }
         return result;
     }
@@ -321,7 +361,9 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
     private List<String> textItems(JsonNode node) {
         List<String> result = new ArrayList<>();
         for (JsonNode item : node) {
-            add(result, item.isTextual() ? item.asText() : item.path("term").asText());
+            add(result, item.isTextual()
+                    ? item.asText()
+                    : item.path("term").asText(item.path("text").asText()));
         }
         return result;
     }
@@ -330,16 +372,30 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
         List<String> result = new ArrayList<>();
         for (JsonNode item : node) {
             String context = item.path("dimensionTerm").asText(item.path("raw").asText(""));
+            if (isTimeFilterTerm(context) || isRuleGeneratedFilter(item)) {
+                continue;
+            }
             List<String> values = textItems(item.path("values"));
             if (values.isEmpty()) {
                 add(result, context);
             } else {
                 for (String value : values) {
+                    add(result, value);
                     add(result, context + " " + value);
                 }
             }
         }
         return result;
+    }
+
+    private boolean isTimeFilterTerm(String term) {
+        return StringUtils.hasText(term)
+                && TIME_FILTER_TERMS.contains(term.trim().toLowerCase(Locale.ROOT));
+    }
+
+    private boolean isRuleGeneratedFilter(JsonNode filter) {
+        return filter != null
+                && RULE_GENERATED_CONTEXT.equals(filter.path("context").asText().trim());
     }
 
     private void add(List<String> target, String term) {
@@ -426,7 +482,7 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
         return value == null ? "" : value.toLowerCase(Locale.ROOT).replaceAll("[()（）:：|]", " ").trim();
     }
 
-    private record RetrievalPlan(List<String> metrics, List<String> dimensions, List<String> filters) {
+    record RetrievalPlan(List<String> metrics, List<String> dimensions, List<String> filters) {
     }
 
     private record Entry(Scope scope, String fieldId, String fieldName, String value, String description, String source) {
@@ -434,8 +490,8 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
             return String.join(" ", fieldId, fieldName, value, description);
         }
 
-        MetadataCandidate toCandidate(double score) {
-            return new MetadataCandidate(scope, fieldId, fieldName, value, description, score, source);
+        MetadataCandidate toCandidate(double score, String queryTerm) {
+            return new MetadataCandidate(scope, fieldId, fieldName, value, description, score, queryTerm, source);
         }
 
         double score(String query) {
@@ -443,13 +499,11 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
             if (normalizedQuery.equals(normalize(fieldName))) {
                 return 1.0;
             }
-            if (scope == VALUE && StringUtils.hasText(value) && normalizedQuery.equals(normalize(value))) {
-                return 1.0;
-            }
-            if (scope == VALUE && StringUtils.hasText(value)
-                    && !normalizedQuery.matches(".*\\d{4,}.*")
-                    && normalizedQuery.contains(normalize(value)) && normalize(value).length() >= 2) {
-                return 0.98;
+            if (scope == VALUE) {
+                if (!ValueCandidateMatcher.matches(query, value, description)) {
+                    return 0;
+                }
+                return normalizedQuery.equals(normalize(value)) ? 1.0 : 0.98;
             }
             String normalizedName = normalize(fieldName);
             if (normalizedName.contains(normalizedQuery) || normalizedQuery.contains(normalizedName)) {

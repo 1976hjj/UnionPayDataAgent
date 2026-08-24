@@ -32,6 +32,7 @@ public final class RetrievedMetadataPrompt {
                     .append("; value=").append(candidate.value())
                     .append("; description=").append(candidate.description())
                     .append(promptHint(candidate.fieldId()))
+                    .append("; matchedTerm=").append(candidate.queryTerm())
                     .append("; score=").append(String.format(java.util.Locale.ROOT, "%.2f", candidate.score()))
                     .append('\n');
         }

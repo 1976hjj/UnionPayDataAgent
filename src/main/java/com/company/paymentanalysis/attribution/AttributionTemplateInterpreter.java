@@ -495,7 +495,7 @@ public class AttributionTemplateInterpreter {
                 && !YearMonth.parse(current.currentPeriod()).isAfter(YearMonth.parse(current.comparisonPeriod()))) {
             needs.add(new ClarificationPlanner.MissingItem("periodOrder", "当前周期需晚于对比周期"));
         }
-        java.util.LinkedHashSet<String> mappingTerms = new java.util.LinkedHashSet<>();
+        LinkedHashSet<String> mappingTerms = new LinkedHashSet<>();
         normalized.mappingIssues().forEach(issue -> mappingTerms.add(issue.userTerm()));
         mappingTerms.addAll(normalized.unmappedTerms());
         mappingTerms.forEach(term -> needs.add(new ClarificationPlanner.MissingItem(
@@ -695,12 +695,6 @@ public class AttributionTemplateInterpreter {
                     filters, levels, continuationMode, summary, unmappedTerms, mappingIssues);
         }
 
-        private RawMappedTemplate withValidPeriods() {
-            return new RawMappedTemplate(
-                    name, mode, metricId,
-                    validPeriodOrBlank(currentPeriod), validPeriodOrBlank(comparisonPeriod),
-                    filters, levels, continuationMode, summary, unmappedTerms, mappingIssues);
-        }
     }
 
     private record RawLayer(int level, List<RawDimension> dimensions) {

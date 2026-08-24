@@ -76,11 +76,10 @@ public class ChatConversationMemoryService {
                 response.queryAction(), response.queryExplanation(), response.llmMessage(),
                 response.derivedFromArtifactIds()));
 
-        boolean queryClarifying = "clarifying".equals(response.status())
-                && response.pendingQueryIntent() != null
+        boolean queryPending = response.pendingQueryIntent() != null
                 && !response.pendingQueryIntent().isBlank();
         QueryContext draftContext = response.context();
-        String pendingIntent = queryClarifying
+        String pendingIntent = queryPending
                 ? response.pendingQueryIntent().trim()
                 : null;
         StoredConversation saved = new StoredConversation(

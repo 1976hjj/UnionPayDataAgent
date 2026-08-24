@@ -12,6 +12,15 @@ import com.company.paymentanalysis.query.QueryMetadataCatalog;
 import com.company.paymentanalysis.ragflow.MetadataRetrievalTool;
 import com.company.paymentanalysis.ragflow.MetadataRetrievalTool.RetrievedMetadata;
 import com.company.paymentanalysis.ragflow.RetrievedMetadataPrompt;
+import com.company.paymentanalysis.semantic.BusinessSemanticProcessor;
+import com.company.paymentanalysis.semantic.BusinessSemanticProcessor.AppliedSemanticRule;
+import com.company.paymentanalysis.semantic.BusinessSemanticProcessor.NormalizationResult;
+import com.company.paymentanalysis.semantic.MetadataSemanticGrounder;
+import com.company.paymentanalysis.semantic.MetadataSemanticGrounder.AmbiguousGrounding;
+import com.company.paymentanalysis.semantic.MetadataSemanticGrounder.GroundedFilter;
+import com.company.paymentanalysis.semantic.MetadataSemanticGrounder.GroundingResult;
+import com.company.paymentanalysis.semantic.QuerySemanticIntent;
+import com.company.paymentanalysis.semantic.QuerySemanticIntent.FilterTerm;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -47,19 +56,28 @@ public class ChatQueryInterpreter {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final MetadataRetrievalTool metadataRetrievalTool;
+    private final BusinessSemanticProcessor businessSemanticProcessor;
 
     @Autowired
     public ChatQueryInterpreter(
             OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock,
-            MetadataRetrievalTool metadataRetrievalTool) {
+            MetadataRetrievalTool metadataRetrievalTool,
+            BusinessSemanticProcessor businessSemanticProcessor) {
         this.llmClient = llmClient;
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.metadataRetrievalTool = metadataRetrievalTool;
+        this.businessSemanticProcessor = businessSemanticProcessor;
     }
 
     ChatQueryInterpreter(OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock) {
-        this(llmClient, objectMapper, clock, MetadataRetrievalTool.noOp());
+        this(llmClient, objectMapper, clock, MetadataRetrievalTool.noOp(), BusinessSemanticProcessor.noOp());
+    }
+
+    ChatQueryInterpreter(
+            OpenAiCompatibleLlmClient llmClient, ObjectMapper objectMapper, Clock clock,
+            MetadataRetrievalTool metadataRetrievalTool) {
+        this(llmClient, objectMapper, clock, metadataRetrievalTool, BusinessSemanticProcessor.noOp());
     }
 
     public QueryActionResult interpret(ChatRequest request, QueryContext current) {
@@ -72,17 +90,21 @@ public class ChatQueryInterpreter {
             List<ChatMessage> intentMessages = List.of(
                     new ChatMessage("system", intentSystemPrompt()),
                     new ChatMessage("user", intentPrompt(request.message(), current, pendingQueryIntent)));
-            String mockIntent = "{\"metricTerms\":[],\"groupTerms\":[],\"filterTerms\":[],"
+            String mockIntent = "{\"searchTerms\":[],\"metricTerms\":[],\"groupTerms\":[],\"filterTerms\":[],"
                     + "\"sortTerms\":[],\"unmappedTerms\":[]}";
             LlmResultMessage intent = complete(intentMessages, mockIntent, request.model());
-            RawSemanticIntent parsedIntent = objectMapper.readValue(
-                    stripMarkdownFence(intent.content()), RawSemanticIntent.class);
-            String semanticIntent = objectMapper.writeValueAsString(parsedIntent);
+            QuerySemanticIntent parsedIntent = sanitizeSearchTerms(
+                    objectMapper.readValue(stripMarkdownFence(intent.content()), QuerySemanticIntent.class),
+                    request.message(), pendingQueryIntent);
+            NormalizationResult normalization = businessSemanticProcessor.normalize(request.message(), parsedIntent);
+            QuerySemanticIntent normalizedIntent = normalization.intent();
+            String semanticIntent = objectMapper.writeValueAsString(normalizedIntent);
             RetrievedMetadata retrievedMetadata = metadataRetrievalTool
                     .retrieveForQuery(request.message(), semanticIntent);
+            GroundingResult grounding = MetadataSemanticGrounder.ground(normalizedIntent, retrievedMetadata);
 
             List<ChatMessage> mappingMessages = List.of(
-                    new ChatMessage("system", systemPrompt(retrievedMetadata)),
+                    new ChatMessage("system", systemPrompt(retrievedMetadata, grounding)),
                     new ChatMessage("user", mappingPrompt(
                             request.message(), current, semanticIntent)));
             QueryAction currentAction = QueryAction.fromContext(current);
@@ -95,10 +117,12 @@ public class ChatQueryInterpreter {
             LlmResultMessage mapped = complete(mappingMessages, mockContent, request.model());
             try {
                 ParsedQueryAction parsed = parseAndValidate(
-                        mapped.content(), parsedIntent, currentAction, retrievedMetadata);
+                        mapped.content(), normalizedIntent, currentAction,
+                        retrievedMetadata, grounding, normalization, request.message());
                 return new QueryActionResult(
                         parsed.action(), parsed.explanation(), mapped, semanticIntent,
-                        parsed.unresolvedItems(), parsed.pendingResolutions());
+                        parsed.unresolvedItems(), parsed.pendingResolutions(), normalization.appliedRules(),
+                        parsed.ambiguousResolutions());
             } catch (JsonProcessingException | RuntimeException mappingError) {
                 throw new QueryInterpretationException(
                         "QUERY_STATE_VALIDATION",
@@ -126,10 +150,14 @@ public class ChatQueryInterpreter {
     }
 
     String systemPrompt() {
-        return systemPrompt(MetadataRetrievalTool.RetrievedMetadata.empty());
+        return systemPrompt(MetadataRetrievalTool.RetrievedMetadata.empty(), GroundingResult.empty());
     }
 
     String systemPrompt(RetrievedMetadata retrievedMetadata) {
+        return systemPrompt(retrievedMetadata, GroundingResult.empty());
+    }
+
+    private String systemPrompt(RetrievedMetadata retrievedMetadata, GroundingResult grounding) {
         return """
                 你是支付数据查询状态生成器。结合当前查询状态和用户输入，只返回处理后的完整 QueryState JSON。
                 不要 Markdown、解释性文字或额外字段。
@@ -140,7 +168,7 @@ public class ChatQueryInterpreter {
 
                 规则：
                 1. 输出本轮处理后的完整最终查询状态，不是增量操作。
-                2. 第一阶段语义清单已经结合当前状态和待补齐内容，代表本轮修改后的完整目标；严格按它映射，不再猜测增删。
+                2. 第一阶段语义清单描述本轮必须完整覆盖的用户语义目标，但其中的槽位归类只是初步判断。不得静默删除、增加或改变用户业务含义；可以依据确定性语义落槽和严格元数据证据，将复合原词在度量、维度、过滤之间重新归槽。每个原始语义必须最终映射、被规则消费，或进入 unresolvedItems。
                 3. 不得静默遗漏任何仍有效要求。无法可靠映射时，保留已确认状态并放入 unresolvedItems；不得编造字段或值。
                 4. 所有字段 ID 只能使用动态元数据允许的内容。过滤值逐字保留用户给出的值；时间值按字段格式规范化。
                 5. 无分组时 dimensionIds=[]；无过滤时 dimensionFilters=[]；无排序时 sorts=[]。
@@ -149,10 +177,35 @@ public class ChatQueryInterpreter {
                 9. 优先使用检索候选；若候选未召回、但完整允许字段中存在唯一且合理的映射，仍可输出该字段，系统会要求用户确认。无法映射或存在多个合理候选时不要猜，把用户原词逐项放入 unresolvedItems；全部映射完成时返回 []。
                 10. 一个独立度量原词最多映射一个度量字段。模糊总称不能展开成一组度量；无法唯一确定时 metricIds 不增加字段，并把该原词放入 unresolvedItems。
                 11. 时间字段和值的精度必须严格一致。xxxx_Year 的每个值只能是 yyyy；xxxx_Month 的每个值只能是 yyyy-MM；xxxx_Day 的每个值只能是 yyyy-MM-dd。不要把日期范围填入年或月字段。
+                12. requiredFilters 是系统根据严格且唯一的值域证据生成的确定性落槽，必须完整写入 QueryState。普通 filterValueCandidates 只是检索候选，不得全部自动采用。
+                13. ambiguousFilters 表示同一原值对应多个合理字段。不得同时加入多个候选字段；能依据用户明确方向语义唯一确定时只选择一个，否则将 sourceTerm 放入 unresolvedItems。
 
                 动态元数据候选：
                 %s
-                """.formatted(metadataPrompt(retrievedMetadata));
+
+                确定性语义落槽：
+                %s
+                """.formatted(metadataPrompt(retrievedMetadata), groundingPrompt(grounding));
+    }
+
+    private String groundingPrompt(GroundingResult grounding) {
+        GroundingResult source = grounding == null ? GroundingResult.empty() : grounding;
+        String required = source.requiredFilters().isEmpty()
+                ? "requiredFilters: []"
+                : "requiredFilters:\n" + source.requiredFilters().stream()
+                        .map(filter -> "- sourceTerm=" + filter.sourceTerm()
+                                + "; fieldId=" + filter.dimensionId()
+                                + "; name=" + filter.dimensionName()
+                                + "; operator=EQUALS; value=" + filter.matchedValue())
+                        .collect(java.util.stream.Collectors.joining("\n"));
+        String ambiguous = source.ambiguousFilters().isEmpty()
+                ? "ambiguousFilters: []"
+                : "ambiguousFilters:\n" + source.ambiguousFilters().stream()
+                        .map(item -> "- sourceTerm=" + item.sourceTerm()
+                                + "; value=" + item.matchedValue()
+                                + "; candidateFieldIds=" + String.join(",", item.dimensionIds()))
+                        .collect(java.util.stream.Collectors.joining("\n"));
+        return required + "\n" + ambiguous;
     }
 
     private String metadataPrompt(RetrievedMetadata retrievedMetadata) {
@@ -188,7 +241,7 @@ public class ChatQueryInterpreter {
         return """
                 你是查询语义清单提取器。结合当前查询状态、上轮未映射语义和本轮要求，输出修改后的完整语义目标；不选择数据库字段 ID，不发明业务含义。
                 只返回 JSON，固定结构：
-                {"metricTerms":["度量原词"],"groupTerms":["分组维度原词"],"filterTerms":[{"dimensionTerm":"过滤维度原词","operator":"EQUALS|NOT_EQUALS|IN|BETWEEN|GREATER|GREATER_EQUALS|LESS|LESS_EQUALS","values":["用户原值"],"context":"过滤条件原句"}],"sortTerms":[{"fieldTerm":"排序字段原词","direction":"ASC|DESC"}],"unmappedTerms":[]}
+                {"searchTerms":[{"text":"用户原话中的业务术语","context":"该词所在原句"}],"metricTerms":["度量原词"],"groupTerms":["分组维度原词"],"filterTerms":[{"dimensionTerm":"过滤维度原词","operator":"EQUALS|NOT_EQUALS|IN|BETWEEN|GREATER|GREATER_EQUALS|LESS|LESS_EQUALS","values":["用户原值"],"context":"过滤条件原句"}],"sortTerms":[{"fieldTerm":"排序字段原词","direction":"ASC|DESC"}],"unmappedTerms":[]}
 
                 规则：
                 1. metricTerms、groupTerms、filterTerms、sortTerms 都输出本轮修改后的完整最终语义，不只是本轮新增内容；保留未被用户修改的当前要求。
@@ -197,6 +250,8 @@ public class ChatQueryInterpreter {
                 4. 相对时间允许根据当前日期换算成明确日期值，但不得选择字段 ID。例如“昨天”可输出 dimensionTerm=“日”、values=["yyyy-MM-dd"]；“对比去年5月和4月”同时是按月分组和月份过滤。
                 5. 无法判断属于哪个槽位的原词放入 unmappedTerms，不要硬塞进某个槽位；不使用的数组返回 []。
                 6. 时间粒度必须先与用户原话一致。“今年/本年”或明确的“2026年”必须输出 dimensionTerm="年"、operator="EQUALS"、values=["2026"]；不要把完整年份写成 ["2026-01-01","2026-12-31"] 的 BETWEEN。只有用户明确要求按日或给出日期起止范围时，才输出日粒度日期值。
+                7. searchTerms 用于业务黑话知识召回。把完整最终语义中的英文缩写、括号内中文术语、业务黑话和模糊业务总称分别提取；text 必须逐字来自用户本轮原话或“上轮未映射语义”，不得改写、翻译或发明同义词。例如“VCC（虚拟商务卡）总体业务情况”分别提取 VCC、虚拟商务卡、总体业务情况。
+                8. 即使某个黑话暂时无法归入度量、分组或过滤槽位，也必须保留在 searchTerms 和 unmappedTerms 中，以便知识规则先召回后再归槽。
                 """;
     }
 
@@ -207,8 +262,9 @@ public class ChatQueryInterpreter {
     }
 
     private ParsedQueryAction parseAndValidate(
-            String content, RawSemanticIntent semanticIntent, QueryAction currentAction,
-            RetrievedMetadata retrievedMetadata)
+            String content, QuerySemanticIntent semanticIntent, QueryAction currentAction,
+            RetrievedMetadata retrievedMetadata, GroundingResult grounding, NormalizationResult normalization,
+            String userMessage)
             throws JsonProcessingException {
         JsonNode root = objectMapper.readTree(stripMarkdownFence(content));
         if (root == null || !root.isObject()) {
@@ -220,6 +276,8 @@ public class ChatQueryInterpreter {
         ObjectNode actionPayload = ((ObjectNode) root).deepCopy();
         actionPayload.remove("unresolvedItems");
         QueryAction action = objectMapper.treeToValue(actionPayload, QueryAction.class);
+        action = retainSupportedGeneratedFilters(
+                action, currentAction, semanticIntent, retrievedMetadata);
         List<String> unresolvedItems = new java.util.ArrayList<>(
                 textList(root.path("unresolvedItems"), "unresolvedItems"));
         int metricTermCount = (int) semanticIntent.metricTerms().stream()
@@ -232,28 +290,130 @@ public class ChatQueryInterpreter {
                     .filter(term -> !unresolvedItems.contains(term))
                     .forEach(unresolvedItems::add);
         }
+        action = applyExplicitAmbiguitySelection(action, currentAction, grounding, userMessage);
+        action = reconcileGroundings(action, grounding);
+        action = applyRuleConstraints(action, normalization);
+        unresolvedItems.removeIf(item -> normalization.consumedTerms().stream()
+                .anyMatch(term -> normalizeTerm(item).contains(normalizeTerm(term))));
+        applyGroundingCoverage(action, grounding, unresolvedItems);
+        removeItemsCoveredByFinalFilters(action, unresolvedItems);
+        List<AmbiguousResolution> ambiguousResolutions = ambiguousResolutions(action, grounding);
         List<PendingResolution> pendingResolutions = pendingResolutions(
-                action, semanticIntent, retrievedMetadata);
+                action, semanticIntent, retrievedMetadata, normalization);
         String explanation = unresolvedItems.isEmpty()
                 ? pendingResolutions.isEmpty()
                         ? "已按元数据完成查询条件映射。"
                         : "存在待用户确认的弱证据映射。"
                 : "未找到元数据映射：" + String.join("、", unresolvedItems) + "。";
         return new ParsedQueryAction(
-                validate(action), explanation, List.copyOf(unresolvedItems), pendingResolutions);
+                validate(action), explanation, List.copyOf(unresolvedItems), pendingResolutions,
+                ambiguousResolutions);
+    }
+
+    /**
+     * Resolves any ambiguity generically when the user names exactly one of the
+     * recalled candidate fields. The original matched value is applied to that
+     * field; no business term or field ID is hard-coded here.
+     */
+    private QueryAction applyExplicitAmbiguitySelection(
+            QueryAction source, QueryAction currentAction,
+            GroundingResult grounding, String userMessage) {
+        GroundingResult evidence = grounding == null ? GroundingResult.empty() : grounding;
+        String reply = normalizeTerm(userMessage);
+        if (reply.isBlank() || evidence.ambiguousFilters().isEmpty()) return source;
+
+        List<DimensionFilter> filters = new java.util.ArrayList<>(source.dimensionFilters());
+        LinkedHashSet<String> dimensions = new LinkedHashSet<>(source.dimensionIds());
+        boolean explicitGrouping = containsExplicitGroupingIntent(userMessage);
+        for (AmbiguousGrounding ambiguous : evidence.ambiguousFilters()) {
+            List<com.company.paymentanalysis.semantic.MetadataSemanticGrounder.GroundingCandidate> selected =
+                    ambiguous.candidates().stream()
+                            .filter(candidate -> selectsCandidate(
+                                    reply, candidate.dimensionId(), candidate.dimensionName()))
+                            .toList();
+            if (selected.size() != 1) continue;
+            var candidate = selected.get(0);
+            boolean conflicting = filters.stream().anyMatch(filter ->
+                    candidate.dimensionId().equals(filter.dimensionId())
+                            && !hasValue(filter, ambiguous.matchedValue()));
+            if (conflicting) continue;
+            boolean alreadyPresent = filters.stream().anyMatch(filter ->
+                    candidate.dimensionId().equals(filter.dimensionId())
+                            && hasValue(filter, ambiguous.matchedValue()));
+            if (!alreadyPresent) {
+                filters.add(new DimensionFilter(
+                        candidate.dimensionId(), "EQUALS", List.of(ambiguous.matchedValue())));
+            }
+            boolean wasAlreadyGrouped = currentAction != null
+                    && currentAction.dimensionIds().contains(candidate.dimensionId());
+            if (!explicitGrouping && !wasAlreadyGrouped) dimensions.remove(candidate.dimensionId());
+        }
+        return new QueryAction(
+                source.metricIds(), List.copyOf(dimensions), List.copyOf(filters), source.sorts());
+    }
+
+    private boolean selectsCandidate(String normalizedReply, String fieldId, String fieldName) {
+        String normalizedId = normalizeTerm(fieldId);
+        String normalizedName = normalizeTerm(fieldName);
+        if (normalizedReply.equals(normalizedId) || normalizedReply.equals(normalizedName)) return true;
+        String selection = normalizedReply
+                .replaceFirst("^(?:我选|选择|选|就用|使用|用|我要|按)", "")
+                .replaceFirst("(?:这个|就行|即可|吧)$", "");
+        return selection.equals(normalizedId) || selection.equals(normalizedName);
+    }
+
+    private boolean containsExplicitGroupingIntent(String message) {
+        String normalized = normalizeTerm(message);
+        return normalized.contains("分组") || normalized.contains("分别")
+                || normalized.contains("下钻") || normalized.contains("各个");
+    }
+
+    private List<AmbiguousResolution> ambiguousResolutions(
+            QueryAction action, GroundingResult grounding) {
+        GroundingResult source = grounding == null ? GroundingResult.empty() : grounding;
+        return source.ambiguousFilters().stream()
+                .filter(ambiguous -> action.dimensionFilters().stream()
+                        .filter(filter -> ambiguous.dimensionIds().contains(filter.dimensionId())
+                                && hasValue(filter, ambiguous.matchedValue()))
+                        .count() != 1)
+                .map(ambiguous -> new AmbiguousResolution(
+                        ambiguous.sourceTerm(), ambiguous.matchedValue(),
+                        ambiguous.candidates().stream()
+                                .map(candidate -> new ResolutionCandidate(
+                                        candidate.dimensionId(), candidate.dimensionName()))
+                                .toList()))
+                .toList();
     }
 
     private List<PendingResolution> pendingResolutions(
-            QueryAction action, RawSemanticIntent semanticIntent, RetrievedMetadata retrievedMetadata) {
+            QueryAction action, QuerySemanticIntent semanticIntent, RetrievedMetadata retrievedMetadata,
+            NormalizationResult normalization) {
         List<PendingResolution> pending = new java.util.ArrayList<>();
+        Set<String> trustedRuleFields = new java.util.LinkedHashSet<>();
+        if (normalization != null) {
+            trustedRuleFields.addAll(normalization.enforcedMetricIds());
+            normalization.enforcedFilters().stream()
+                    .map(filter -> filter.dimensionId())
+                    .forEach(trustedRuleFields::add);
+        }
         addWeakFieldResolutions(
-                pending, "度量", action.metricIds(), semanticIntent.metricTerms(), retrievedMetadata);
+                pending, "度量", action.metricIds(), semanticIntent.metricTerms(),
+                retrievedMetadata, trustedRuleFields);
         addWeakFieldResolutions(
-                pending, "分组维度", action.dimensionIds(), semanticIntent.groupTerms(), retrievedMetadata);
+                pending, "分组维度", action.dimensionIds(), semanticIntent.groupTerms(),
+                retrievedMetadata, trustedRuleFields);
         for (int index = 0; index < action.dimensionFilters().size(); index++) {
             DimensionFilter filter = action.dimensionFilters().get(index);
-            String term = index < semanticIntent.filterTerms().size()
-                    ? semanticIntent.filterTerms().get(index).dimensionTerm() : "筛选维度";
+            if (isTimeDimension(filter.dimensionId()) || trustedRuleFields.contains(filter.dimensionId())) {
+                continue;
+            }
+            List<String> filterTerms = semanticIntent.filterTerms().stream()
+                    .map(FilterTerm::dimensionTerm).toList();
+            String term = bestFieldTerm(
+                    filter.dimensionId(),
+                    filterTerms,
+                    filterTerms.size() == action.dimensionFilters().size() ? index : -1,
+                    "筛选维度");
             if (!hasFieldEvidence(filter.dimensionId(), evidenceTerms(term), retrievedMetadata)) {
                 pending.add(new PendingResolution(
                         "筛选维度", term, filter.dimensionId(), QueryMetadataCatalog.displayName(filter.dimensionId()),
@@ -262,8 +422,11 @@ public class ChatQueryInterpreter {
         }
         for (int index = 0; index < action.sorts().size(); index++) {
             SortSpec sort = action.sorts().get(index);
-            String term = index < semanticIntent.sortTerms().size()
-                    ? semanticIntent.sortTerms().get(index).fieldTerm() : "排序字段";
+            String term = bestFieldTerm(
+                    sort.fieldId(),
+                    semanticIntent.sortTerms().stream().map(QuerySemanticIntent.SortTerm::fieldTerm).toList(),
+                    semanticIntent.sortTerms().size() == action.sorts().size() ? index : -1,
+                    "排序字段");
             if (!hasFieldEvidence(sort.fieldId(), evidenceTerms(term), retrievedMetadata)) {
                 pending.add(new PendingResolution(
                         "排序字段", term, sort.fieldId(), QueryMetadataCatalog.displayName(sort.fieldId()),
@@ -275,10 +438,12 @@ public class ChatQueryInterpreter {
 
     private void addWeakFieldResolutions(
             List<PendingResolution> pending, String type, List<String> fieldIds,
-            List<String> terms, RetrievedMetadata retrievedMetadata) {
+            List<String> terms, RetrievedMetadata retrievedMetadata, Set<String> trustedRuleFields) {
         for (int index = 0; index < fieldIds.size(); index++) {
             String fieldId = fieldIds.get(index);
-            String term = index < terms.size() ? terms.get(index) : type;
+            if (trustedRuleFields.contains(fieldId)) continue;
+            String term = bestFieldTerm(
+                    fieldId, terms, terms.size() == fieldIds.size() ? index : -1, type);
             if (!hasFieldEvidence(fieldId, evidenceTerms(term), retrievedMetadata)) {
                 pending.add(new PendingResolution(
                         type, term, fieldId, QueryMetadataCatalog.displayName(fieldId),
@@ -293,6 +458,8 @@ public class ChatQueryInterpreter {
                 && ((QueryMetadataCatalog.isMetric(fieldId) && retrievedMetadata.metrics().stream()
                         .anyMatch(candidate -> fieldId.equals(candidate.fieldId())))
                     || (QueryMetadataCatalog.isDimension(fieldId) && retrievedMetadata.dimensions().stream()
+                        .anyMatch(candidate -> fieldId.equals(candidate.fieldId())))
+                    || (QueryMetadataCatalog.isDimension(fieldId) && retrievedMetadata.values().stream()
                         .anyMatch(candidate -> fieldId.equals(candidate.fieldId()))))) {
             return true;
         }
@@ -306,6 +473,206 @@ public class ChatQueryInterpreter {
 
     private List<String> evidenceTerms(String term) {
         return StringUtils.hasText(term) ? List.of(term) : List.of();
+    }
+
+    private QueryAction retainSupportedGeneratedFilters(
+            QueryAction action, QueryAction currentAction, QuerySemanticIntent semanticIntent,
+            RetrievedMetadata retrievedMetadata) {
+        Set<String> explicitValues = semanticIntent.filterTerms().stream()
+                .flatMap(filter -> filter.values().stream())
+                .filter(StringUtils::hasText)
+                .map(this::normalizeTerm)
+                .collect(java.util.stream.Collectors.toSet());
+        List<DimensionFilter> supported = action.dimensionFilters().stream()
+                .filter(filter -> isTimeDimension(filter.dimensionId())
+                        || currentAction.dimensionFilters().contains(filter)
+                        || filter.values().stream().allMatch(value ->
+                                explicitValues.contains(normalizeTerm(value)))
+                        || hasExactValueEvidence(filter, retrievedMetadata))
+                .toList();
+        return supported.size() == action.dimensionFilters().size()
+                ? action
+                : new QueryAction(action.metricIds(), action.dimensionIds(), supported, action.sorts());
+    }
+
+    private boolean hasExactValueEvidence(
+            DimensionFilter filter, RetrievedMetadata retrievedMetadata) {
+        if (retrievedMetadata == null) {
+            return false;
+        }
+        return filter.values().stream().allMatch(value -> retrievedMetadata.values().stream()
+                .anyMatch(candidate -> filter.dimensionId().equals(candidate.fieldId())
+                        && normalizeTerm(value).equals(normalizeTerm(candidate.value()))));
+    }
+
+    private QueryAction reconcileGroundings(QueryAction action, GroundingResult grounding) {
+        GroundingResult source = grounding == null ? GroundingResult.empty() : grounding;
+        List<DimensionFilter> filters = new java.util.ArrayList<>(action.dimensionFilters());
+        for (AmbiguousGrounding ambiguous : source.ambiguousFilters()) {
+            List<DimensionFilter> matches = filters.stream()
+                    .filter(filter -> ambiguous.dimensionIds().contains(filter.dimensionId())
+                            && hasValue(filter, ambiguous.matchedValue()))
+                    .toList();
+            if (matches.size() > 1) {
+                filters.removeAll(matches);
+            }
+        }
+        for (GroundedFilter required : source.requiredFilters()) {
+            boolean exact = filters.stream().anyMatch(filter ->
+                    required.dimensionId().equals(filter.dimensionId())
+                            && hasValue(filter, required.matchedValue()));
+            boolean conflicting = filters.stream().anyMatch(filter ->
+                    required.dimensionId().equals(filter.dimensionId())
+                            && !hasValue(filter, required.matchedValue()));
+            if (!exact && !conflicting) {
+                filters.add(new DimensionFilter(
+                        required.dimensionId(), "EQUALS", List.of(required.matchedValue())));
+            }
+        }
+        return new QueryAction(action.metricIds(), action.dimensionIds(), List.copyOf(filters), action.sorts());
+    }
+
+    private void applyGroundingCoverage(
+            QueryAction action, GroundingResult grounding, List<String> unresolvedItems) {
+        GroundingResult source = grounding == null ? GroundingResult.empty() : grounding;
+        for (GroundedFilter required : source.requiredFilters()) {
+            boolean covered = action.dimensionFilters().stream().anyMatch(filter ->
+                    required.dimensionId().equals(filter.dimensionId())
+                            && hasValue(filter, required.matchedValue()));
+            updateCoverage(
+                    unresolvedItems,
+                    required.sourceTerm(),
+                    required.matchedValue(),
+                    required.dimensionId(),
+                    required.dimensionName(),
+                    covered);
+        }
+        for (AmbiguousGrounding ambiguous : source.ambiguousFilters()) {
+            List<DimensionFilter> matches = action.dimensionFilters().stream()
+                    .filter(filter -> ambiguous.dimensionIds().contains(filter.dimensionId())
+                            && hasValue(filter, ambiguous.matchedValue()))
+                    .toList();
+            if (matches.size() == 1) {
+                DimensionFilter selected = matches.get(0);
+                var candidate = ambiguous.candidates().stream()
+                        .filter(item -> selected.dimensionId().equals(item.dimensionId()))
+                        .findFirst().orElse(null);
+                updateCoverage(
+                        unresolvedItems,
+                        ambiguous.sourceTerm(),
+                        ambiguous.matchedValue(),
+                        selected.dimensionId(),
+                        candidate == null ? "" : candidate.dimensionName(),
+                        true);
+            } else {
+                updateCoverage(
+                        unresolvedItems,
+                        ambiguous.sourceTerm(),
+                        ambiguous.matchedValue(),
+                        "",
+                        "",
+                        false);
+            }
+        }
+    }
+
+    private void updateCoverage(
+            List<String> unresolvedItems,
+            String sourceTerm,
+            String matchedValue,
+            String dimensionId,
+            String dimensionName,
+            boolean covered) {
+        if (!StringUtils.hasText(sourceTerm)) {
+            return;
+        }
+        if (covered) {
+            unresolvedItems.removeIf(item -> resolvedItemMatches(
+                    item, sourceTerm, matchedValue, dimensionId, dimensionName));
+        } else if (unresolvedItems.stream()
+                .noneMatch(item -> normalizeTerm(item).equals(normalizeTerm(sourceTerm)))) {
+            unresolvedItems.add(sourceTerm);
+        }
+    }
+
+    private boolean resolvedItemMatches(
+            String unresolvedItem,
+            String sourceTerm,
+            String matchedValue,
+            String dimensionId,
+            String dimensionName) {
+        String item = normalizeTerm(unresolvedItem);
+        String source = normalizeTerm(sourceTerm);
+        String value = normalizeTerm(matchedValue);
+        String fieldId = normalizeTerm(dimensionId);
+        String fieldName = normalizeTerm(dimensionName);
+        if (item.equals(source) || item.equals(value)
+                || (!fieldId.isBlank() && item.equals(fieldId))
+                || (!fieldName.isBlank() && item.equals(fieldName))) {
+            return true;
+        }
+        boolean carriesResolvedValue = !value.isBlank() && item.contains(value);
+        return carriesResolvedValue
+                && ((!source.isBlank() && item.contains(source))
+                        || (!fieldId.isBlank() && item.contains(fieldId))
+                        || (!fieldName.isBlank() && item.contains(fieldName)));
+    }
+
+    /** Prevents a final query state from simultaneously applying and rejecting the same filter. */
+    private void removeItemsCoveredByFinalFilters(
+            QueryAction action, List<String> unresolvedItems) {
+        for (DimensionFilter filter : action.dimensionFilters()) {
+            String fieldId = normalizeTerm(filter.dimensionId());
+            String fieldName = normalizeTerm(QueryMetadataCatalog.displayName(filter.dimensionId()));
+            List<String> values = filter.values().stream().map(this::normalizeTerm).toList();
+            unresolvedItems.removeIf(item -> {
+                String normalizedItem = normalizeTerm(item);
+                if (normalizedItem.equals(fieldId) || normalizedItem.equals(fieldName)) {
+                    return true;
+                }
+                boolean namesField = normalizedItem.contains(fieldId)
+                        || (!fieldName.isBlank() && normalizedItem.contains(fieldName));
+                return namesField && values.stream()
+                        .filter(value -> !value.isBlank())
+                        .anyMatch(normalizedItem::contains);
+            });
+        }
+    }
+
+    private boolean hasValue(DimensionFilter filter, String value) {
+        return filter.values().stream()
+                .anyMatch(item -> normalizeTerm(item).equals(normalizeTerm(value)));
+    }
+
+    private QuerySemanticIntent sanitizeSearchTerms(
+            QuerySemanticIntent intent, String message, String pendingQueryIntent) {
+        String allowedSource = (message == null ? "" : message) + "\n"
+                + (pendingQueryIntent == null ? "" : pendingQueryIntent);
+        String normalizedSource = allowedSource.toLowerCase(java.util.Locale.ROOT);
+        List<QuerySemanticIntent.SearchTerm> validSearchTerms = new java.util.ArrayList<>();
+        for (QuerySemanticIntent.SearchTerm searchTerm : intent.searchTerms()) {
+            if (searchTerm == null || !StringUtils.hasText(searchTerm.text())) continue;
+            String text = searchTerm.text().trim();
+            if (!normalizedSource.contains(text.toLowerCase(java.util.Locale.ROOT))) continue;
+            QuerySemanticIntent.SearchTerm normalized = new QuerySemanticIntent.SearchTerm(
+                    text, searchTerm.context() == null ? "" : searchTerm.context().trim());
+            if (!validSearchTerms.contains(normalized)) validSearchTerms.add(normalized);
+        }
+        return new QuerySemanticIntent(
+                validSearchTerms, intent.metricTerms(), intent.groupTerms(), intent.filterTerms(),
+                intent.sortTerms(), intent.unmappedTerms());
+    }
+
+    private QueryAction applyRuleConstraints(QueryAction source, NormalizationResult normalization) {
+        if (normalization == null || normalization.appliedRules().isEmpty()) return source;
+        LinkedHashSet<String> metrics = new LinkedHashSet<>(source.metricIds());
+        metrics.addAll(normalization.enforcedMetricIds());
+        List<DimensionFilter> filters = new java.util.ArrayList<>(source.dimensionFilters());
+        for (var target : normalization.enforcedFilters()) {
+            filters.removeIf(existing -> existing.dimensionId().equals(target.dimensionId()));
+            filters.add(new DimensionFilter(target.dimensionId(), target.operator(), target.values()));
+        }
+        return new QueryAction(List.copyOf(metrics), source.dimensionIds(), List.copyOf(filters), source.sorts());
     }
 
     private String normalizeTerm(String value) {
@@ -480,50 +847,73 @@ public class ChatQueryInterpreter {
 
     private record ParsedQueryAction(
             QueryAction action, String explanation, List<String> unresolvedItems,
-            List<PendingResolution> pendingResolutions) {
-    }
-
-    @JsonIgnoreProperties(ignoreUnknown = false)
-    private record RawSemanticIntent(
-            List<String> metricTerms,
-            List<String> groupTerms,
-            List<RawFilterTerm> filterTerms,
-            List<RawSortTerm> sortTerms,
-            List<String> unmappedTerms) {
-        private RawSemanticIntent {
-            metricTerms = metricTerms == null ? List.of() : List.copyOf(metricTerms);
-            groupTerms = groupTerms == null ? List.of() : List.copyOf(groupTerms);
-            filterTerms = filterTerms == null ? List.of() : List.copyOf(filterTerms);
-            sortTerms = sortTerms == null ? List.of() : List.copyOf(sortTerms);
-            unmappedTerms = unmappedTerms == null ? List.of() : List.copyOf(unmappedTerms);
-        }
-    }
-
-    private record RawFilterTerm(
-            String dimensionTerm, String operator, List<String> values, String context) {
-        private RawFilterTerm {
-            values = values == null ? List.of() : List.copyOf(values);
-        }
-    }
-
-    private record RawSortTerm(String fieldTerm, String direction) {
+            List<PendingResolution> pendingResolutions,
+            List<AmbiguousResolution> ambiguousResolutions) {
     }
 
     public record QueryActionResult(
             QueryAction action, String explanation, LlmResultMessage llmMessage,
-            String semanticIntent, List<String> unresolvedItems, List<PendingResolution> pendingResolutions) {
+            String semanticIntent, List<String> unresolvedItems, List<PendingResolution> pendingResolutions,
+            List<AppliedSemanticRule> appliedSemanticRules,
+            List<AmbiguousResolution> ambiguousResolutions) {
         public QueryActionResult {
             explanation = explanation == null ? "" : explanation.trim();
             semanticIntent = semanticIntent == null ? "" : semanticIntent.trim();
             unresolvedItems = unresolvedItems == null ? List.of() : List.copyOf(unresolvedItems);
             pendingResolutions = pendingResolutions == null ? List.of() : List.copyOf(pendingResolutions);
+            appliedSemanticRules = appliedSemanticRules == null ? List.of() : List.copyOf(appliedSemanticRules);
+            ambiguousResolutions = ambiguousResolutions == null ? List.of() : List.copyOf(ambiguousResolutions);
         }
+
+        public QueryActionResult(
+                QueryAction action, String explanation, LlmResultMessage llmMessage,
+                String semanticIntent, List<String> unresolvedItems,
+                List<PendingResolution> pendingResolutions) {
+            this(action, explanation, llmMessage, semanticIntent, unresolvedItems, pendingResolutions,
+                    List.of(), List.of());
+        }
+
+        public QueryActionResult(
+                QueryAction action, String explanation, LlmResultMessage llmMessage,
+                String semanticIntent, List<String> unresolvedItems,
+                List<PendingResolution> pendingResolutions,
+                List<AppliedSemanticRule> appliedSemanticRules) {
+            this(action, explanation, llmMessage, semanticIntent, unresolvedItems, pendingResolutions,
+                    appliedSemanticRules, List.of());
+        }
+    }
+
+    private String bestFieldTerm(String fieldId, List<String> terms, int fallbackIndex, String fallback) {
+        String displayName = normalizeTerm(QueryMetadataCatalog.displayName(fieldId));
+        for (String term : terms) {
+            String normalized = normalizeTerm(term);
+            if (!normalized.isBlank()
+                    && (normalized.equals(displayName)
+                            || normalized.contains(displayName)
+                            || displayName.contains(normalized))) {
+                return term;
+            }
+        }
+        return fallbackIndex >= 0 && fallbackIndex < terms.size() && StringUtils.hasText(terms.get(fallbackIndex))
+                ? terms.get(fallbackIndex) : fallback;
     }
 
     /** A catalog-valid mapping that needs explicit user approval because retrieval did not evidence it. */
     public record PendingResolution(
             String type, String originalTerm, String fieldId, String fieldName, String reason)
             implements Serializable {
+    }
+
+    /** Multiple exact value owners remain after mapping and require an explicit user choice. */
+    public record AmbiguousResolution(
+            String originalTerm, String value, List<ResolutionCandidate> candidates)
+            implements Serializable {
+        public AmbiguousResolution {
+            candidates = candidates == null ? List.of() : List.copyOf(candidates);
+        }
+    }
+
+    public record ResolutionCandidate(String fieldId, String fieldName) implements Serializable {
     }
 
     public static final class QueryInterpretationException extends IllegalArgumentException {

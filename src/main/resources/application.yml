@@ -70,6 +70,7 @@ ragflow:
     metrics: ${RAGFLOW_METRICS_DOCUMENT_ID:}
     dimensions: ${RAGFLOW_DIMENSIONS_DOCUMENT_ID:}
     values: ${RAGFLOW_VALUES_DOCUMENT_ID:}
+    business-semantics: ${RAGFLOW_BUSINESS_SEMANTICS_DOCUMENT_ID:}
   similarity-threshold: ${RAGFLOW_SIMILARITY_THRESHOLD:0.2}
   vector-similarity-weight: ${RAGFLOW_VECTOR_SIMILARITY_WEIGHT:0.3}
   rerank-id: ${RAGFLOW_RERANK_ID:}
@@ -80,6 +81,13 @@ ragflow:
     metrics: ${RAGFLOW_MOCK_METRICS_FILE:C:/Users/hjjgg/Desktop/agent/ragflow/ragflow修改后/度量表.xlsx}
     dimensions: ${RAGFLOW_MOCK_DIMENSIONS_FILE:C:/Users/hjjgg/Desktop/agent/ragflow/ragflow修改后/维度表.xlsx}
     values: ${RAGFLOW_MOCK_VALUES_FILE:C:/Users/hjjgg/Desktop/agent/ragflow/ragflow修改后/维度值域.xlsx}
+
+# Fourth-document business terminology rules. Connection, credentials and
+# mock/remote switching are shared with the three metadata documents above.
+business-semantics:
+  enabled: ${BUSINESS_SEMANTICS_ENABLED:true}
+  mock-file: ${BUSINESS_SEMANTICS_MOCK_FILE:data/ragflow/business-semantic-rules.draft.jsonl}
+  similarity-threshold: ${BUSINESS_SEMANTICS_SIMILARITY_THRESHOLD:0.90}
 
 attribution:
   policy:

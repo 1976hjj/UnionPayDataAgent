@@ -138,6 +138,25 @@ Vite 开发服务器为 `http://localhost:5173`，并将 `/api` 代理到 Spring
 - 仅在公司内网连接真实 SmartBI 时显式设置 `SMARTBI_MOCK_ENABLED=false`。
 - Mock SmartBI 路由：`POST /api/mock/smartbi/query`。
 
+### 四类 RAG 文档切换
+
+度量、维度、值域和业务语义规则共用同一个 retrieval 地址。开发环境默认全部使用本地 Mock；接入公司服务时不需要再增加 Java 代码，只需配置：
+
+```text
+RAGFLOW_ENABLED=true
+RAGFLOW_MOCK_ENABLED=false
+RAGFLOW_BASE_URL=https://公司的检索服务地址
+RAGFLOW_RETRIEVAL_PATH=/api/v1/retrieval
+RAGFLOW_API_KEY=检索服务密钥
+RAGFLOW_DATASET_IDS=知识库ID
+RAGFLOW_METRICS_DOCUMENT_ID=度量文档ID
+RAGFLOW_DIMENSIONS_DOCUMENT_ID=维度文档ID
+RAGFLOW_VALUES_DOCUMENT_ID=值域文档ID
+RAGFLOW_BUSINESS_SEMANTICS_DOCUMENT_ID=业务语义规则文档ID
+```
+
+第四个文档每次按完整原话及模型提取的黑话分别检索 Top 5，再按 `knowledgeId` 去重。每个知识块需要保存一条完整规则 JSON。远程检索失败时会回退本地规则文件。
+
 ### 归因开发用 Mock 数据
 
 应用内置一套确定性的归因测试数据，通过同一个 Mock SmartBI 路由查询：
