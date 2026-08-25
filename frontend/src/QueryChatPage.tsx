@@ -171,7 +171,11 @@ const WELCOME: Message = {
   id: 1,
   role: 'assistant',
   text: '你好，我是支付查数助手。直接说你想查什么即可；未指定时间时默认查本月，未指定维度时直接返回汇总。',
-  suggestions: ['查本月交易金额', '看最近7天支付成功率', '查7月各渠道交易金额'],
+  suggestions: [
+    '昨天发卡市场为中国大陆，收单市场为香港，交易介质为二维码主扫，度量为人民币承兑金额，有效标识为1',
+    '今年上半年VISA双标芯片卡（内卡）在俄罗斯的POS交易笔数和金额',
+    '今年至今VCC总体业务情况，按月分组，有效标识为1、0',
+  ],
 }
 
 function ContextItem({ label, value, ready }: { label: string; value: string; ready: boolean }) {
@@ -602,7 +606,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
                   {message.suggestions && message.suggestions.length > 0 && (
                     <div className="suggestion-list">
                       {message.suggestions.map((suggestion) => (
-                        <button disabled={pending} type="button" key={suggestion} onClick={() => void sendMessage(suggestion)}>{suggestion}</button>
+                        <button disabled={pending} type="button" key={suggestion} onClick={() => { setInput(suggestion); setValidation('') }}>{suggestion}</button>
                       ))}
                     </div>
                   )}
@@ -623,7 +627,6 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
               <textarea
                 aria-label="输入查数需求"
                 maxLength={2000}
-                placeholder="可以查数，也可以基于刚才归因结果写汇报、解释结论或继续追问"
                 value={input}
                 onChange={(event) => { setInput(event.target.value); setValidation('') }}
                 onKeyDown={handleKeyDown}
@@ -668,7 +671,6 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
             <strong>支持的 {metadata.dimensions.length} 个维度</strong>
             {metadata.dimensions.map((dimension) => <span key={dimension.id}>{dimension.name}</span>)}
           </div>
-          <div className="scope-note"><b>范围说明</b><span>当前仅处理支付数据查询。闲聊、写作及其他任务会被拒绝。</span></div>
         </aside>
       </div>
     </section>

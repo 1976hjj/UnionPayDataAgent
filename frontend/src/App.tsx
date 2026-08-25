@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import AttributionPage from './AttributionPage'
 import QueryChatPage from './QueryChatPage'
+import AuthMenuPage from './permission/AuthMenuPage'
 
 type DependencyStatus = {
   code: string
@@ -31,6 +32,9 @@ const MODEL_STORAGE_KEY = 'payment-analysis:selected-model'
 
 export default function App() {
   const location = useLocation()
+  if (location.pathname === '/biagent/authmenu') {
+    return <AuthMenuPage />
+  }
   const queryActive = location.pathname.startsWith('/query')
   const attributionActive = location.pathname.startsWith('/attribution')
   const [dependencies, setDependencies] = useState<DependencyStatus[]>(INITIAL_DEPENDENCIES)

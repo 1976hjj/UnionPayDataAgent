@@ -27,6 +27,10 @@ spring:
       connect-timeout: ${REDIS_CONNECT_TIMEOUT:800ms}
       timeout: ${REDIS_TIMEOUT:1200ms}
 
+permission:
+  management:
+    password: ${PERMISSION_MANAGEMENT_PASSWORD:helloworld}
+
 server:
   port: 8080
   shutdown: graceful

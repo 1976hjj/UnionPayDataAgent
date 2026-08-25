@@ -622,7 +622,7 @@ public class ChatQueryWorkflowService {
             return List.of();
         }
         if ("completed".equals(status)) {
-            return List.of("再加上交易笔数", "增加地区维度", "清空维度看汇总");
+            return List.of();
         }
         return context.metricIds().isEmpty()
                 ? QueryMetadataCatalog.metricIds().stream()
