@@ -2645,6 +2645,11 @@ td { color: #3b5069; }
 .content.query-content {
   width: 100%;
   max-width: 1920px;
+  padding-bottom: 27px;
+}
+
+.content.attribution-content {
+  padding-bottom: 27px;
 }
 
 .persistent-page { display: contents; }
