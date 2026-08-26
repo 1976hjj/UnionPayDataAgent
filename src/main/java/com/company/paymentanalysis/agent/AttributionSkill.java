@@ -53,10 +53,10 @@ public class AttributionSkill implements AgentSkill {
 
     @Override
     public AgentResponse execute(AgentRequest request, AgentContext context) {
-        if (context.action() == AgentAction.CONFIRM) {
+        if (context.action() == AgentAction.CONFIRM || naturalConfirmation(request, context)) {
             return confirm(context);
         }
-        if (context.action() == AgentAction.EXECUTE) {
+        if (context.action() == AgentAction.EXECUTE || naturalExecution(request, context)) {
             return executeConfirmedTemplate(request, context);
         }
         TemplateChatResponse response = conversationRouter.respond(new TemplateChatRequest(
@@ -109,6 +109,40 @@ public class AttributionSkill implements AgentSkill {
         return new AgentResponse(response.status(), "ATTRIBUTION", reply,
                 context.conversationId(), new AgentViewModel("attribution-result", response),
                 DESCRIPTOR.skillId(), outputArtifactIds);
+    }
+
+    private boolean naturalConfirmation(AgentRequest request, AgentContext context) {
+        if (!affirmative(request.message())) return false;
+        return memoryService.snapshot(
+                        context.userId(), context.conversationId(),
+                        ChatConversationMemoryService.ConversationScope.ATTRIBUTION)
+                .map(ChatConversationMemoryService.ConversationSnapshot::attributionState)
+                .map(state -> "READY_TO_CONFIRM".equals(state.status()))
+                .orElse(false);
+    }
+
+    private boolean naturalExecution(AgentRequest request, AgentContext context) {
+        String message = normalized(request.message());
+        if (!(message.equals("开始") || message.equals("执行") || message.equals("开始执行")
+                || message.equals("开始归因") || message.equals("执行归因"))) return false;
+        return memoryService.snapshot(
+                        context.userId(), context.conversationId(),
+                        ChatConversationMemoryService.ConversationScope.ATTRIBUTION)
+                .map(ChatConversationMemoryService.ConversationSnapshot::attributionState)
+                .map(state -> "READY_TO_EXECUTE".equals(state.status()))
+                .orElse(false);
+    }
+
+    private boolean affirmative(String message) {
+        String normalized = normalized(message);
+        return normalized.equals("对") || normalized.equals("是") || normalized.equals("好的")
+                || normalized.equals("可以") || normalized.equals("确认")
+                || normalized.equals("继续确认") || normalized.equals("就这样")
+                || normalized.equals("没问题") || normalized.equals("确认执行");
+    }
+
+    private String normalized(String message) {
+        return message == null ? "" : message.replaceAll("[，。！？!?,\\s]", "").trim();
     }
 
     private TemplateConversationState attributionState(AgentContext context) {

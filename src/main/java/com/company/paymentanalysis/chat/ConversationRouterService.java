@@ -47,6 +47,15 @@ public class ConversationRouterService {
     }
 
     public ChatResponse respond(ChatRequest request) {
+        return respond(request, false);
+    }
+
+    /** Continues an active query without asking the inner CHAT/QUERY router again. */
+    public ChatResponse continueQuery(ChatRequest request) {
+        return respond(request, true);
+    }
+
+    private ChatResponse respond(ChatRequest request, boolean queryOwnsConversation) {
         ConversationSnapshot snapshot = memoryService.snapshot(request.userId(), request.sessionId())
                 .orElse(new ConversationSnapshot(request.context(), List.of(), List.of()));
         QueryContext context = request.context() == null ? snapshot.context() : request.context();
@@ -57,7 +66,8 @@ public class ConversationRouterService {
                 request.confirmed(), pendingQueryIntent);
         // A short answer to our own clarification (for example only a metric name)
         // must stay in the query workflow even when it does not look like a new query.
-        Route route = pendingQueryIntent == null || pendingQueryIntent.isBlank()
+        Route route = queryOwnsConversation ? Route.QUERY
+                : pendingQueryIntent == null || pendingQueryIntent.isBlank()
                 ? route(request, context, snapshot)
                 : Route.QUERY;
         if (route == Route.QUERY) {

@@ -81,6 +81,84 @@ class AgentControllerTest {
     }
 
     @Test
+    void keepsFollowUpConditionsInsideQueryAndAcceptsColloquialConfirmation() throws Exception {
+        String initialRequest = """
+                {
+                  "userId":"agent-user",
+                  "conversationId":"agent-owned-query",
+                  "entryMode":"BI_CHAT",
+                  "message":"查询交易笔数",
+                  "queryContext":{
+                    "metricIds":["trans_cnt_m"],
+                    "dimensionIds":[],
+                    "dimensionFilters":[],
+                    "sorts":[]
+                  }
+                }
+                """;
+        mockMvc.perform(post("/api/agent/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(initialRequest))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("confirming"));
+
+        mockMvc.perform(post("/api/agent/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId":"agent-user",
+                                  "conversationId":"agent-owned-query",
+                                  "entryMode":"BI_CHAT",
+                                  "message":"对"
+                                }
+                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeSkill").value("QUERY"))
+                .andExpect(jsonPath("$.plan.plannerId").value("active-skill-owner"))
+                .andExpect(jsonPath("$.viewModel.payload.workflowSteps[2].node")
+                        .value("buildSmartBiQuery"))
+                .andExpect(jsonPath("$.viewModel.payload.workflowSteps[3].node")
+                        .value("executeSmartBiQuery"));
+    }
+
+    @Test
+    void routesAConditionSupplementDirectlyBackToTheOwnedQuerySkill() throws Exception {
+        mockMvc.perform(post("/api/agent/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId":"agent-user",
+                                  "conversationId":"agent-query-supplement",
+                                  "entryMode":"BI_CHAT",
+                                  "message":"查询交易笔数",
+                                  "queryContext":{
+                                    "metricIds":["trans_cnt_m"],
+                                    "dimensionIds":[],
+                                    "dimensionFilters":[],
+                                    "sorts":[]
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("confirming"));
+
+        mockMvc.perform(post("/api/agent/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId":"agent-user",
+                                  "conversationId":"agent-query-supplement",
+                                  "entryMode":"BI_CHAT",
+                                  "message":"dp作为收单机构名称"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeSkill").value("QUERY"))
+                .andExpect(jsonPath("$.skillId").value("query"))
+                .andExpect(jsonPath("$.plan.plannerId").value("active-skill-owner"));
+    }
+
+    @Test
     void delegatesTheAttributionEntryToTheExistingTemplateConversation() throws Exception {
         mockMvc.perform(post("/api/agent/chat")
                         .contentType(MediaType.APPLICATION_JSON)

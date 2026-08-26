@@ -60,6 +60,43 @@ public class ChatConversationMemoryService {
                         value.pendingQueryIntent()));
     }
 
+    /**
+     * Returns the unfinished multi-turn skill that currently owns the conversation.
+     * It is derived from persisted workflow state, avoiding a second state flag that
+     * could drift away from the actual query or attribution workflow.
+     */
+    public Optional<ActiveSkill> activeSkill(String userId, String conversationId) {
+        return findWithFallback(userId, conversationId).flatMap(this::activeSkill);
+    }
+
+    public void cancelActiveSkill(
+            String userId, String conversationId, ActiveSkill expectedSkill, String userMessage) {
+        StoredConversation previous = findWithFallback(userId, conversationId).orElse(null);
+        if (previous == null || activeSkill(previous).filter(expectedSkill::equals).isEmpty()) return;
+
+        Instant now = Instant.now();
+        List<ConversationMessage> messages = new ArrayList<>(previous.messages());
+        int nextId = messages.stream().mapToInt(ConversationMessage::id).max().orElse(0) + 1;
+        messages.add(new ConversationMessage(
+                nextId, "user", userMessage, List.of(), null, null, List.of(), null,
+                null, "normal", null, null, null));
+        messages.add(new ConversationMessage(
+                nextId + 1, "assistant", "已取消当前" + expectedSkill.displayName() + "。", List.of(),
+                null, null, List.of(), null, "cancelled", "normal", null,
+                "当前多轮任务已结束，下一轮消息将重新交给 Planner。", null));
+
+        TemplateConversationState attributionState = previous.attributionState();
+        if (expectedSkill == ActiveSkill.ATTRIBUTION && attributionState != null) {
+            attributionState = new TemplateConversationState(
+                    "CANCELLED", attributionState.template(), attributionState.unmappedTerms(),
+                    attributionState.mappingIssues(), attributionState.warnings());
+        }
+        store(new StoredConversation(
+                previous.userId(), previous.conversationId(), previous.title(), previous.createdAt(),
+                now.toString(), previous.context(), List.copyOf(messages), previous.artifacts(),
+                attributionState, previous.scope(), null));
+    }
+
     public void saveTurn(String userId, String conversationId, String userMessage, ChatResponse response) {
         Instant now = Instant.now();
         StoredConversation previous = findWithFallback(userId, conversationId, ConversationScope.QUERY).orElse(null);
@@ -403,6 +440,34 @@ public class ChatConversationMemoryService {
         return Math.max(1, properties.maxConversations());
     }
 
+    private Optional<ActiveSkill> activeSkill(StoredConversation conversation) {
+        if (conversation.scope() == ConversationScope.ATTRIBUTION) {
+            TemplateConversationState state = conversation.attributionState();
+            if (state == null || state.template() == null || terminalAttributionStatus(state.status())) {
+                return Optional.empty();
+            }
+            return Optional.of(ActiveSkill.ATTRIBUTION);
+        }
+        for (int index = conversation.messages().size() - 1; index >= 0; index--) {
+            ConversationMessage message = conversation.messages().get(index);
+            if (!"assistant".equals(message.role())) continue;
+            boolean unfinished = "confirming".equals(message.status()) || "clarifying".equals(message.status());
+            boolean queryWorkflowResponse = message.queryAction() != null || message.queryPlan() != null
+                    || conversation.pendingQueryIntent() != null && !conversation.pendingQueryIntent().isBlank();
+            return unfinished && queryWorkflowResponse
+                    ? Optional.of(ActiveSkill.QUERY) : Optional.empty();
+        }
+        return Optional.empty();
+    }
+
+    private boolean terminalAttributionStatus(String status) {
+        return status == null || status.isBlank()
+                || "COMPLETED".equalsIgnoreCase(status)
+                || "CANCELLED".equalsIgnoreCase(status)
+                || "FAILED".equalsIgnoreCase(status)
+                || "REJECTED".equalsIgnoreCase(status);
+    }
+
     private StoredConversation enforceConversationLimits(StoredConversation conversation) {
         return new StoredConversation(
                 conversation.userId(), conversation.conversationId(), conversation.title(),
@@ -455,6 +520,20 @@ public class ChatConversationMemoryService {
     }
 
     public enum ConversationScope { QUERY, ATTRIBUTION }
+
+    public enum ActiveSkill {
+        QUERY("查询"), ATTRIBUTION("归因任务");
+
+        private final String displayName;
+
+        ActiveSkill(String displayName) {
+            this.displayName = displayName;
+        }
+
+        public String displayName() {
+            return displayName;
+        }
+    }
 
     public record ConversationSnapshot(
             QueryContext context, List<ConversationMessage> messages,

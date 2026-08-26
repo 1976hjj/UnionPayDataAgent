@@ -12,6 +12,8 @@ import static org.mockito.Mockito.when;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatResponse;
 import com.company.paymentanalysis.controller.ChatQueryController.QueryContext;
 import com.company.paymentanalysis.controller.ChatQueryController.WorkflowStep;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.DimensionTemplate;
+import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConversationState;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -131,6 +133,32 @@ class ChatConversationMemoryServiceTest {
 
         assertThat(service.snapshot("user-ambiguous", "conversation-ambiguous").orElseThrow()
                 .pendingQueryIntent()).isEqualTo(pendingIntent);
+        assertThat(service.activeSkill("user-ambiguous", "conversation-ambiguous"))
+                .contains(ChatConversationMemoryService.ActiveSkill.QUERY);
+
+        service.cancelActiveSkill(
+                "user-ambiguous", "conversation-ambiguous",
+                ChatConversationMemoryService.ActiveSkill.QUERY, "不查了");
+        assertThat(service.activeSkill("user-ambiguous", "conversation-ambiguous")).isEmpty();
+    }
+
+    @Test
+    void releasesAttributionOwnershipOnlyAfterTheWorkflowTerminates() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        ChatConversationMemoryService service = new ChatConversationMemoryService(
+                redis, new ObjectMapper(), new ChatMemoryProperties(false, "test:chat:", 30, 50, 100, 20));
+        DimensionTemplate draft = DimensionTemplate.auto();
+
+        service.saveAttributionTurn(
+                "user", "attribution-flow", "分析下降原因", "请确认模板",
+                new TemplateConversationState("READY_TO_CONFIRM", draft, List.of(), List.of()));
+        assertThat(service.activeSkill("user", "attribution-flow"))
+                .contains(ChatConversationMemoryService.ActiveSkill.ATTRIBUTION);
+
+        service.saveAttributionState(
+                "user", "attribution-flow",
+                new TemplateConversationState("COMPLETED", draft, List.of(), List.of()));
+        assertThat(service.activeSkill("user", "attribution-flow")).isEmpty();
     }
 
     @Test

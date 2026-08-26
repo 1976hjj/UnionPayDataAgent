@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import AttributionPage from './AttributionPage'
+import CustomReportPage from './CustomReportPage'
+import DefinitionPage from './DefinitionPage'
 import QueryChatPage from './QueryChatPage'
 import AuthMenuPage from './permission/AuthMenuPage'
 
@@ -37,6 +39,8 @@ export default function App() {
   }
   const queryActive = location.pathname.startsWith('/query')
   const attributionActive = location.pathname.startsWith('/attribution')
+  const definitionActive = location.pathname.startsWith('/definitions')
+  const customReportActive = location.pathname.startsWith('/custom-reports')
   const [dependencies, setDependencies] = useState<DependencyStatus[]>(INITIAL_DEPENDENCIES)
   const [models, setModels] = useState<ModelOption[]>(FALLBACK_MODELS)
   const [selectedModel, setSelectedModel] = useState(
@@ -95,7 +99,9 @@ export default function App() {
         </div>
         <nav aria-label="主导航">
           <NavLink to="/query"><span className="nav-icon">查</span><span>对话查数<small>多轮自然语言查询</small></span></NavLink>
-          <NavLink to="/attribution"><span className="nav-icon">归</span><span>归因分析<small>指标变化拆解</small></span></NavLink>
+          <NavLink to="/attribution"><span className="nav-icon">归</span><span>归因分析<small>维度贡献占比分析</small></span></NavLink>
+          <NavLink to="/definitions"><span className="nav-icon">语</span><span>语义定义<small>指标与数据语义</small></span></NavLink>
+          <NavLink to="/custom-reports"><span className="nav-icon">报</span><span>自定义报告<small>组合数据与图表</small></span></NavLink>
         </nav>
         <div className="sidebar-footer"><span>●</span> 测试环境 · v0.3.0</div>
       </aside>
@@ -137,6 +143,8 @@ export default function App() {
           <Routes>
             <Route path="/query" element={null} />
             <Route path="/attribution" element={null} />
+            <Route path="/definitions" element={null} />
+            <Route path="/custom-reports" element={null} />
             <Route path="*" element={<Navigate to="/query" replace />} />
           </Routes>
           <div className={`persistent-page ${queryActive ? '' : 'is-hidden'}`} aria-hidden={!queryActive}>
@@ -144,6 +152,12 @@ export default function App() {
           </div>
           <div className={`persistent-page ${attributionActive ? '' : 'is-hidden'}`} aria-hidden={!attributionActive}>
             <AttributionPage selectedModel={selectedModel} />
+          </div>
+          <div className={`persistent-page ${definitionActive ? '' : 'is-hidden'}`} aria-hidden={!definitionActive}>
+            <DefinitionPage />
+          </div>
+          <div className={`persistent-page ${customReportActive ? '' : 'is-hidden'}`} aria-hidden={!customReportActive}>
+            <CustomReportPage />
           </div>
         </div>
       </main>

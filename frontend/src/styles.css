@@ -194,6 +194,12 @@ header > div > span { margin-left: 12px; padding: 4px 9px; border-radius: 10px; 
 .user small { margin-top: 3px; color: #97a4b4; font-size: 10px; }
 
 .content { max-width: 1280px; margin: 0 auto; padding: 27px 30px 52px; }
+.definition-page { display: grid; min-height: calc(100vh - 180px); place-items: center; }
+.definition-card { display: grid; width: min(460px, 100%); justify-items: center; padding: 54px 32px; border: 1px solid #dde7f2; border-radius: 16px; text-align: center; background: #fff; box-shadow: 0 12px 34px rgb(20 55 95 / 7%); }
+.definition-icon { display: grid; width: 54px; height: 54px; margin-bottom: 20px; place-items: center; border-radius: 14px; color: #fff; background: linear-gradient(135deg, #45a7ff, #1677ff); font-size: 22px; font-weight: 700; }
+.definition-card p { margin: 0; color: #7590af; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+.definition-card h1 { margin: 9px 0 11px; color: #1d456f; font-size: 28px; }
+.definition-card > span:last-child { color: #8191a5; font-size: 13px; }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 20px; }
 .page-heading p { margin: 0 0 5px; color: #8696aa; font-size: 11px; }
 .page-heading h1 { margin: 0; color: #173b68; font-size: 25px; }
@@ -3904,7 +3910,7 @@ nav a small,
 .chat-template-warning { margin-top:10px; padding:9px 11px; border-radius:9px; background:#fffaeb; color:#b54708; font-size:11px; }.chat-template-warning strong { display:block; margin-bottom:4px; }.chat-template-warning p { margin:2px 0; }
 .chat-template-actions { display:flex; justify-content:flex-end; gap:9px; margin-top:13px; }.chat-template-actions button { width:auto; margin:0; }
 .chat-template-actions button:not(.primary-button) { border:1px solid #d0d5dd; border-radius:8px; padding:8px 12px; background:#fff; color:#344054; cursor:pointer; }
-.template-composer-dock { position:relative; width:min(780px,calc(100% - 48px)); margin:0 auto; padding:0 0 24px; }
+.template-composer-dock { position:relative; width:min(780px,calc(100% - 48px)); margin:0 auto; padding:0 0 14px; }
 .template-chat-composer { padding:11px 12px 8px; border:1px solid #d0d5dd; border-radius:20px; background:#fff; box-shadow:0 8px 30px rgba(16,24,40,.10); transition:border-color .15s,box-shadow .15s; }
 .template-chat-composer:focus-within { border-color:#98a2b3; box-shadow:0 10px 34px rgba(16,24,40,.13); }
 .template-chat-composer textarea { display:block; width:100%; height:28px; min-height:28px; max-height:168px; padding:3px 7px 7px 5px; resize:none; overflow-y:hidden; scrollbar-gutter:stable; border:0; outline:0; background:transparent; color:#101828; font-family:inherit; font-size:14px; font-weight:400; line-height:1.55; overscroll-behavior:contain; }

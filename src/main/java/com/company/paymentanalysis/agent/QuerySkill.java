@@ -1,6 +1,7 @@
 package com.company.paymentanalysis.agent;
 
 import com.company.paymentanalysis.chat.ChatConversationMemoryService;
+import com.company.paymentanalysis.chat.ChatConversationMemoryService.ActiveSkill;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService.ChatMemoryUnavailableException;
 import com.company.paymentanalysis.chat.ConversationRouterService;
 import com.company.paymentanalysis.controller.ChatQueryController.ChatRequest;
@@ -40,7 +41,10 @@ public class QuerySkill implements AgentSkill {
     public AgentResponse execute(AgentRequest request, AgentContext context) {
         QueryContext restoredContext = context.queryContext();
         String pendingQueryIntent = null;
+        boolean continuingQuery = false;
         try {
+            continuingQuery = memoryService.activeSkill(context.userId(), context.conversationId())
+                    .filter(ActiveSkill.QUERY::equals).isPresent();
             var snapshot = memoryService.snapshot(context.userId(), context.conversationId());
             if (snapshot.isPresent()) {
                 restoredContext = snapshot.get().context();
@@ -52,10 +56,14 @@ public class QuerySkill implements AgentSkill {
         } catch (ChatMemoryUnavailableException ignored) {
             // The existing controller has the same graceful degradation behavior.
         }
-        ChatResponse response = conversationRouter.respond(new ChatRequest(
+        ChatRequest chatRequest = new ChatRequest(
                 context.userId(), context.conversationId(), request.message(), restoredContext,
-                context.model(), context.confirmed() || context.action() == AgentAction.CONFIRM,
-                pendingQueryIntent));
+                context.model(), context.confirmed() || context.action() == AgentAction.CONFIRM
+                        || continuingQuery && affirmative(request.message()),
+                pendingQueryIntent);
+        ChatResponse response = continuingQuery
+                ? conversationRouter.continueQuery(chatRequest)
+                : conversationRouter.respond(chatRequest);
         try {
             memoryService.saveTurn(context.userId(), context.conversationId(), request.message(), response);
         } catch (ChatMemoryUnavailableException ignored) {
@@ -64,7 +72,7 @@ public class QuerySkill implements AgentSkill {
         List<String> outputArtifactIds = response.artifactId() == null || response.artifactId().isBlank()
                 ? List.of() : List.of(response.artifactId());
         return new AgentResponse(
-                response.status(), isQueryResponse(response) ? "QUERY" : "CHAT", response.reply(),
+                response.status(), continuingQuery || isQueryResponse(response) ? "QUERY" : "CHAT", response.reply(),
                 context.conversationId(), new AgentViewModel("query", response),
                 DESCRIPTOR.skillId(), outputArtifactIds);
     }
@@ -72,5 +80,15 @@ public class QuerySkill implements AgentSkill {
     private boolean isQueryResponse(ChatResponse response) {
         return response.queryAction() != null || response.queryPlan() != null || response.result() != null
                 || "confirming".equals(response.status()) || "clarifying".equals(response.status());
+    }
+
+    private boolean affirmative(String message) {
+        if (message == null) return false;
+        String normalized = message.replaceAll("[，。！？!?,\\s]", "").trim();
+        return normalized.equals("对") || normalized.equals("是") || normalized.equals("好的")
+                || normalized.equals("可以") || normalized.equals("确认") || normalized.equals("继续确认")
+                || normalized.equals("就这样") || normalized.equals("没问题")
+                || normalized.equals("确认执行") || normalized.equals("按这个查")
+                || normalized.equals("开始查询");
     }
 }
