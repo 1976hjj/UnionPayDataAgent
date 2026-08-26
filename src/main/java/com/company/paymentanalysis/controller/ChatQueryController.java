@@ -117,7 +117,7 @@ public class ChatQueryController {
             String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
             String conversationId, QueryAction queryAction, String queryExplanation,
             LlmResultMessage llmMessage, List<String> derivedFromArtifactIds,
-            String pendingQueryIntent) implements Serializable {
+            String pendingQueryIntent, String artifactId) implements Serializable {
 
         public ChatResponse {
             derivedFromArtifactIds = derivedFromArtifactIds == null
@@ -130,7 +130,7 @@ public class ChatQueryController {
                 String conversationId, QueryAction queryAction, String queryExplanation,
                 LlmResultMessage llmMessage) {
             this(status, reply, suggestions, context, result, executionEngine, workflowSteps,
-                    queryPlan, conversationId, queryAction, queryExplanation, llmMessage, List.of(), null);
+                    queryPlan, conversationId, queryAction, queryExplanation, llmMessage, List.of(), null, null);
         }
 
         public ChatResponse(
@@ -140,7 +140,18 @@ public class ChatQueryController {
                 LlmResultMessage llmMessage, List<String> derivedFromArtifactIds) {
             this(status, reply, suggestions, context, result, executionEngine, workflowSteps,
                     queryPlan, conversationId, queryAction, queryExplanation, llmMessage,
-                    derivedFromArtifactIds, null);
+                    derivedFromArtifactIds, null, null);
+        }
+
+        public ChatResponse(
+                String status, String reply, List<String> suggestions, QueryContext context, QueryResult result,
+                String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
+                String conversationId, QueryAction queryAction, String queryExplanation,
+                LlmResultMessage llmMessage, List<String> derivedFromArtifactIds,
+                String pendingQueryIntent) {
+            this(status, reply, suggestions, context, result, executionEngine, workflowSteps,
+                    queryPlan, conversationId, queryAction, queryExplanation, llmMessage,
+                    derivedFromArtifactIds, pendingQueryIntent, null);
         }
     }
 
@@ -213,7 +224,7 @@ public class ChatQueryController {
             int id, String role, String text, List<String> suggestions, QueryResult result,
             String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
             String status, String tone, QueryAction queryAction, String queryExplanation,
-            LlmResultMessage llmMessage, List<String> derivedFromArtifactIds)
+            LlmResultMessage llmMessage, List<String> derivedFromArtifactIds, String artifactId)
             implements Serializable {
 
         public ConversationMessage {
@@ -227,7 +238,16 @@ public class ChatQueryController {
                 String status, String tone, QueryAction queryAction, String queryExplanation,
                 LlmResultMessage llmMessage) {
             this(id, role, text, suggestions, result, executionEngine, workflowSteps, queryPlan,
-                    status, tone, queryAction, queryExplanation, llmMessage, List.of());
+                    status, tone, queryAction, queryExplanation, llmMessage, List.of(), null);
+        }
+
+        public ConversationMessage(
+                int id, String role, String text, List<String> suggestions, QueryResult result,
+                String executionEngine, List<WorkflowStep> workflowSteps, ChatQueryPlan queryPlan,
+                String status, String tone, QueryAction queryAction, String queryExplanation,
+                LlmResultMessage llmMessage, List<String> derivedFromArtifactIds) {
+            this(id, role, text, suggestions, result, executionEngine, workflowSteps, queryPlan,
+                    status, tone, queryAction, queryExplanation, llmMessage, derivedFromArtifactIds, null);
         }
     }
 

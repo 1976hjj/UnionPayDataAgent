@@ -6,6 +6,7 @@ frontend/node/
 .vscode/
 *.log
 logs/
+data/artifacts/
 .env
 *.db
 *.db-shm

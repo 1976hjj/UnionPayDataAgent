@@ -4,6 +4,14 @@ import static org.bsc.langgraph4j.StateGraph.END;
 import static org.bsc.langgraph4j.StateGraph.START;
 import static org.bsc.langgraph4j.action.AsyncNodeAction.node_async;
 
+import com.company.paymentanalysis.artifact.model.Artifact;
+import com.company.paymentanalysis.artifact.model.QueryResultArtifactPayload;
+import com.company.paymentanalysis.artifact.model.QueryResultArtifactPayload.Column;
+import com.company.paymentanalysis.artifact.model.QueryResultArtifactPayload.DataType;
+import com.company.paymentanalysis.artifact.model.QueryResultArtifactPayload.QueryContract;
+import com.company.paymentanalysis.artifact.model.QueryResultArtifactPayload.Role;
+import com.company.paymentanalysis.artifact.service.ArtifactService;
+import com.company.paymentanalysis.artifact.service.ArtifactService.CreateQueryResult;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryAction;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryActionResult;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.QueryInterpretationException;
@@ -29,6 +37,7 @@ import com.company.paymentanalysis.semantic.BusinessSemanticProcessor.AppliedSem
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -43,6 +52,7 @@ import org.bsc.langgraph4j.state.AgentState;
 import org.bsc.langgraph4j.state.AgentStateFactory;
 import org.bsc.langgraph4j.state.Channel;
 import org.bsc.langgraph4j.state.Channels;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -64,6 +74,7 @@ public class ChatQueryWorkflowService {
     private static final String VALIDATION_ISSUES = "validationIssues";
     private static final String PLAN = "plan";
     private static final String RESULT = "result";
+    private static final String ARTIFACT_ID = "artifactId";
     private static final String STEPS = "steps";
     private static final String FAILURE_NODE = "failureNode";
     private static final String FAILURE_NAME = "failureName";
@@ -80,19 +91,23 @@ public class ChatQueryWorkflowService {
     private final AuthorizedSmartBiClient smartBiClient;
     private final ObjectMapper objectMapper;
     private final ClarificationPlanner clarificationPlanner;
+    private final ArtifactService artifactService;
     private final CompiledGraph<ChatState> graph;
 
+    @Autowired
     public ChatQueryWorkflowService(
             ChatQueryInterpreter interpreter,
             SmartBiQueryBuilder queryBuilder,
             AuthorizedSmartBiClient smartBiClient,
             ObjectMapper objectMapper,
-            ClarificationPlanner clarificationPlanner) throws GraphStateException {
+            ClarificationPlanner clarificationPlanner,
+            ArtifactService artifactService) throws GraphStateException {
         this.interpreter = interpreter;
         this.queryBuilder = queryBuilder;
         this.smartBiClient = smartBiClient;
         this.objectMapper = objectMapper;
         this.clarificationPlanner = clarificationPlanner;
+        this.artifactService = artifactService;
         this.graph = new StateGraph<>(
                         ChatState.SCHEMA,
                         (AgentStateFactory<ChatState>) ChatState::new)
@@ -114,6 +129,16 @@ public class ChatQueryWorkflowService {
                 .addEdge("buildSmartBiQuery", "executeSmartBiQuery")
                 .addEdge("executeSmartBiQuery", END)
                 .compile();
+    }
+
+    /** Backward-compatible constructor for isolated workflow tests. */
+    ChatQueryWorkflowService(
+            ChatQueryInterpreter interpreter,
+            SmartBiQueryBuilder queryBuilder,
+            AuthorizedSmartBiClient smartBiClient,
+            ObjectMapper objectMapper,
+            ClarificationPlanner clarificationPlanner) throws GraphStateException {
+        this(interpreter, queryBuilder, smartBiClient, objectMapper, clarificationPlanner, ArtifactService.noOp());
     }
 
     public ChatResponse query(ChatRequest request) {
@@ -358,16 +383,24 @@ public class ChatQueryWorkflowService {
         var preparedQuery = smartBiClient.prepare(chatRequest.userId(), request);
         request = preparedQuery.request();
         QueryResponse response = smartBiClient.query(preparedQuery);
-        QueryResult result = toQueryResult(required(state, CONTEXT), request, response);
-        return Map.of(
-                SMARTBI_RESPONSE, response,
-                RESULT, result,
-                PLAN, queryPlan(required(state, CONTEXT), request),
-                STEPS, appendStep(state, new WorkflowStep(
-                        "executeSmartBiQuery",
-                        "调用 SmartBI 接口",
-                        "COMPLETED",
-                        "一次查询返回 " + result.rows().size() + " 行数据")));
+        QueryContext context = required(state, CONTEXT);
+        QueryResult result = toQueryResult(context, request, response);
+        Artifact artifact = artifactService.createQueryResult(new CreateQueryResult(
+                chatRequest.userId(), chatRequest.sessionId(), null,
+                queryArtifactTitle(context), toArtifactPayload(context, request, result)));
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put(SMARTBI_RESPONSE, response);
+        output.put(RESULT, result);
+        output.put(PLAN, queryPlan(context, request));
+        if (artifact != null) {
+            output.put(ARTIFACT_ID, artifact.artifactId());
+        }
+        output.put(STEPS, appendStep(state, new WorkflowStep(
+                "executeSmartBiQuery",
+                "调用 SmartBI 接口",
+                "COMPLETED",
+                "一次查询返回 " + result.rows().size() + " 行数据并保存 Query Artifact")));
+        return Map.copyOf(output);
     }
 
     private ChatResponse generateChatResponse(ChatState state) {
@@ -436,7 +469,57 @@ public class ChatQueryWorkflowService {
                 List.of(),
                 !ambiguousResolutions.isEmpty() || "clarifying".equals(responseStatus)
                         ? state.<String>value(PENDING_QUERY_INTENT).orElse(chatRequest.pendingQueryIntent())
-                        : null);
+                        : null,
+                executed ? state.<String>value(ARTIFACT_ID).orElse(null) : null);
+    }
+
+    private QueryResultArtifactPayload toArtifactPayload(
+            QueryContext context, QueryRequest request, QueryResult result) {
+        Set<String> metrics = Set.copyOf(context.metricIds());
+        List<Column> columns = result.columns().stream()
+                .map(column -> new Column(
+                        column.id(), column.name(), metrics.contains(column.id()) ? Role.METRIC : Role.DIMENSION,
+                        column.numeric() ? DataType.NUMBER : DataType.STRING, null))
+                .toList();
+        List<Map<String, Object>> rows = result.rows().stream().map(row -> {
+            Map<String, Object> typed = new LinkedHashMap<>();
+            for (Column column : columns) {
+                String value = row.get(column.id());
+                typed.put(column.id(), column.dataType() == DataType.NUMBER ? number(value) : value);
+            }
+            return Collections.unmodifiableMap(typed);
+        }).toList();
+        QueryContract contract = new QueryContract(
+                request.dataSetId(), request.columns(), request.rows(),
+                request.filters().stream()
+                        .map(filter -> new QueryResultArtifactPayload.Filter(
+                                filter.id(), filter.operation(), filter.values()))
+                        .toList(),
+                request.orderBys().stream()
+                        .map(sort -> new QueryResultArtifactPayload.Sort(sort.fieldName(), sort.type()))
+                        .toList());
+        return new QueryResultArtifactPayload(
+                result.summary(), columns, rows, rows.size(), false, contract);
+    }
+
+    private Object number(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(value);
+        } catch (NumberFormatException ignored) {
+            return value;
+        }
+    }
+
+    private String queryArtifactTitle(QueryContext context) {
+        String metrics = context.metricIds().stream()
+                .map(QueryMetadataCatalog::displayName)
+                .limit(3)
+                .reduce((left, right) -> left + "、" + right)
+                .orElse("数据");
+        return metrics + "查询结果";
     }
 
     private QueryResult toQueryResult(
@@ -706,6 +789,7 @@ public class ChatQueryWorkflowService {
                 Map.entry(VALIDATION_ISSUES, Channels.base((Supplier<List<String>>) List::of)),
                 Map.entry(PLAN, Channels.base((Supplier<Object>) Map::of)),
                 Map.entry(RESULT, Channels.base((Supplier<Object>) Map::of)),
+                Map.entry(ARTIFACT_ID, Channels.base(() -> "")),
                 Map.entry(STEPS, Channels.base((Supplier<List<WorkflowStep>>) List::of)),
                 Map.entry(FAILURE_NODE, Channels.base(() -> "")),
                 Map.entry(FAILURE_NAME, Channels.base(() -> "")),

@@ -74,7 +74,7 @@ public class ChatConversationMemoryService {
                 response.executionEngine(), response.workflowSteps(), response.queryPlan(),
                 response.status(), "rejected".equals(response.status()) ? "rejected" : "normal",
                 response.queryAction(), response.queryExplanation(), response.llmMessage(),
-                response.derivedFromArtifactIds()));
+                response.derivedFromArtifactIds(), response.artifactId()));
 
         boolean queryPending = response.pendingQueryIntent() != null
                 && !response.pendingQueryIntent().isBlank();

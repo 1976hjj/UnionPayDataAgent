@@ -12,7 +12,7 @@ spring:
     init:
       mode: ${PERMISSION_DB_INIT_MODE:always}
       encoding: UTF-8
-      schema-locations: classpath:db/permission-schema.sql
+      schema-locations: classpath:db/permission-schema.sql,classpath:db/artifact-schema.sql
       data-locations: classpath:db/permission-data.sql
   mvc:
     async:
@@ -26,6 +26,10 @@ spring:
       database: ${REDIS_DATABASE:0}
       connect-timeout: ${REDIS_CONNECT_TIMEOUT:800ms}
       timeout: ${REDIS_TIMEOUT:1200ms}
+
+artifact:
+  file-storage:
+    root: ${ARTIFACT_FILE_ROOT:data/artifacts/files}
 
 permission:
   management:

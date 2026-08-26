@@ -13,14 +13,22 @@ import com.company.paymentanalysis.attribution.AttributionTemplateModels.Templat
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateChatResponse;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateConversationState;
 import com.company.paymentanalysis.attribution.AttributionTemplateModels.TemplateFilter;
+import com.company.paymentanalysis.artifact.model.ArtifactType;
 import com.company.paymentanalysis.chat.AttributionConversationRouterService;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService;
 import java.util.List;
+import java.util.Set;
 import org.springframework.stereotype.Service;
 
 /** Phase-one adapter for the existing attribution-template conversation. */
 @Service
 public class AttributionSkill implements AgentSkill {
+
+    private static final SkillDescriptor DESCRIPTOR = new SkillDescriptor(
+            "attribution", "归因分析", "对已确认的指标、周期和分析路径执行受约束的归因分析",
+            AgentEntryMode.ATTRIBUTION,
+            Set.of(AgentAction.MESSAGE, AgentAction.CONFIRM, AgentAction.EXECUTE),
+            Set.of(), Set.of(ArtifactType.ATTRIBUTION_RESULT), true);
 
     private final AttributionConversationRouterService conversationRouter;
     private final AttributionTemplateInterpreter templateInterpreter;
@@ -39,8 +47,8 @@ public class AttributionSkill implements AgentSkill {
     }
 
     @Override
-    public AgentEntryMode entryMode() {
-        return AgentEntryMode.ATTRIBUTION;
+    public SkillDescriptor descriptor() {
+        return DESCRIPTOR;
     }
 
     @Override
@@ -57,7 +65,7 @@ public class AttributionSkill implements AgentSkill {
         return new AgentResponse(
                 response.status(), "CHAT".equals(response.status()) ? "CHAT" : "ATTRIBUTION",
                 response.reply(), context.conversationId(),
-                new AgentViewModel("attribution-template", response));
+                new AgentViewModel("attribution-template", response), DESCRIPTOR.skillId(), List.of());
     }
 
     private AgentResponse confirm(AgentContext context) {
@@ -78,7 +86,8 @@ public class AttributionSkill implements AgentSkill {
                 state.unmappedTerms(), state.mappingIssues(), state.warnings(), null, null);
         return new AgentResponse(
                 response.status(), "ATTRIBUTION", response.reply(),
-                context.conversationId(), new AgentViewModel("attribution-template", response));
+                context.conversationId(), new AgentViewModel("attribution-template", response),
+                DESCRIPTOR.skillId(), List.of());
     }
 
     private AgentResponse executeConfirmedTemplate(AgentRequest request, AgentContext context) {
@@ -87,14 +96,19 @@ public class AttributionSkill implements AgentSkill {
         if (!"READY_TO_EXECUTE".equals(state.status()) || !"CONFIRMED".equals(template.status())) {
             throw new IllegalArgumentException("请先确认归因模板，再开始归因分析");
         }
-        AttributionResponse response = executionService.execute(toRequest(template, request, context)).response();
+        AttributionExecutionService.ExecutedAttribution execution =
+                executionService.execute(toRequest(template, request, context));
+        AttributionResponse response = execution.response();
         memoryService.saveAttributionState(context.userId(), context.conversationId(),
                 new TemplateConversationState("COMPLETED", template,
                         state.unmappedTerms(), state.mappingIssues(), state.warnings()));
         String reply = response.report() == null || response.report().summary() == null
                 ? "归因分析已执行完成。" : response.report().summary();
+        List<String> outputArtifactIds = execution.artifactId() == null
+                ? List.of() : List.of(execution.artifactId());
         return new AgentResponse(response.status(), "ATTRIBUTION", reply,
-                context.conversationId(), new AgentViewModel("attribution-result", response));
+                context.conversationId(), new AgentViewModel("attribution-result", response),
+                DESCRIPTOR.skillId(), outputArtifactIds);
     }
 
     private TemplateConversationState attributionState(AgentContext context) {

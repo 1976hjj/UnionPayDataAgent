@@ -3,6 +3,10 @@
 process-audit:
   enabled: false
 
+artifact:
+  file-storage:
+    root: target/test-artifact-files
+
 spring:
   datasource:
     url: jdbc:sqlite:target/test-permissions.db
@@ -11,5 +15,5 @@ spring:
     init:
       mode: always
       encoding: UTF-8
-      schema-locations: classpath:db/permission-schema.sql
+      schema-locations: classpath:db/permission-schema.sql,classpath:db/artifact-schema.sql
       data-locations: classpath:db/permission-data.sql,classpath:db/permission-test-data.sql

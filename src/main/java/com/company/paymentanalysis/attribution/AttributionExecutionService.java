@@ -4,9 +4,16 @@ import com.company.paymentanalysis.attribution.AttributionModels.AttributionRequ
 import com.company.paymentanalysis.attribution.AttributionModels.AttributionResponse;
 import com.company.paymentanalysis.attribution.AttributionModels.EffectiveRequest;
 import com.company.paymentanalysis.attribution.AttributionWorkflowService.WorkflowObserver;
+import com.company.paymentanalysis.artifact.model.Artifact;
+import com.company.paymentanalysis.artifact.model.AttributionResultArtifactPayload;
+import com.company.paymentanalysis.artifact.model.AttributionResultArtifactPayload.AttributionContract;
+import com.company.paymentanalysis.artifact.model.AttributionResultArtifactPayload.Overall;
+import com.company.paymentanalysis.artifact.service.ArtifactService;
+import com.company.paymentanalysis.artifact.service.ArtifactService.CreateAttributionResult;
 import com.company.paymentanalysis.chat.ChatConversationMemoryService;
 import com.company.paymentanalysis.chat.ConversationArtifact.VerifiedFact;
 import com.company.paymentanalysis.permission.DataPermissionService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,16 +33,22 @@ public class AttributionExecutionService {
     private final AttributionWorkflowService workflowService;
     private final ChatConversationMemoryService memoryService;
     private final DataPermissionService permissionService;
+    private final ArtifactService artifactService;
+    private final ObjectMapper objectMapper;
 
     public AttributionExecutionService(
             AttributionRequestValidator requestValidator,
             AttributionWorkflowService workflowService,
             ChatConversationMemoryService memoryService,
-            DataPermissionService permissionService) {
+            DataPermissionService permissionService,
+            ArtifactService artifactService,
+            ObjectMapper objectMapper) {
         this.requestValidator = requestValidator;
         this.workflowService = workflowService;
         this.memoryService = memoryService;
         this.permissionService = permissionService;
+        this.artifactService = artifactService;
+        this.objectMapper = objectMapper;
     }
 
     public ExecutedAttribution execute(AttributionRequest request) {
@@ -47,15 +60,21 @@ public class AttributionExecutionService {
         EffectiveRequest effectiveRequest = validatedRequest.withPermissionScope(
                 permissionService.resolveRequiredScope(validatedRequest.loginUsername()));
         AttributionResponse response = workflowService.analyze(effectiveRequest, observer);
-        saveConversationArtifact(request, effectiveRequest, response);
-        return new ExecutedAttribution(effectiveRequest, response);
+        String artifactId = saveArtifacts(request, effectiveRequest, response);
+        return new ExecutedAttribution(effectiveRequest, response, artifactId);
     }
 
-    private void saveConversationArtifact(
+    private String saveArtifacts(
             AttributionRequest request, EffectiveRequest effectiveRequest, AttributionResponse response) {
         String conversationId = safeIdentifier(request.conversationId());
-        if (conversationId == null || response.report() == null || response.overall() == null) return;
+        if (conversationId == null || response.report() == null || response.overall() == null) return null;
         String userId = safeIdentifier(request.userId());
+        userId = userId == null ? "demo-user" : userId;
+        String title = response.metricName() + "归因：" + response.currentPeriod()
+                + " 对比 " + response.comparisonPeriod();
+        Artifact unifiedArtifact = artifactService.createAttributionResult(new CreateAttributionResult(
+                userId, conversationId, null, title,
+                attributionPayload(effectiveRequest, response)));
         String filters = effectiveRequest.dimensionFilters().stream()
                 .map(filter -> filter.dimensionId() + " " + filter.operator() + " " + filter.values())
                 .collect(Collectors.joining("；"));
@@ -77,10 +96,29 @@ public class AttributionExecutionService {
                 "currentPeriod", response.currentPeriod(),
                 "comparisonPeriod", response.comparisonPeriod());
         memoryService.saveAttributionArtifact(
-                userId == null ? "demo-user" : userId, conversationId,
-                response.metricName() + "归因：" + response.currentPeriod() + " 对比 " + response.comparisonPeriod(),
+                userId, conversationId, title,
                 safe(response.report().summary()), contract, evidence, attributes,
                 verifiedFacts(response), modelNarrative);
+        return unifiedArtifact == null ? null : unifiedArtifact.artifactId();
+    }
+
+    private AttributionResultArtifactPayload attributionPayload(
+            EffectiveRequest request, AttributionResponse response) {
+        Overall overall = new Overall(
+                response.overall().currentValue(), response.overall().comparisonValue(),
+                response.overall().changeAmount(), response.overall().changeRate(),
+                response.overall().direction());
+        AttributionContract contract = new AttributionContract(
+                request.dimensionFilters().stream()
+                        .map(filter -> new AttributionResultArtifactPayload.Filter(
+                                filter.dimensionId(), filter.operator(), filter.values()))
+                        .toList(),
+                request.maxDepth(), request.maxQueries(), request.topN(), request.maxBranches());
+        return new AttributionResultArtifactPayload(
+                response.metricId(), response.metricName(), response.currentPeriod(),
+                response.comparisonPeriod(), overall, safe(response.report().summary()),
+                response.report().findings(), response.report().recommendations(), contract,
+                objectMapper.valueToTree(response));
     }
 
     private List<VerifiedFact> verifiedFacts(AttributionResponse response) {
@@ -132,6 +170,11 @@ public class AttributionExecutionService {
         return normalized.length() <= 80 && normalized.matches("[A-Za-z0-9._-]+") ? normalized : null;
     }
 
-    public record ExecutedAttribution(EffectiveRequest effectiveRequest, AttributionResponse response) {
+    public record ExecutedAttribution(
+            EffectiveRequest effectiveRequest, AttributionResponse response, String artifactId) {
+
+        public ExecutedAttribution(EffectiveRequest effectiveRequest, AttributionResponse response) {
+            this(effectiveRequest, response, null);
+        }
     }
 }

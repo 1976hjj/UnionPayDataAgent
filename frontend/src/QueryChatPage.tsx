@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
+import ArtifactRenderer from './artifact/ArtifactRenderer'
+import { getArtifacts, getConversationArtifacts } from './artifact/api'
+import type { ArtifactView } from './artifact/types'
 
 type Metric = {
   id: string
@@ -128,12 +131,15 @@ type Message = {
   llmMessage?: LlmResultMessage | null
   derivedFromArtifactIds?: string[]
   status?: ChatResponse['status'] | null
+  artifacts?: ArtifactView[]
 }
 
 type AgentResponse = {
   status: string
+  reply: string
   conversationId: string
-  viewModel: { type: 'query'; payload: ChatResponse }
+  viewModel: { type: string; payload: unknown }
+  outputArtifactIds: string[]
 }
 
 type ConversationSummary = {
@@ -243,6 +249,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
   const [historyLoading, setHistoryLoading] = useState(true)
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null)
   const [openSidePanel, setOpenSidePanel] = useState<'history' | 'context' | null>(null)
+  const [restoredArtifacts, setRestoredArtifacts] = useState<ArtifactView[]>([])
   const messageListRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -333,6 +340,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
       )
       if (!response.ok) return false
       const detail = await response.json() as ConversationDetail
+      const conversationArtifacts = await getConversationArtifacts(CURRENT_USER_ID, detail.conversationId)
       let lastAssistantIndex = -1
       detail.messages.forEach((item, index) => {
         if (item.role === 'assistant') lastAssistantIndex = index
@@ -345,6 +353,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
       setConversationId(detail.conversationId)
       setContext(detail.context)
       setMessages(restoredMessages.length ? restoredMessages : [WELCOME])
+      setRestoredArtifacts(conversationArtifacts.filter((artifact) => artifact.artifactType !== 'QUERY_RESULT'))
       setMessageId(Math.max(2, ...restoredMessages.map((item) => item.id + 1)))
       setInput('')
       setValidation('')
@@ -363,6 +372,7 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
     setMessages([{ ...WELCOME, id: messageId }])
     setMessageId((current) => current + 1)
     setContext(EMPTY_CONTEXT)
+    setRestoredArtifacts([])
     setConversationId(nextConversationId)
     setInput('')
     setValidation('')
@@ -435,26 +445,27 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
         throw new Error(detail?.detail || '对话服务暂不可用')
       }
       const agent = await response.json() as AgentResponse
-      if (agent.viewModel.type !== 'query') throw new Error('Agent 返回了不支持的查数结果类型')
-      const data = agent.viewModel.payload
+      const data = agent.viewModel.type === 'query' ? agent.viewModel.payload as ChatResponse : null
+      const artifacts = await getArtifacts(CURRENT_USER_ID, agent.outputArtifactIds || [])
       setConversationId(agent.conversationId)
       localStorage.setItem(ACTIVE_CONVERSATION_KEY, agent.conversationId)
-      setContext(data.context)
+      if (data?.context) setContext(data.context)
       setMessages((current) => [...current, {
         id: userId + 1,
         role: 'assistant',
-        text: data.reply,
-        suggestions: data.suggestions,
-        result: data.result,
-        executionEngine: data.executionEngine,
-        workflowSteps: data.workflowSteps,
-        queryPlan: data.queryPlan,
-        queryAction: data.queryAction,
-        queryExplanation: data.queryExplanation,
-        llmMessage: data.llmMessage,
-        derivedFromArtifactIds: data.derivedFromArtifactIds,
-        status: data.status,
-        tone: data.status === 'rejected' ? 'rejected' : 'normal',
+        text: data?.reply || agent.reply,
+        suggestions: data?.suggestions,
+        result: data?.result,
+        executionEngine: data?.executionEngine,
+        workflowSteps: data?.workflowSteps,
+        queryPlan: data?.queryPlan,
+        queryAction: data?.queryAction,
+        queryExplanation: data?.queryExplanation,
+        llmMessage: data?.llmMessage,
+        derivedFromArtifactIds: data?.derivedFromArtifactIds,
+        status: data?.status || agent.status as ChatResponse['status'],
+        tone: (data?.status || agent.status) === 'rejected' ? 'rejected' : 'normal',
+        artifacts,
       }])
       setMessageId((current) => current + 1)
       void refreshHistory()
@@ -580,7 +591,10 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
                   {message.derivedFromArtifactIds && message.derivedFromArtifactIds.length > 0 && (
                     <div className="artifact-source-note">引用分析产物：{message.derivedFromArtifactIds.join('、')}</div>
                   )}
-                  {message.result && <ResultTable result={message.result} />}
+                  {message.artifacts?.map((artifact) => (
+                    <ArtifactRenderer artifact={artifact} userId={CURRENT_USER_ID} key={artifact.artifactId} />
+                  ))}
+                  {message.result && !message.artifacts?.some((artifact) => artifact.artifactType === 'QUERY_RESULT') && <ResultTable result={message.result} />}
                   {message.queryAction && (message.status === 'clarifying' || message.status === 'confirming') && (
                     <div className="query-confirm-actions">
                       <button
@@ -614,6 +628,17 @@ export default function QueryChatPage({ selectedModel }: { selectedModel: string
                 {message.role === 'user' && <span className="message-avatar user-message-avatar">演</span>}
               </div>
             ))}
+            {restoredArtifacts.length > 0 && (
+              <div className="message-row assistant restored-artifact-row">
+                <span className="message-avatar">BI</span>
+                <div className="message-content">
+                  <div className="restored-artifact-heading">本会话生成的分析产物</div>
+                  {restoredArtifacts.map((artifact) => (
+                    <ArtifactRenderer artifact={artifact} userId={CURRENT_USER_ID} key={artifact.artifactId} />
+                  ))}
+                </div>
+              </div>
+            )}
             {pending && (
               <div className="message-row assistant">
                 <span className="message-avatar">BI</span>

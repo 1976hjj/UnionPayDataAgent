@@ -7,6 +7,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.company.paymentanalysis.chat.ChatConversationMemoryService;
+import com.company.paymentanalysis.artifact.model.ArtifactType;
+import com.company.paymentanalysis.artifact.service.ArtifactAccessService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -22,6 +24,7 @@ class AttributionControllerTest {
 
     @Autowired private MockMvc mockMvc;
     @Autowired private ChatConversationMemoryService memoryService;
+    @Autowired private ArtifactAccessService artifactAccessService;
 
     @Test
     void returnsBoundedBranchAttributionForJulyDecline() throws Exception {
@@ -62,6 +65,17 @@ class AttributionControllerTest {
         assertThat(artifact.verifiedFacts()).allMatch(fact -> fact.source().startsWith("JAVA_")
                 || "REQUEST_VALIDATION".equals(fact.source()));
         assertThat(artifact.modelNarrative()).contains("摘要=");
+
+        var unifiedArtifacts = artifactAccessService.findByConversation(
+                "attribution-user", "attribution-follow-up");
+        var unifiedArtifact = unifiedArtifacts.stream()
+                .filter(item -> item.artifactType() == ArtifactType.ATTRIBUTION_RESULT)
+                .findFirst().orElseThrow();
+        assertThat(unifiedArtifact.createdBy()).isEqualTo("attribution-skill");
+        var completeArtifact = artifactAccessService.get(
+                "attribution-user", unifiedArtifact.artifactId());
+        assertThat(completeArtifact.payload().path("metricId").asText()).isEqualTo("trans_rmb_amt_m");
+        assertThat(completeArtifact.payload().path("analysisResult").path("evidence").isArray()).isTrue();
 
         mockMvc.perform(post("/api/agent/chat")
                         .contentType(MediaType.APPLICATION_JSON)

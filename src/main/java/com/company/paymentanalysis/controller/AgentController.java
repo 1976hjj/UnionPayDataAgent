@@ -60,6 +60,9 @@ public class AgentController {
                 source.queryContext(),
                 source.attributionTemplate(),
                 source.attributionExecutionOptions(),
+                source.visualizationOptions(),
+                source.inputArtifactIds(),
+                source.parameters(),
                 source.action());
         try (ProcessAuditLog.AuditScope scope = auditLog.start("agent.chat", Map.of(
                 "userId", request.userId(),

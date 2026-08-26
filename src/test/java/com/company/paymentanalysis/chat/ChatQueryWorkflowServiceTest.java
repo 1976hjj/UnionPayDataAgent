@@ -8,6 +8,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.company.paymentanalysis.artifact.model.Artifact;
+import com.company.paymentanalysis.artifact.service.ArtifactService;
+import com.company.paymentanalysis.artifact.service.ArtifactService.CreateQueryResult;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.PendingResolution;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.AmbiguousResolution;
 import com.company.paymentanalysis.chat.ChatQueryInterpreter.ResolutionCandidate;
@@ -18,15 +21,57 @@ import com.company.paymentanalysis.controller.ChatQueryController.DimensionFilte
 import com.company.paymentanalysis.controller.ChatQueryController.QueryContext;
 import com.company.paymentanalysis.llm.OpenAiCompatibleLlmClient.LlmResultMessage;
 import com.company.paymentanalysis.smartbi.AuthorizedSmartBiClient;
+import com.company.paymentanalysis.smartbi.AuthorizedSmartBiClient.PreparedQuery;
 import com.company.paymentanalysis.smartbi.SmartBiProperties;
+import com.company.paymentanalysis.smartbi.SmartBiModels.QueryResponse;
 import com.company.paymentanalysis.smartbi.SmartBiQueryBuilder;
 import com.company.paymentanalysis.semantic.BusinessSemanticProcessor.AppliedSemanticRule;
 import com.company.paymentanalysis.semantic.QuerySemanticIntent.FilterTerm;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
+import java.util.Map;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 
 class ChatQueryWorkflowServiceTest {
+
+    @Test
+    void persistsCompletedQueryAsArtifactAndKeepsTheLegacyResult() throws Exception {
+        ChatQueryInterpreter interpreter = mock(ChatQueryInterpreter.class);
+        AuthorizedSmartBiClient smartBiClient = mock(AuthorizedSmartBiClient.class);
+        ArtifactService artifactService = mock(ArtifactService.class);
+        Artifact artifact = mock(Artifact.class);
+        when(artifact.artifactId()).thenReturn("art_query_001");
+        when(artifactService.createQueryResult(any(CreateQueryResult.class))).thenReturn(artifact);
+        when(interpreter.engineLabel(anyString())).thenReturn("test-model");
+        when(smartBiClient.prepare(anyString(), any())).thenAnswer(invocation ->
+                new PreparedQuery(invocation.getArgument(0), invocation.getArgument(1)));
+        when(smartBiClient.query(any(PreparedQuery.class))).thenReturn(new QueryResponse(
+                "request-1", List.of(Map.of("trans_cnt_m", "123.45")), Map.of()));
+
+        ChatQueryWorkflowService service = new ChatQueryWorkflowService(
+                interpreter,
+                new SmartBiQueryBuilder(new SmartBiProperties("dataset", true, "", "", "", "")),
+                smartBiClient,
+                new ObjectMapper(),
+                ClarificationPlanner.noOp(),
+                artifactService);
+        QueryContext context = new QueryContext(List.of("trans_cnt_m"), List.of(), List.of(), List.of());
+
+        var response = service.query(new ChatRequest(
+                "demo-user", "session-1", "确认执行", context, "test-model", true));
+
+        assertThat(response.status()).isEqualTo("completed");
+        assertThat(response.result()).isNotNull();
+        assertThat(response.result().rows()).hasSize(1);
+        assertThat(response.artifactId()).isEqualTo("art_query_001");
+        ArgumentCaptor<CreateQueryResult> command = ArgumentCaptor.forClass(CreateQueryResult.class);
+        verify(artifactService).createQueryResult(command.capture());
+        assertThat(command.getValue().ownerUserId()).isEqualTo("demo-user");
+        assertThat(command.getValue().conversationId()).isEqualTo("session-1");
+        assertThat(command.getValue().payload().rows().get(0).get("trans_cnt_m"))
+                .isEqualTo(new java.math.BigDecimal("123.45"));
+    }
 
     @Test
     void asksUserToChooseAmongAllExactValueFieldsWhenMultipleWereNotSelected() throws Exception {

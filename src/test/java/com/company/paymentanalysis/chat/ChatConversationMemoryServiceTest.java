@@ -64,7 +64,8 @@ class ChatConversationMemoryServiceTest {
         ChatResponse response = new ChatResponse(
                 "completed", "查询完成", List.of(), context, null, "LangGraph4j → Mock LLM → Mock SmartBI",
                 List.of(new WorkflowStep("node", "节点", "COMPLETED", "完成")),
-                null, "conversation-1", null, "查询指定条件。", null);
+                null, "conversation-1", null, "查询指定条件。", null,
+                List.of(), null, "art_query_001");
 
         service.saveTurn("user-1", "conversation-1", "查7月交易金额", response);
 
@@ -79,6 +80,7 @@ class ChatConversationMemoryServiceTest {
                 .hasValueSatisfying(detail -> {
                     assertThat(detail.messages()).hasSize(2);
                     assertThat(detail.messages().get(1).workflowSteps()).hasSize(1);
+                    assertThat(detail.messages().get(1).artifactId()).isEqualTo("art_query_001");
                 });
 
         assertThat(service.deleteConversation("user-1", "conversation-1")).isTrue();

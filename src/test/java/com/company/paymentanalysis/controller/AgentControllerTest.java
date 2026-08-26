@@ -1,6 +1,7 @@
 package com.company.paymentanalysis.controller;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.mockito.ArgumentMatchers.any;
@@ -38,6 +39,21 @@ class AgentControllerTest {
     private AttributionExecutionService attributionExecutionService;
 
     @Test
+    void publishesTheRegisteredSkillAndToolCapabilityCatalog() throws Exception {
+        mockMvc.perform(get("/api/agent/capabilities"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.skills[0].skillId").value("attribution"))
+                .andExpect(jsonPath("$.skills[1].skillId").value("query"))
+                .andExpect(jsonPath("$.skills[1].producedArtifactTypes[0]").value("QUERY_RESULT"))
+                .andExpect(jsonPath("$.skills[2].skillId").value("visualization"))
+                .andExpect(jsonPath("$.skills[2].acceptedArtifactTypes[0]").value("QUERY_RESULT"))
+                .andExpect(jsonPath("$.skills[2].producedArtifactTypes[0]").value("CHART"))
+                .andExpect(jsonPath("$.tools[0].toolId").value("export-data"))
+                .andExpect(jsonPath("$.tools[0].acceptedArtifactTypes[0]").value("QUERY_RESULT"))
+                .andExpect(jsonPath("$.tools[0].producedArtifactTypes[0]").value("FILE"));
+    }
+
+    @Test
     void delegatesTheBiEntryToTheExistingQueryWorkflow() throws Exception {
         mockMvc.perform(post("/api/agent/chat")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -57,6 +73,9 @@ class AgentControllerTest {
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.activeSkill").value("QUERY"))
+                .andExpect(jsonPath("$.skillId").value("query"))
+                .andExpect(jsonPath("$.plan.plannerId").value("deterministic-supervisor"))
+                .andExpect(jsonPath("$.plan.steps[0].capabilityId").value("query"))
                 .andExpect(jsonPath("$.viewModel.type").value("query"))
                 .andExpect(jsonPath("$.viewModel.payload.context.metricIds[0]").value("trans_cnt_m"));
     }
@@ -75,6 +94,7 @@ class AgentControllerTest {
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.activeSkill").value("ATTRIBUTION"))
+                .andExpect(jsonPath("$.skillId").value("attribution"))
                 .andExpect(jsonPath("$.viewModel.type").value("attribution-template"))
                 .andExpect(jsonPath("$.viewModel.payload.template").exists());
     }
@@ -116,7 +136,7 @@ class AgentControllerTest {
                         "completed", "trans_rmb_amt_m", "人民币总金额", "2026-07", "2026-06",
                         null, List.of(), List.of(), List.of(), List.of(), null,
                         new AttributionReport("归因完成", List.of(), List.of()),
-                        0, "mock", List.of(), List.of())));
+                        0, "mock", List.of(), List.of()), "art_attribution_001"));
 
         mockMvc.perform(post("/api/agent/chat")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -132,6 +152,8 @@ class AgentControllerTest {
                                 """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.activeSkill").value("ATTRIBUTION"))
+                .andExpect(jsonPath("$.skillId").value("attribution"))
+                .andExpect(jsonPath("$.outputArtifactIds[0]").value("art_attribution_001"))
                 .andExpect(jsonPath("$.viewModel.type").value("attribution-result"))
                 .andExpect(jsonPath("$.viewModel.payload.metricId").value("trans_rmb_amt_m"));
     }
