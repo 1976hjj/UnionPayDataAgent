@@ -87,6 +87,18 @@ class DeterministicSupervisorPlannerTest {
         assertThat(plan.message()).contains("先完成查询");
     }
 
+    @Test
+    void treatsColloquialGiveMeAChartAsVisualizationInsteadOfAQuery() {
+        when(artifacts.findByConversation("user", "conversation")).thenReturn(List.of());
+
+        AgentPlan plan = planner.plan(
+                request("给我按月的图吧", AgentEntryMode.BI_CHAT), context(AgentEntryMode.BI_CHAT));
+
+        assertThat(plan.status()).isEqualTo(AgentPlan.Status.NEEDS_INPUT);
+        assertThat(plan.steps()).isEmpty();
+        assertThat(plan.message()).contains("先完成");
+    }
+
     private AgentRequest request(String message, AgentEntryMode mode) {
         return new AgentRequest(
                 "user", "conversation", message, mode, "model", false,

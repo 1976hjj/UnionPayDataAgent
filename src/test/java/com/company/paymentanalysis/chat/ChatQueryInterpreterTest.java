@@ -503,6 +503,122 @@ class ChatQueryInterpreterTest {
         });
     }
 
+    @Test
+    void keepsPreviouslyGroundedSlotsWhileOnlyRetrievingTheLatestTurn() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant", """
+                        {"searchTerms":[],"metricTerms":[],"groupTerms":["发卡市场"],
+                         "filterTerms":[],"sortTerms":[],"unmappedTerms":[]}
+                        """, List.of()),
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metricIds":[],"dimensionIds":["iss_sc_ch"],
+                         "dimensionFilters":[],"sorts":[],"unresolvedItems":[]}
+                        """, List.of()));
+        AtomicReference<String> retrievalMessage = new AtomicReference<>();
+        AtomicReference<String> retrievalIntent = new AtomicReference<>();
+        MetadataRetrievalTool retrieval = new MetadataRetrievalTool() {
+            @Override
+            public RetrievedMetadata retrieveForQuery(String message, String semanticIntent) {
+                retrievalMessage.set(message);
+                retrievalIntent.set(semanticIntent);
+                return new RetrievedMetadata(
+                        List.of(),
+                        List.of(new MetadataCandidate(
+                                Scope.DIMENSION, "iss_sc_ch", "发卡市场", "", "地域",
+                                1, "发卡市场", "mock")),
+                        List.of(), true);
+            }
+
+            @Override
+            public RetrievedMetadata retrieveForAttribution(String message, String semanticIntent) {
+                return RetrievedMetadata.empty();
+            }
+        };
+        QueryContext current = new QueryContext(
+                List.of("trans_cnt_m", "acpt_cnt_m", "acpt_trans_rmb_amt_m"),
+                List.of("sett_dt_Month2"),
+                List.of(
+                        new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
+                                "sett_dt_Year2", "EQUALS", List.of("2026")),
+                        new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
+                                "kpi_ind", "IN", List.of("1", "0")),
+                        new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
+                                "bi_tag", "BETWEEN", List.of("10", "20"))),
+                List.of());
+
+        var result = interpreter(llm, retrieval).interpret(
+                new ChatRequest("user", "session", "改成按发卡市场分组", current,
+                        "company-model", false),
+                current);
+
+        assertThat(retrievalMessage.get()).isEqualTo("改成按发卡市场分组");
+        assertThat(retrievalIntent.get()).doesNotContain("10", "20", "有效标识");
+        assertThat(result.action().metricIds()).containsExactlyElementsOf(current.metricIds());
+        assertThat(result.action().dimensionIds()).containsExactly("iss_sc_ch");
+        assertThat(result.action().dimensionFilters()).containsExactlyElementsOf(current.dimensionFilters());
+        assertThat(result.pendingResolutions()).isEmpty();
+    }
+
+    @Test
+    void replacesOnlyTheFilterGroundedByTheLatestTurn() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant", """
+                        {"searchTerms":[{"text":"韩国","context":"收单市场改成韩国"}],
+                         "metricTerms":[],"groupTerms":[],
+                         "filterTerms":[{"dimensionTerm":"收单市场","operator":"EQUALS",
+                           "values":["韩国"],"context":"收单市场改成韩国"}],
+                         "sortTerms":[],"unmappedTerms":[]}
+                        """, List.of()),
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metricIds":[],"dimensionIds":[],
+                         "dimensionFilters":[
+                           {"dimensionId":"acq_mkt_ch","operator":"EQUALS","values":["韩国"]}],
+                         "sorts":[],"unresolvedItems":[]}
+                        """, List.of()));
+        MetadataRetrievalTool retrieval = new MetadataRetrievalTool() {
+            @Override
+            public RetrievedMetadata retrieveForQuery(String message, String semanticIntent) {
+                return new RetrievedMetadata(
+                        List.of(),
+                        List.of(new MetadataCandidate(
+                                Scope.DIMENSION, "acq_mkt_ch", "收单市场", "", "地域",
+                                1, "收单市场", "mock")),
+                        List.of(new MetadataCandidate(
+                                Scope.VALUE, "acq_mkt_ch", "收单市场", "韩国", "地域",
+                                1, "韩国", "mock")), true);
+            }
+
+            @Override
+            public RetrievedMetadata retrieveForAttribution(String message, String semanticIntent) {
+                return RetrievedMetadata.empty();
+            }
+        };
+        var oldMarket = new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
+                "acq_mkt_ch", "EQUALS", List.of("香港"));
+        var stableFlag = new com.company.paymentanalysis.controller.ChatQueryController.DimensionFilter(
+                "kpi_ind", "EQUALS", List.of("1"));
+        QueryContext current = new QueryContext(
+                List.of("trans_cnt_m"), List.of("sett_dt_Month2"),
+                List.of(oldMarket, stableFlag), List.of());
+
+        var result = interpreter(llm, retrieval).interpret(
+                new ChatRequest("user", "session", "收单市场改成韩国", current,
+                        "company-model", false),
+                current);
+
+        assertThat(result.action().metricIds()).containsExactly("trans_cnt_m");
+        assertThat(result.action().dimensionIds()).containsExactly("sett_dt_Month2");
+        assertThat(result.action().dimensionFilters())
+                .contains(stableFlag)
+                .anySatisfy(filter -> {
+                    assertThat(filter.dimensionId()).isEqualTo("acq_mkt_ch");
+                    assertThat(filter.values()).containsExactly("韩国");
+                })
+                .doesNotContain(oldMarket);
+    }
+
     private ChatQueryInterpreter interpreter(OpenAiCompatibleLlmClient llm) {
         return interpreter(llm, MetadataRetrievalTool.noOp());
     }

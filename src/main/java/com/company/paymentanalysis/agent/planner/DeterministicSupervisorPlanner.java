@@ -56,7 +56,8 @@ public class DeterministicSupervisorPlanner implements SupervisorPlanner {
 
         String message = normalized(request.message());
         boolean visualizationIntent = context.entryMode() == AgentEntryMode.VISUALIZATION
-                || containsAny(message, "图表", "折线图", "柱状图", "饼图", "可视化");
+                || containsAny(message, "图表", "折线图", "柱状图", "饼图", "可视化", "给我个图", 
+                        "给我图", "画图", "画个图", "画一下", "趋势图", "的图");
         boolean exportIntent = containsAny(message, "导出", "下载", "excel", "xlsx", "csv");
 
         if (exportIntent) {

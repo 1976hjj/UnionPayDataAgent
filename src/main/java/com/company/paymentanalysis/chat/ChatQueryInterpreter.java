@@ -39,10 +39,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.util.StringUtils;
 
 /**
- * Converts a natural-language request to the complete query state consumed by
- * {@link com.company.paymentanalysis.smartbi.SmartBiQueryBuilder}. The LLM sees
- * the current state and the full, current production catalog on every request;
- * it never needs to emit internal SET/CLEAR actions.
+ * Converts the latest natural-language turn to the complete query state consumed by
+ * {@link com.company.paymentanalysis.smartbi.SmartBiQueryBuilder}. Retrieval is scoped
+ * to the latest turn while previously grounded slots remain sticky until the user
+ * explicitly replaces or removes them.
  */
 @Component
 public class ChatQueryInterpreter {
@@ -89,7 +89,7 @@ public class ChatQueryInterpreter {
         try {
             List<ChatMessage> intentMessages = List.of(
                     new ChatMessage("system", intentSystemPrompt()),
-                    new ChatMessage("user", intentPrompt(request.message(), current, pendingQueryIntent)));
+                    new ChatMessage("user", intentPrompt(request.message(), pendingQueryIntent)));
             String mockIntent = "{\"searchTerms\":[],\"metricTerms\":[],\"groupTerms\":[],\"filterTerms\":[],"
                     + "\"sortTerms\":[],\"unmappedTerms\":[]}";
             LlmResultMessage intent = complete(intentMessages, mockIntent, request.model());
@@ -227,24 +227,23 @@ public class ChatQueryInterpreter {
                 + "\n第一阶段语义清单：" + semanticIntent;
     }
 
-    private String intentPrompt(String message, QueryContext current, String pendingQueryIntent)
-            throws JsonProcessingException {
+    private String intentPrompt(String message, String pendingQueryIntent) {
         return "当前日期：" + LocalDate.now(clock)
-                + "\n当前完整查询状态：" + objectMapper.writeValueAsString(
-                        current == null ? QueryContext.empty() : current)
                 + "\n上轮未映射语义："
                 + (pendingQueryIntent == null || pendingQueryIntent.isBlank() ? "无" : pendingQueryIntent)
-                + "\n用户本轮要求：" + message;
+                + "\n用户最新一轮要求：" + message
+                + "\n只提取最新一轮以及上轮未映射语义中明确出现的业务元素；"
+                + "不要复述或补入已经存在于历史查询状态中的字段和值。";
     }
 
     private String intentSystemPrompt() {
         return """
-                你是查询语义清单提取器。结合当前查询状态、上轮未映射语义和本轮要求，输出修改后的完整语义目标；不选择数据库字段 ID，不发明业务含义。
+                你是查询最新轮语义清单提取器。只处理用户最新一轮要求和上轮尚未映射的语义；不选择数据库字段 ID，不发明业务含义。
                 只返回 JSON，固定结构：
                 {"searchTerms":[{"text":"用户原话中的业务术语","context":"该词所在原句"}],"metricTerms":["度量原词"],"groupTerms":["分组维度原词"],"filterTerms":[{"dimensionTerm":"过滤维度原词","operator":"EQUALS|NOT_EQUALS|IN|BETWEEN|GREATER|GREATER_EQUALS|LESS|LESS_EQUALS","values":["用户原值"],"context":"过滤条件原句"}],"sortTerms":[{"fieldTerm":"排序字段原词","direction":"ASC|DESC"}],"unmappedTerms":[]}
 
                 规则：
-                1. metricTerms、groupTerms、filterTerms、sortTerms 都输出本轮修改后的完整最终语义，不只是本轮新增内容；保留未被用户修改的当前要求。
+                1. metricTerms、groupTerms、filterTerms、sortTerms 只输出最新一轮明确提到的内容。历史中已经确定但本轮没有提到的度量、维度、过滤和值不得重复输出。
                 2. 一句话中混合度量和条件时必须拆开。例如“发卡IIN为47300702航空类承兑金额”应拆为度量“承兑金额”和两个独立过滤条件，不得把整句当度量。
                 3. filterTerms.dimensionTerm 表示用户所指的过滤维度，values 只放用户给出的值，context 保留原句。不要把长编号拆成短数字，也不要根据编号内容猜字段。
                 4. 相对时间允许根据当前日期换算成明确日期值，但不得选择字段 ID。例如“昨天”可输出 dimensionTerm=“日”、values=["yyyy-MM-dd"]；“对比去年5月和4月”同时是按月分组和月份过滤。
@@ -282,7 +281,10 @@ public class ChatQueryInterpreter {
                 textList(root.path("unresolvedItems"), "unresolvedItems"));
         int metricTermCount = (int) semanticIntent.metricTerms().stream()
                 .filter(StringUtils::hasText).distinct().count();
-        if (action.metricIds().size() > metricTermCount) {
+        int newlyMappedMetricCount = (int) action.metricIds().stream()
+                .filter(id -> !currentAction.metricIds().contains(id))
+                .count();
+        if (newlyMappedMetricCount > metricTermCount) {
             action = new QueryAction(
                     currentAction.metricIds(), action.dimensionIds(), action.dimensionFilters(), action.sorts());
             semanticIntent.metricTerms().stream()
@@ -293,13 +295,16 @@ public class ChatQueryInterpreter {
         action = applyExplicitAmbiguitySelection(action, currentAction, grounding, userMessage);
         action = reconcileGroundings(action, grounding);
         action = applyRuleConstraints(action, normalization);
+        action = mergeStickyState(
+                currentAction, action, semanticIntent, retrievedMetadata, grounding, normalization,
+                userMessage);
         unresolvedItems.removeIf(item -> normalization.consumedTerms().stream()
                 .anyMatch(term -> normalizeTerm(item).contains(normalizeTerm(term))));
         applyGroundingCoverage(action, grounding, unresolvedItems);
         removeItemsCoveredByFinalFilters(action, unresolvedItems);
         List<AmbiguousResolution> ambiguousResolutions = ambiguousResolutions(action, grounding);
         List<PendingResolution> pendingResolutions = pendingResolutions(
-                action, semanticIntent, retrievedMetadata, normalization);
+                action, currentAction, semanticIntent, retrievedMetadata, normalization);
         String explanation = unresolvedItems.isEmpty()
                 ? pendingResolutions.isEmpty()
                         ? "已按元数据完成查询条件映射。"
@@ -386,8 +391,8 @@ public class ChatQueryInterpreter {
     }
 
     private List<PendingResolution> pendingResolutions(
-            QueryAction action, QuerySemanticIntent semanticIntent, RetrievedMetadata retrievedMetadata,
-            NormalizationResult normalization) {
+            QueryAction action, QueryAction currentAction, QuerySemanticIntent semanticIntent,
+            RetrievedMetadata retrievedMetadata, NormalizationResult normalization) {
         List<PendingResolution> pending = new java.util.ArrayList<>();
         Set<String> trustedRuleFields = new java.util.LinkedHashSet<>();
         if (normalization != null) {
@@ -397,14 +402,20 @@ public class ChatQueryInterpreter {
                     .forEach(trustedRuleFields::add);
         }
         addWeakFieldResolutions(
-                pending, "度量", action.metricIds(), semanticIntent.metricTerms(),
+                pending, "度量", action.metricIds().stream()
+                        .filter(id -> !currentAction.metricIds().contains(id)).toList(),
+                semanticIntent.metricTerms(),
                 retrievedMetadata, trustedRuleFields);
         addWeakFieldResolutions(
-                pending, "分组维度", action.dimensionIds(), semanticIntent.groupTerms(),
+                pending, "分组维度", action.dimensionIds().stream()
+                        .filter(id -> !currentAction.dimensionIds().contains(id)).toList(),
+                semanticIntent.groupTerms(),
                 retrievedMetadata, trustedRuleFields);
         for (int index = 0; index < action.dimensionFilters().size(); index++) {
             DimensionFilter filter = action.dimensionFilters().get(index);
-            if (isTimeDimension(filter.dimensionId()) || trustedRuleFields.contains(filter.dimensionId())) {
+            if (currentAction.dimensionFilters().contains(filter)
+                    || isTimeDimension(filter.dimensionId())
+                    || trustedRuleFields.contains(filter.dimensionId())) {
                 continue;
             }
             List<String> filterTerms = semanticIntent.filterTerms().stream()
@@ -422,6 +433,7 @@ public class ChatQueryInterpreter {
         }
         for (int index = 0; index < action.sorts().size(); index++) {
             SortSpec sort = action.sorts().get(index);
+            if (currentAction.sorts().contains(sort)) continue;
             String term = bestFieldTerm(
                     sort.fieldId(),
                     semanticIntent.sortTerms().stream().map(QuerySemanticIntent.SortTerm::fieldTerm).toList(),
@@ -661,6 +673,117 @@ public class ChatQueryInterpreter {
         return new QuerySemanticIntent(
                 validSearchTerms, intent.metricTerms(), intent.groupTerms(), intent.filterTerms(),
                 intent.sortTerms(), intent.unmappedTerms());
+    }
+
+    /**
+     * Treats the previous query context as sticky state. The LLM may still emit a
+     * complete QueryAction, but only slots touched by the latest turn are allowed
+     * to replace existing values. This keeps already-grounded fields out of the
+     * current turn's RAG evidence requirements.
+     */
+    private QueryAction mergeStickyState(
+            QueryAction current, QueryAction proposed, QuerySemanticIntent intent,
+            RetrievedMetadata metadata, GroundingResult grounding,
+            NormalizationResult normalization, String message) {
+        if (current == null || isEmpty(current)) return proposed;
+
+        boolean additive = containsAny(message, "增加", "添加", "再加", "同时", "还要", "以及");
+        boolean replacement = containsAny(message, "改成", "改为", "换成", "替换", "只看", "仅看");
+        boolean removal = containsAny(message, "去掉", "删除", "不要", "不看", "取消");
+
+        List<String> metrics = current.metricIds();
+        boolean metricsTouched = !intent.metricTerms().isEmpty()
+                || (normalization != null && !normalization.enforcedMetricIds().isEmpty());
+        if (metricsTouched) {
+            metrics = additive && !replacement && !removal
+                    ? union(current.metricIds(), proposed.metricIds())
+                    : proposed.metricIds();
+        }
+
+        List<String> dimensions = current.dimensionIds();
+        if (!intent.groupTerms().isEmpty()) {
+            dimensions = additive && !replacement && !removal
+                    ? union(current.dimensionIds(), proposed.dimensionIds())
+                    : proposed.dimensionIds();
+        }
+
+        Set<String> touchedFilterFields = touchedFilterFields(metadata, grounding, normalization);
+        List<DimensionFilter> filters = new java.util.ArrayList<>(current.dimensionFilters());
+        for (DimensionFilter candidate : proposed.dimensionFilters()) {
+            boolean unchanged = current.dimensionFilters().contains(candidate);
+            boolean latestTurnEvidence = touchedFilterFields.contains(candidate.dimensionId())
+                    || mentionsField(normalizeTerm(message), candidate.dimensionId())
+                    || (isTimeDimension(candidate.dimensionId()) && !intent.filterTerms().isEmpty());
+            if (!unchanged && latestTurnEvidence) {
+                filters.removeIf(existing -> existing.dimensionId().equals(candidate.dimensionId()));
+                filters.add(candidate);
+            }
+        }
+        if (removal) {
+            String normalizedMessage = normalizeTerm(message);
+            filters.removeIf(existing -> !proposed.dimensionFilters().stream()
+                    .anyMatch(candidate -> candidate.dimensionId().equals(existing.dimensionId()))
+                    && (touchedFilterFields.contains(existing.dimensionId())
+                            || mentionsField(normalizedMessage, existing.dimensionId()))
+                    && mentionsFilter(normalizedMessage, existing));
+        }
+
+        List<SortSpec> sorts = current.sorts();
+        if (!intent.sortTerms().isEmpty()) {
+            sorts = proposed.sorts();
+        } else if (containsAny(message, "不排序", "取消排序", "清空排序")) {
+            sorts = List.of();
+        }
+        return new QueryAction(metrics, dimensions, List.copyOf(filters), sorts);
+    }
+
+    private Set<String> touchedFilterFields(
+            RetrievedMetadata metadata, GroundingResult grounding, NormalizationResult normalization) {
+        LinkedHashSet<String> fields = new LinkedHashSet<>();
+        if (metadata != null) {
+            metadata.values().stream().map(candidate -> candidate.fieldId()).forEach(fields::add);
+        }
+        GroundingResult evidence = grounding == null ? GroundingResult.empty() : grounding;
+        evidence.requiredFilters().stream().map(GroundedFilter::dimensionId).forEach(fields::add);
+        evidence.ambiguousFilters().stream()
+                .flatMap(item -> item.dimensionIds().stream()).forEach(fields::add);
+        if (normalization != null) {
+            normalization.enforcedFilters().stream()
+                    .map(filter -> filter.dimensionId()).forEach(fields::add);
+        }
+        return Set.copyOf(fields);
+    }
+
+    private boolean mentionsFilter(String normalizedMessage, DimensionFilter filter) {
+        if (mentionsField(normalizedMessage, filter.dimensionId())) {
+            return true;
+        }
+        return filter.values().stream()
+                .map(this::normalizeTerm)
+                .filter(value -> !value.isBlank())
+                .anyMatch(normalizedMessage::contains);
+    }
+
+    private boolean mentionsField(String normalizedMessage, String fieldId) {
+        return normalizedMessage.contains(normalizeTerm(fieldId))
+                || normalizedMessage.contains(normalizeTerm(QueryMetadataCatalog.displayName(fieldId)));
+    }
+
+    private List<String> union(List<String> current, List<String> proposed) {
+        LinkedHashSet<String> values = new LinkedHashSet<>(current);
+        values.addAll(proposed);
+        return List.copyOf(values);
+    }
+
+    private boolean isEmpty(QueryAction action) {
+        return action.metricIds().isEmpty() && action.dimensionIds().isEmpty()
+                && action.dimensionFilters().isEmpty() && action.sorts().isEmpty();
+    }
+
+    private boolean containsAny(String message, String... terms) {
+        String source = message == null ? "" : message;
+        for (String term : terms) if (source.contains(term)) return true;
+        return false;
     }
 
     private QueryAction applyRuleConstraints(QueryAction source, NormalizationResult normalization) {
