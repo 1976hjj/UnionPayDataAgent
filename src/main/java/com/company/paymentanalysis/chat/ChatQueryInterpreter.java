@@ -418,18 +418,30 @@ public class ChatQueryInterpreter {
                     || trustedRuleFields.contains(filter.dimensionId())) {
                 continue;
             }
-            List<String> filterTerms = semanticIntent.filterTerms().stream()
-                    .map(FilterTerm::dimensionTerm).toList();
-            String term = bestFieldTerm(
-                    filter.dimensionId(),
-                    filterTerms,
-                    filterTerms.size() == action.dimensionFilters().size() ? index : -1,
-                    "筛选维度");
-            if (!hasFieldEvidence(filter.dimensionId(), evidenceTerms(term), retrievedMetadata)) {
-                pending.add(new PendingResolution(
-                        "筛选维度", term, filter.dimensionId(), QueryMetadataCatalog.displayName(filter.dimensionId()),
-                        "本次 RAG 未召回该字段，请确认是否按此条件查询"));
+            // A final filter must be traceable to one of the user's semantic
+            // terms, but the mapping model is allowed to omit unresolved terms
+            // (for example, "DP") or reorder filters.  Do not use a positional
+            // fallback here: it previously leaked the internal label “筛选维度”
+            // into the user-facing confirmation message.
+            //
+            // RAG is supplementary evidence.  Once the value is explicitly
+            // present in the user semantic intent, the normal whole-query
+            // confirmation gate is sufficient; an absent retrieval hit must not
+            // create a second, misleading confirmation item.
+            FilterTerm source = sourceFilterTerm(filter, semanticIntent.filterTerms());
+            if (source != null || hasExactValueEvidence(filter, retrievedMetadata)
+                    || hasFieldEvidence(filter.dimensionId(),
+                            List.of(QueryMetadataCatalog.displayName(filter.dimensionId())), retrievedMetadata)) {
+                continue;
             }
+            // This is a model-added filter with neither a user semantic source
+            // nor retrieval evidence. Keep the existing whole-query confirmation
+            // behavior, but describe the condition with a catalog name instead
+            // of leaking an internal slot label.
+            pending.add(new PendingResolution(
+                    "筛选条件", QueryMetadataCatalog.displayName(filter.dimensionId()),
+                    filter.dimensionId(), QueryMetadataCatalog.displayName(filter.dimensionId()),
+                    "未能关联到本轮输入或检索证据，请确认是否保留该条件"));
         }
         for (int index = 0; index < action.sorts().size(); index++) {
             SortSpec sort = action.sorts().get(index);
@@ -485,6 +497,48 @@ public class ChatQueryInterpreter {
 
     private List<String> evidenceTerms(String term) {
         return StringUtils.hasText(term) ? List.of(term) : List.of();
+    }
+
+    /**
+     * Resolves the user-authored semantic term that produced a final filter.
+     * The result is intentionally kept local until the query contract grows a
+     * dedicated provenance field; matching by field name and values keeps the
+     * association stable even when unresolved terms are dropped or reordered.
+     */
+    private FilterTerm sourceFilterTerm(DimensionFilter filter, List<FilterTerm> terms) {
+        if (terms == null || terms.isEmpty()) return null;
+        String displayName = normalizeTerm(QueryMetadataCatalog.displayName(filter.dimensionId()));
+        List<FilterTerm> fieldMatches = terms.stream()
+                .filter(term -> sameOrContains(normalizeTerm(term.dimensionTerm()), displayName))
+                .toList();
+        if (fieldMatches.size() == 1) return fieldMatches.get(0);
+
+        List<FilterTerm> valueMatches = terms.stream()
+                .filter(term -> sameFilterValues(filter.values(), term.values()))
+                .toList();
+        if (valueMatches.size() == 1) return valueMatches.get(0);
+
+        return null;
+    }
+
+    private boolean sameOrContains(String left, String right) {
+        return !left.isBlank() && !right.isBlank()
+                && (left.equals(right) || left.contains(right) || right.contains(left));
+    }
+
+    private boolean sameFilterValues(List<String> filterValues, List<String> termValues) {
+        if (filterValues == null || termValues == null || filterValues.isEmpty() || termValues.isEmpty()) {
+            return false;
+        }
+        Set<String> expected = filterValues.stream()
+                .filter(StringUtils::hasText)
+                .map(this::normalizeTerm)
+                .collect(java.util.stream.Collectors.toSet());
+        Set<String> actual = termValues.stream()
+                .filter(StringUtils::hasText)
+                .map(this::normalizeTerm)
+                .collect(java.util.stream.Collectors.toSet());
+        return !expected.isEmpty() && expected.equals(actual);
     }
 
     private QueryAction retainSupportedGeneratedFilters(

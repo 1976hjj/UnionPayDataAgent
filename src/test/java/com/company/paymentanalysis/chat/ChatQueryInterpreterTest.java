@@ -619,6 +619,50 @@ class ChatQueryInterpreterTest {
                 .doesNotContain(oldMarket);
     }
 
+    @Test
+    void keepsExplicitFiltersWithoutLeakingInternalFallbackWhenRagDoesNotRecallFields() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant", """
+                        {"searchTerms":[{"text":"DP","context":"澳大利亚DP收单的Swiss Concept"}],
+                         "metricTerms":["POS交易量"],"groupTerms":[],
+                         "filterTerms":[
+                           {"dimensionTerm":"年","operator":"EQUALS","values":["2026"],"context":"今年二季度"},
+                           {"dimensionTerm":"季度","operator":"EQUALS","values":["二季度"],"context":"今年二季度"},
+                           {"dimensionTerm":"国家","operator":"EQUALS","values":["澳大利亚"],"context":"澳大利亚DP收单"},
+                           {"dimensionTerm":"DP","operator":"EQUALS","values":["DP"],"context":"澳大利亚DP收单"},
+                           {"dimensionTerm":"Swiss Concept","operator":"EQUALS","values":["Swiss Concept"],"context":"Swiss Concept"},
+                           {"dimensionTerm":"内卡外用","operator":"EQUALS","values":["内卡外用"],"context":"内卡外用POS交易量"},
+                           {"dimensionTerm":"POS","operator":"EQUALS","values":["POS"],"context":"内卡外用POS交易量"}],
+                         "sortTerms":[],"unmappedTerms":["DP","二季度"]}
+                        """, List.of()),
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metricIds":["trans_cnt_m"],"dimensionIds":[],
+                         "dimensionFilters":[
+                           {"dimensionId":"sett_dt_Year2","operator":"EQUALS","values":["2026"]},
+                           {"dimensionId":"acq_mkt_ch","operator":"EQUALS","values":["澳大利亚"]},
+                           {"dimensionId":"mer_addr_nm","operator":"EQUALS","values":["Swiss Concept"]},
+                           {"dimensionId":"trans_mod_def","operator":"EQUALS","values":["内卡外用"]},
+                           {"dimensionId":"trans_nms","operator":"EQUALS","values":["POS"]}],
+                         "sorts":[],"unresolvedItems":["DP","二季度"]}
+                        """, List.of()));
+
+        var result = interpreter(llm, MetadataRetrievalTool.noOp()).interpret(
+                new ChatRequest("user", "session",
+                        "今年二季度，澳大利亚DP收单的Swiss Concept的内卡外用POS交易量",
+                        QueryContext.empty(), "company-model", false),
+                QueryContext.empty());
+
+        assertThat(result.action().dimensionFilters()).extracting(filter -> filter.dimensionId())
+                .containsExactly("sett_dt_Year2", "acq_mkt_ch", "mer_addr_nm", "trans_mod_def", "trans_nms");
+        assertThat(result.pendingResolutions())
+                .noneMatch(pending -> "筛选维度".equals(pending.type())
+                        || "筛选条件".equals(pending.type())
+                        || "筛选维度".equals(pending.originalTerm()));
+        assertThat(result.unresolvedItems()).contains("DP", "二季度")
+                .doesNotContain("筛选维度");
+    }
+
     private ChatQueryInterpreter interpreter(OpenAiCompatibleLlmClient llm) {
         return interpreter(llm, MetadataRetrievalTool.noOp());
     }
