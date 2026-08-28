@@ -41,13 +41,14 @@ class RagflowMetadataToolCrossScopeTest {
                 {"searchTerms":[{"text":"POS交易笔数","context":"查POS交易笔数和金额"}],
                  "metricTerms":["POS交易笔数","POS交易金额"],"groupTerms":[],
                  "filterTerms":[{"dimensionTerm":"年","operator":"EQUALS","values":["2025"],"context":"去年"}],
-                 "sortTerms":[],"unmappedTerms":["双标芯片卡"]}
+                 "sortTerms":[{"fieldTerm":"交易金额","direction":"DESC"}],
+                 "unmappedTerms":["双标芯片卡"]}
                 """));
 
         assertThat(plan.metrics())
-                .containsExactly("POS交易笔数", "POS交易金额", "双标芯片卡");
+                .containsExactly("POS交易笔数", "POS交易金额", "交易金额", "双标芯片卡");
         assertThat(plan.dimensions())
-                .containsExactly("年", "POS交易笔数", "双标芯片卡");
+                .containsExactly("年", "交易金额", "POS交易笔数", "双标芯片卡");
         assertThat(plan.filters())
                 .containsExactly("POS交易笔数", "双标芯片卡", "POS交易金额");
     }

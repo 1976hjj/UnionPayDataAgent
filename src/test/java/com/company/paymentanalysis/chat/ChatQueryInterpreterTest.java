@@ -162,13 +162,9 @@ class ChatQueryInterpreterTest {
         OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
         when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
                 new LlmResultMessage("company-model", "assistant", """
-                        {"searchTerms":[
-                           {"text":"东南亚","context":"东南亚"},
-                           {"text":"收单分公司","context":"收单分公司"}],
-                         "metricTerms":["交易笔数"],"groupTerms":["收单分公司"],
-                         "filterTerms":[{"dimensionTerm":"地区","operator":"EQUALS",
-                           "values":["东南亚"],"context":"东南亚"}],
-                         "sortTerms":[],"unmappedTerms":["东南亚"]}
+                        {"searchTerms":[{"text":"收单分公司","context":"收单分公司"}],
+                         "metricTerms":[],"groupTerms":["收单分公司"],
+                         "filterTerms":[],"sortTerms":[],"unmappedTerms":[]}
                         """, List.of()),
                 new LlmResultMessage("company-model", "assistant", """
                         {"metricIds":["trans_cnt_m"],"dimensionIds":["acq_reg_ch"],
@@ -204,7 +200,13 @@ class ChatQueryInterpreterTest {
 
         var result = interpreter(llm, retrieval).interpret(
                 new ChatRequest("user", "session", "收单分公司", current, "company-model", false),
-                current, "{\"unmappedTerms\":[\"东南亚\"]}");
+                current, """
+                        {"searchTerms":[{"text":"东南亚","context":"东南亚"}],
+                         "metricTerms":["交易笔数"],"groupTerms":[],
+                         "filterTerms":[{"dimensionTerm":"地区","operator":"EQUALS",
+                           "values":["东南亚"],"context":"东南亚"}],
+                         "sortTerms":[],"unmappedTerms":["东南亚"]}
+                        """);
 
         assertThat(result.action().dimensionIds()).isEmpty();
         assertThat(result.action().dimensionFilters()).singleElement().satisfies(filter -> {
@@ -424,6 +426,45 @@ class ChatQueryInterpreterTest {
         assertThat(result.action().dimensionFilters().get(0).values())
                 .containsExactly("2025-04", "2025-05");
         verify(llm, times(2)).completeWithMessage(anyList(), anyString(), eq("company-model"));
+    }
+
+    @Test
+    void groundsASortOnlyMetricCandidateAndAddsItToTheProjection() {
+        OpenAiCompatibleLlmClient llm = mock(OpenAiCompatibleLlmClient.class);
+        when(llm.completeWithMessage(anyList(), anyString(), eq("company-model"))).thenReturn(
+                new LlmResultMessage("company-model", "assistant", """
+                        {"searchTerms":[],"metricTerms":[],"groupTerms":[],"filterTerms":[],
+                         "sortTerms":[{"fieldTerm":"交易金额","direction":"DESC"}],"unmappedTerms":[]}
+                        """, List.of()),
+                new LlmResultMessage("company-model", "assistant", """
+                        {"metricIds":["trans_amt_m"],"dimensionIds":[],"dimensionFilters":[],
+                         "sorts":[{"fieldId":"trans_amt_m","direction":"DESC"}],
+                         "unresolvedItems":["交易金额"]}
+                        """, List.of()));
+        MetadataRetrievalTool retrieval = new MetadataRetrievalTool() {
+            @Override
+            public RetrievedMetadata retrieveForQuery(String message, String semanticIntent) {
+                return new RetrievedMetadata(List.of(new MetadataCandidate(
+                        Scope.METRIC, "trans_rmb_amt_m", "人民币总金额", "", "交易金额",
+                        0.9, "交易金额", "mock")), List.of(), List.of(), true);
+            }
+
+            @Override
+            public RetrievedMetadata retrieveForAttribution(String message, String semanticIntent) {
+                return RetrievedMetadata.empty();
+            }
+        };
+
+        var result = interpreter(llm, retrieval).interpret(
+                new ChatRequest("user", "session", "按交易金额降序", QueryContext.empty(),
+                        "company-model", false), QueryContext.empty());
+
+        assertThat(result.action().metricIds()).containsExactly("trans_rmb_amt_m");
+        assertThat(result.action().sorts()).singleElement().satisfies(sort -> {
+            assertThat(sort.fieldId()).isEqualTo("trans_rmb_amt_m");
+            assertThat(sort.direction()).isEqualTo("DESC");
+        });
+        assertThat(result.unresolvedItems()).isEmpty();
     }
 
     @Test

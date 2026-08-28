@@ -100,8 +100,6 @@ export default function App() {
         <nav aria-label="主导航">
           <NavLink to="/query"><span className="nav-icon">查</span><span>对话查数<small>多轮自然语言查询</small></span></NavLink>
           <NavLink to="/attribution"><span className="nav-icon">归</span><span>归因分析<small>维度贡献占比分析</small></span></NavLink>
-          <NavLink to="/definitions"><span className="nav-icon">语</span><span>语义定义<small>指标与数据语义</small></span></NavLink>
-          <NavLink to="/custom-reports"><span className="nav-icon">报</span><span>自定义报告<small>组合数据与图表</small></span></NavLink>
         </nav>
         <div className="sidebar-footer"><span>●</span> 测试环境 · v0.3.0</div>
       </aside>

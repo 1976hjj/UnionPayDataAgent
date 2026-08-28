@@ -78,9 +78,17 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
         List<String> filters = filterTerms(intent.path("filterTerms"));
         List<String> metrics = textItems(intent.path("metricTerms"));
         List<String> dimensions = textItems(intent.path("groupTerms"));
+        List<String> sorts = sortTerms(intent.path("sortTerms"));
         for (JsonNode item : intent.path("filterTerms")) {
             add(dimensions, item.path("dimensionTerm").asText());
         }
+
+        // A sort target must be grounded like any other queried field. The
+        // intent extractor may emit only sortTerms for “按交易金额降序”.
+        sorts.forEach(term -> {
+            add(metrics, term);
+            add(dimensions, term);
+        });
 
         List<String> exploratory = new ArrayList<>();
         textItems(intent.path("searchTerms")).forEach(term -> add(exploratory, term));
@@ -96,6 +104,14 @@ public class RagflowMetadataTool implements MetadataRetrievalTool {
         });
         textItems(intent.path("metricTerms")).forEach(term -> add(filters, term));
         return new RetrievalPlan(metrics, dimensions, filters);
+    }
+
+    private List<String> sortTerms(JsonNode node) {
+        List<String> result = new ArrayList<>();
+        for (JsonNode item : node) {
+            add(result, item.isTextual() ? item.asText() : item.path("fieldTerm").asText());
+        }
+        return result;
     }
 
     @Override

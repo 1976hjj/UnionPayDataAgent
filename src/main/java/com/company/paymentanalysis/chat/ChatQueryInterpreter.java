@@ -96,6 +96,8 @@ public class ChatQueryInterpreter {
             QuerySemanticIntent parsedIntent = sanitizeSearchTerms(
                     objectMapper.readValue(stripMarkdownFence(intent.content()), QuerySemanticIntent.class),
                     request.message(), pendingQueryIntent);
+            parsedIntent = restorePendingFiltersForExplicitFieldChoice(
+                    parsedIntent, pendingQueryIntent, request.message());
             NormalizationResult normalization = businessSemanticProcessor.normalize(request.message(), parsedIntent);
             QuerySemanticIntent normalizedIntent = normalization.intent();
             String semanticIntent = objectMapper.writeValueAsString(normalizedIntent);
@@ -298,6 +300,9 @@ public class ChatQueryInterpreter {
         action = mergeStickyState(
                 currentAction, action, semanticIntent, retrievedMetadata, grounding, normalization,
                 userMessage);
+        action = applyUniqueSortGrounding(action, semanticIntent, retrievedMetadata);
+        removeItemsCoveredByResolvedSorts(
+                action, semanticIntent, retrievedMetadata, unresolvedItems);
         unresolvedItems.removeIf(item -> normalization.consumedTerms().stream()
                 .anyMatch(term -> normalizeTerm(item).contains(normalizeTerm(term))));
         applyGroundingCoverage(action, grounding, unresolvedItems);
@@ -313,6 +318,70 @@ public class ChatQueryInterpreter {
         return new ParsedQueryAction(
                 validate(action), explanation, List.copyOf(unresolvedItems), pendingResolutions,
                 ambiguousResolutions);
+    }
+
+    /**
+     * Grounds sort-only requests deterministically. Sorting by a field also
+     * selects that field because the SmartBI query contract only allows sorts
+     * over projected metrics or grouping dimensions.
+     */
+    private QueryAction applyUniqueSortGrounding(
+            QueryAction source, QuerySemanticIntent intent, RetrievedMetadata metadata) {
+        if (intent.sortTerms().isEmpty() || metadata == null || metadata.isEmpty()) return source;
+
+        List<SortSpec> resolvedSorts = new java.util.ArrayList<>();
+        LinkedHashSet<String> metrics = new LinkedHashSet<>(source.metricIds());
+        LinkedHashSet<String> dimensions = new LinkedHashSet<>(source.dimensionIds());
+        for (QuerySemanticIntent.SortTerm sortTerm : intent.sortTerms()) {
+            String fieldId = uniqueSortCandidate(sortTerm.fieldTerm(), metadata).orElse(null);
+            if (!StringUtils.hasText(fieldId)) return source;
+            if (QueryMetadataCatalog.isMetric(fieldId)) metrics.add(fieldId);
+            if (QueryMetadataCatalog.isDimension(fieldId)) dimensions.add(fieldId);
+            resolvedSorts.add(new SortSpec(fieldId, sortTerm.direction()));
+        }
+        return new QueryAction(
+                List.copyOf(metrics), List.copyOf(dimensions), source.dimensionFilters(),
+                List.copyOf(resolvedSorts));
+    }
+
+    private java.util.Optional<String> uniqueSortCandidate(
+            String term, RetrievedMetadata metadata) {
+        String normalizedTerm = normalizeTerm(term);
+        List<com.company.paymentanalysis.ragflow.MetadataRetrievalTool.MetadataCandidate> matches =
+                new java.util.ArrayList<>();
+        metadata.metrics().stream()
+                .filter(candidate -> normalizedTerm.equals(normalizeTerm(candidate.queryTerm())))
+                .forEach(matches::add);
+        metadata.dimensions().stream()
+                .filter(candidate -> normalizedTerm.equals(normalizeTerm(candidate.queryTerm())))
+                .forEach(matches::add);
+        if (matches.isEmpty()) return java.util.Optional.empty();
+        double bestScore = matches.stream()
+                .mapToDouble(com.company.paymentanalysis.ragflow.MetadataRetrievalTool.MetadataCandidate::score)
+                .max().orElse(Double.NEGATIVE_INFINITY);
+        LinkedHashSet<String> strongest = matches.stream()
+                .filter(candidate -> Math.abs(candidate.score() - bestScore) < 0.000001)
+                .map(com.company.paymentanalysis.ragflow.MetadataRetrievalTool.MetadataCandidate::fieldId)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        return strongest.size() == 1
+                ? java.util.Optional.of(strongest.iterator().next())
+                : java.util.Optional.empty();
+    }
+
+    private void removeItemsCoveredByResolvedSorts(
+            QueryAction action, QuerySemanticIntent intent, RetrievedMetadata metadata,
+            List<String> unresolvedItems) {
+        for (QuerySemanticIntent.SortTerm sortTerm : intent.sortTerms()) {
+            String fieldId = uniqueSortCandidate(sortTerm.fieldTerm(), metadata).orElse(null);
+            if (!StringUtils.hasText(fieldId)) continue;
+            boolean applied = action.sorts().stream()
+                    .anyMatch(sort -> fieldId.equals(sort.fieldId())
+                            && sortTerm.direction().equals(sort.direction()));
+            if (applied) {
+                unresolvedItems.removeIf(item ->
+                        normalizeTerm(item).equals(normalizeTerm(sortTerm.fieldTerm())));
+            }
+        }
     }
 
     /**
@@ -727,6 +796,39 @@ public class ChatQueryInterpreter {
         return new QuerySemanticIntent(
                 validSearchTerms, intent.metricTerms(), intent.groupTerms(), intent.filterTerms(),
                 intent.sortTerms(), intent.unmappedTerms());
+    }
+
+    /**
+     * A one-word follow-up such as “收单市场” selects a candidate from the
+     * previous ambiguity, but the current LLM may not repeat the original value
+     * (“俄罗斯”). Restore only the pending filters for this explicit field
+     * choice so the existing grounding and ambiguity resolver can apply it.
+     */
+    private QuerySemanticIntent restorePendingFiltersForExplicitFieldChoice(
+            QuerySemanticIntent current, String pendingQueryIntent, String userMessage) {
+        if (!StringUtils.hasText(pendingQueryIntent)
+                || !selectsKnownDimension(userMessage)) return current;
+        try {
+            QuerySemanticIntent pending = objectMapper.readValue(
+                    stripMarkdownFence(pendingQueryIntent), QuerySemanticIntent.class);
+            if (pending.filterTerms().isEmpty()) return current;
+            List<FilterTerm> filters = new java.util.ArrayList<>(current.filterTerms());
+            pending.filterTerms().stream()
+                    .filter(filter -> filter != null && !filters.contains(filter))
+                    .forEach(filters::add);
+            return new QuerySemanticIntent(
+                    current.searchTerms(), current.metricTerms(), current.groupTerms(),
+                    List.copyOf(filters), current.sortTerms(), current.unmappedTerms());
+        } catch (JsonProcessingException | RuntimeException ignored) {
+            return current;
+        }
+    }
+
+    private boolean selectsKnownDimension(String message) {
+        String reply = normalizeTerm(message);
+        if (reply.isBlank()) return false;
+        return QueryMetadataCatalog.dimensionIds().stream().anyMatch(fieldId ->
+                selectsCandidate(reply, fieldId, QueryMetadataCatalog.displayName(fieldId)));
     }
 
     /**
